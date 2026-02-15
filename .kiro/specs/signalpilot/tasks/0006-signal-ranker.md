@@ -1,5 +1,7 @@
 # Task 6: Signal Ranker
 
+## Status: COMPLETED
+
 ## References
 - Requirements: `/.kiro/specs/signalpilot/requirements.md` (Req 10-11)
 - Design: `/.kiro/specs/signalpilot/design.md` (Section 4.3)
@@ -10,21 +12,20 @@
 
 ### 6.1 Implement `signalpilot/ranking/scorer.py` with SignalScorer
 
-- [ ] Implement `ScoringWeights` dataclass (if not already in models) with: gap_weight, volume_weight, price_distance_weight
-- [ ] Implement `SignalScorer` class as specified in design (Section 4.3.1)
-- [ ] Normalization functions (all clamp to 0.0-1.0 range):
-  - `_normalize_gap(gap_pct: float) -> float`: 3% -> 0.0, 5% -> 1.0, linear interpolation
-  - `_normalize_volume_ratio(volume_ratio: float) -> float`: 0.5 -> 0.0, 3.0 -> 1.0, linear interpolation
-  - `_normalize_price_distance(distance_pct: float) -> float`: 0% -> 0.0, 3%+ -> 1.0, linear interpolation
-- [ ] `score(candidate: CandidateSignal) -> float`:
-  - composite = (normalized_gap * gap_weight) + (normalized_volume * volume_weight) + (normalized_price_distance * price_distance_weight)
-  - Return composite score (0.0 to 1.0)
-- [ ] Write tests in `tests/test_ranking/test_scorer.py`:
-  - Verify `_normalize_gap(3.0)` = 0.0, `_normalize_gap(5.0)` = 1.0, `_normalize_gap(4.0)` = 0.5
-  - Verify `_normalize_volume_ratio(0.5)` = 0.0, `_normalize_volume_ratio(3.0)` = 1.0
-  - Verify `_normalize_price_distance(0.0)` = 0.0, `_normalize_price_distance(3.0)` = 1.0
-  - Verify clamping: values below min return 0.0, values above max return 1.0
-  - Verify composite scoring with known weights (e.g., equal weights 0.33/0.33/0.33)
+- [x] Reuse `ScoringWeights` dataclass from `signalpilot/db/models.py` (already defined in task 0002)
+- [x] Implement `SignalScorer` class as specified in design (Section 4.3.1)
+- [x] Normalization functions (all clamp to 0.0-1.0 range):
+  - `_normalize_gap(gap_pct)`: 3% → 0.0, 5% → 1.0, linear interpolation
+  - `_normalize_volume_ratio(volume_ratio)`: 0.5 → 0.0, 3.0 → 1.0, linear interpolation
+  - `_normalize_price_distance(distance_pct)`: 0% → 0.0, 3%+ → 1.0, linear interpolation
+- [x] `score(candidate)`: composite = (norm_gap * w1) + (norm_vol * w2) + (norm_dist * w3)
+- [x] Write tests in `tests/test_ranking/test_scorer.py` (20 tests):
+  - Normalization boundary tests (min, max, midpoint for each factor)
+  - Clamping tests (below min → 0.0, above max → 1.0)
+  - Negative distance clamped to 0.0
+  - Composite scoring: all-min=0.0, all-max=1.0, midpoint=0.5
+  - Custom equal weights verification
+  - Gap-dominant scoring verification
 
 **Requirement coverage:** Req 10.1 (multi-factor scoring with configurable weights)
 
@@ -32,23 +33,32 @@
 
 ### 6.2 Implement `signalpilot/ranking/ranker.py` with SignalRanker
 
-- [ ] Implement `SignalRanker` class as specified in design (Section 4.3.2)
-- [ ] `rank(candidates: list[CandidateSignal], max_signals: int = 5) -> list[RankedSignal]`:
+- [x] Implement `SignalRanker` class as specified in design (Section 4.3.2)
+- [x] `rank(candidates, max_signals=5)`:
   - Score all candidates using SignalScorer
   - Sort in descending order by composite score
   - Assign star ratings via `_score_to_stars()`
   - Return top N (default 5)
-- [ ] `_score_to_stars(score: float) -> int`:
-  - 0.0-0.2 -> 1 star
-  - 0.2-0.4 -> 2 stars
-  - 0.4-0.6 -> 3 stars
-  - 0.6-0.8 -> 4 stars
-  - 0.8-1.0 -> 5 stars
-- [ ] Write tests in `tests/test_ranking/test_ranker.py`:
-  - Verify ranking order (highest score first)
-  - Verify top-5 cutoff (6 candidates -> only 5 returned)
-  - Verify star rating assignment for each range
-  - Verify fewer than 5 candidates returns all of them (Req 11.2)
-  - Verify empty candidate list returns empty result
+- [x] `_score_to_stars(score)`:
+  - [0.0, 0.2) → 1 star, [0.2, 0.4) → 2 stars, [0.4, 0.6) → 3 stars,
+    [0.6, 0.8) → 4 stars, [0.8, 1.0] → 5 stars
+- [x] Write tests in `tests/test_ranking/test_ranker.py` (24 tests):
+  - Ranking order (highest score first)
+  - Scores descending verification
+  - Top-5 cutoff (6 candidates → 5 returned)
+  - Custom max_signals
+  - Fewer than 5 candidates returns all (Req 11.2)
+  - Empty candidate list returns empty
+  - Parametrized star rating tests (15 boundary values)
+  - Stars assigned correctly in ranked output
+  - Single candidate handling
+  - Tied scores maintain stable input order
 
 **Requirement coverage:** Req 10.2 (rank descending), Req 10.3 (star rating), Req 11.1 (top 5 selection), Req 11.2 (fewer than 5)
+
+---
+
+## Code Review Result
+- **No Critical or High issues found** — approved for production
+- Medium: Input validation for weights/max_signals (deferred — not needed for internal-only usage)
+- Low: Tied score test added, NaN handling deferred
