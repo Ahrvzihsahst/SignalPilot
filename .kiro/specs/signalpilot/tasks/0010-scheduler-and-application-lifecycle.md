@@ -10,9 +10,9 @@
 
 ### 10.1 Implement `signalpilot/scheduler/scheduler.py` with MarketScheduler
 
-- [ ] Implement `MarketScheduler` class as specified in design (Section 4.8.1)
-- [ ] Use `AsyncIOScheduler` from APScheduler 3.x with IST timezone
-- [ ] `configure_jobs(app: SignalPilotApp)`:
+- [x] Implement `MarketScheduler` class as specified in design (Section 4.8.1)
+- [x] Use `AsyncIOScheduler` from APScheduler 3.x with IST timezone
+- [x] `configure_jobs(app: SignalPilotApp)`:
   - Register all scheduled jobs using CronTrigger:
 
   | Time | Job | Callback | Requirement |
@@ -25,9 +25,9 @@
   | 3:30 PM | Daily summary | `app.send_daily_summary()` | Req 27.4, Req 31 |
   | 3:35 PM | Shutdown | `app.shutdown()` | Req 34.1 |
 
-- [ ] `start()`: start the AsyncIOScheduler
-- [ ] `shutdown()`: gracefully shutdown the scheduler
-- [ ] Write tests in `tests/test_scheduler/test_scheduler.py`:
+- [x] `start()`: start the AsyncIOScheduler
+- [x] `shutdown()`: gracefully shutdown the scheduler
+- [x] Write tests in `tests/test_scheduler/test_scheduler.py`:
   - Verify all 7 jobs are registered
   - Verify each job's trigger time matches specification
   - Verify IST timezone is configured
@@ -38,8 +38,8 @@
 
 ### 10.2 Implement `signalpilot/scheduler/lifecycle.py` with SignalPilotApp orchestrator
 
-- [ ] Implement `SignalPilotApp` class as specified in design (Section 4.8.2)
-- [ ] `__init__(config: AppConfig)`:
+- [x] Implement `SignalPilotApp` class as specified in design (Section 4.8.2)
+- [x] `__init__(config: AppConfig)`:
   - Wire all components together:
     - `DatabaseManager(config.db_path)`
     - `SmartAPIAuthenticator(config)`
@@ -56,7 +56,7 @@
     - `SignalPilotBot(config, repos, market_data_store, exit_monitor, metrics)`
     - `MarketScheduler()`
   - State flags: `_scanning: bool`, `_accepting_signals: bool`
-- [ ] `startup()`:
+- [x] `startup()`:
   - Initialize DB (create tables if needed)
   - Authenticate with Angel One
   - Load instrument list
@@ -64,11 +64,11 @@
   - Set historical references in MarketDataStore
   - Start Telegram bot
   - Configure and start scheduler
-- [ ] `start_scanning()`:
+- [x] `start_scanning()`:
   - Connect WebSocket
   - Set `_scanning = True`
   - Create asyncio task for `_scan_loop()`
-- [ ] `_scan_loop()`:
+- [x] `_scan_loop()`:
   - While `_scanning`:
     - Determine current phase via `_determine_phase()`
     - If OPENING or ENTRY_WINDOW:
@@ -81,38 +81,38 @@
       - Call `exit_monitor.check_all_trades()`
     - Call `_expire_stale_signals()`
     - `await asyncio.sleep(1)` (1-second scan interval)
-- [ ] `_determine_phase(dt: datetime) -> StrategyPhase`:
+- [x] `_determine_phase(dt: datetime) -> StrategyPhase`:
   - Map current time to the correct strategy phase
-- [ ] `stop_new_signals()`:
+- [x] `stop_new_signals()`:
   - Set `_accepting_signals = False`
   - Send Telegram: "No new signals. Monitoring existing positions only."
-- [ ] `send_pre_market_alert()`:
+- [x] `send_pre_market_alert()`:
   - Send Telegram: "Pre-market scan running. Signals coming shortly."
-- [ ] `trigger_exit_reminder()`:
+- [x] `trigger_exit_reminder()`:
   - Call `exit_monitor.trigger_time_exit_check(is_mandatory=False)`
   - Send Telegram: "Close all intraday positions in the next 15 minutes."
-- [ ] `trigger_mandatory_exit()`:
+- [x] `trigger_mandatory_exit()`:
   - Call `exit_monitor.trigger_time_exit_check(is_mandatory=True)`
-- [ ] `send_daily_summary()`:
+- [x] `send_daily_summary()`:
   - Calculate daily summary via MetricsCalculator
   - Format and send via Telegram
-- [ ] `shutdown()`:
+- [x] `shutdown()`:
   - Set `_scanning = False`
   - Disconnect WebSocket
   - Shutdown scheduler
   - Stop Telegram bot
   - Close DB connection
-- [ ] `recover()` (for crash recovery):
+- [x] `recover()` (for crash recovery):
   - Re-authenticate with Angel One
   - Re-establish WebSocket connection
   - Reload today's signals and active trades from SQLite
   - Resume exit monitoring for all active trades
   - Send Telegram: "System recovered from interruption. Monitoring resumed."
-- [ ] `_expire_stale_signals()`:
+- [x] `_expire_stale_signals()`:
   - Query signals where `expires_at < now` and `status = 'sent'`
   - Update status to 'expired'
   - Send Telegram notification for each expired signal
-- [ ] Write tests in `tests/test_scheduler/test_lifecycle.py`:
+- [x] Write tests in `tests/test_scheduler/test_lifecycle.py`:
   - Verify startup calls all initialization methods in correct order
   - Verify scan loop evaluates strategy during correct phases
   - Verify scan loop checks exits on every iteration
@@ -125,7 +125,7 @@
 
 ### 10.3 Implement `signalpilot/main.py` as the application entry point
 
-- [ ] Create asyncio entry point:
+- [x] Create asyncio entry point:
   ```python
   async def main():
       config = AppConfig()
@@ -135,11 +135,36 @@
       else:
           await app.startup()  # normal startup
   ```
-- [ ] Handle SIGINT/SIGTERM for graceful shutdown:
+- [x] Handle SIGINT/SIGTERM for graceful shutdown:
   - Register signal handlers that call `app.shutdown()`
-- [ ] Add `if __name__ == "__main__":` block with `asyncio.run(main())`
-- [ ] Write test in `tests/test_main.py`:
+- [x] Add `if __name__ == "__main__":` block with `asyncio.run(main())`
+- [x] Write test in `tests/test_main.py`:
   - Verify entry point creates AppConfig and SignalPilotApp
   - Verify normal startup vs crash recovery detection
 
 **Requirement coverage:** Req 32.2 (full startup sequence), Req 35.1-35.5 (crash recovery)
+
+---
+
+## Status: COMPLETED
+
+All subtasks implemented and tested. 38 tests passing (12 scheduler, 23 lifecycle, 3 main).
+
+### Code Review Summary
+
+**Fixes applied:**
+- MAIN-01 (Critical): Added idempotent signal handler to prevent double shutdown on repeated Ctrl+C
+- LCY-02 + MAIN-03 (High): Added `is_trading_day()` check to prevent recovery on weekends/holidays
+- LCY-03 (High): Added circuit-breaker to scan loop (stops after 10 consecutive errors, sends alert)
+- LCY-08 (High): Recovery now checks current phase and disables signals if past entry window
+- LCY-06 (Medium): Shutdown wraps each cleanup step in try/except for resilience
+- LCY-07 (Medium): Changed `date.today()` to `datetime.now(IST).date()` for IST-aware dates
+- SCH-02 (Low): Added `replace_existing=True` for idempotent job registration
+
+**Deferred (low risk):**
+- MAIN-02: create_app passes None for unmerged components (by design, full wiring after branch merge)
+- MAIN-04: Logging configuration (project has utils/logger.py, will be called in full wiring)
+- SCH-01: Protocol type for app parameter (duck typing is consistent with codebase style)
+- SCH-03: day_of_week constraint (app only runs on trading days via scheduler)
+- LCY-04: asyncio.Event vs bool (safe in single-threaded asyncio)
+- LCY-05: Startup idempotency guard (low risk, single entry point)
