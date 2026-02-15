@@ -1,5 +1,7 @@
 # Task 8: Exit Monitor
 
+## Status: COMPLETED
+
 ## References
 - Requirements: `/.kiro/specs/signalpilot/requirements.md` (Req 17-20)
 - Design: `/.kiro/specs/signalpilot/design.md` (Section 4.5)
@@ -10,7 +12,7 @@
 
 ### 8.1 Implement `signalpilot/monitor/exit_monitor.py` with ExitMonitor
 
-- [ ] Implement `TrailingStopState` dataclass:
+- [x] Implement `TrailingStopState` dataclass:
   - `trade_id: int`
   - `original_sl: float`
   - `current_sl: float`
@@ -18,17 +20,17 @@
   - `breakeven_triggered: bool`
   - `trailing_active: bool`
   - `t1_alerted: bool`
-- [ ] Implement `ExitMonitor` class as specified in design (Section 4.5.1)
-- [ ] Constructor takes: `market_data_store`, `trade_repo`, `alert_callback` (async callable for sending alerts)
-- [ ] `start_monitoring(trade: TradeRecord)`:
+- [x] Implement `ExitMonitor` class as specified in design (Section 4.5.1)
+- [x] Constructor takes: `market_data_store`, `trade_repo`, `alert_callback` (async callable for sending alerts)
+- [x] `start_monitoring(trade: TradeRecord)`:
   - Initialize TrailingStopState for this trade
   - Add to `_active_states` dict (trade_id -> TrailingStopState)
-- [ ] `stop_monitoring(trade_id: int)`:
+- [x] `stop_monitoring(trade_id: int)`:
   - Remove from `_active_states`
-- [ ] `check_all_trades()`:
+- [x] `check_all_trades()`:
   - Get all active trades from trade_repo
   - For each active trade, call `_check_trade(trade, state)`
-- [ ] `_check_trade(trade: TradeRecord, state: TrailingStopState)`:
+- [x] `_check_trade(trade: TradeRecord, state: TrailingStopState)`:
   - Get current tick from market_data_store
   - If no tick data, skip
   - Update `state.highest_price` if current price is higher
@@ -36,7 +38,7 @@
   - Check SL hit: `current_price <= state.current_sl` -> trigger exit with `ExitType.SL_HIT` or `ExitType.TRAILING_SL`
   - Check T2 hit: `current_price >= trade.target_2` -> trigger exit with `ExitType.T2_HIT`
   - Check T1 hit (alert only, once): `current_price >= trade.target_1` AND `not state.t1_alerted` -> send advisory alert, set `state.t1_alerted = True`
-- [ ] `_update_trailing_stop(trade, state, current_price)`:
+- [x] `_update_trailing_stop(trade, state, current_price)`:
   - Calculate move_pct = `(current_price - trade.entry_price) / trade.entry_price * 100`
   - **At +2% above entry** (Req 19.1):
     - If `move_pct >= 2.0` and `not state.breakeven_triggered`:
@@ -49,20 +51,20 @@
       - Calculate new_sl = `current_price * 0.98` (2% below current price)
       - If `new_sl > state.current_sl`: update `state.current_sl = new_sl` (Req 19.3: never move down)
       - Send Telegram alert: "Trailing SL updated to [new_sl]"
-- [ ] `_trigger_exit(trade, exit_type, current_price)`:
+- [x] `_trigger_exit(trade, exit_type, current_price)`:
   - Calculate P&L: `pnl_amount = (current_price - trade.entry_price) * trade.quantity`
   - Calculate P&L %: `pnl_pct = (current_price - trade.entry_price) / trade.entry_price * 100`
   - Call `trade_repo.close_trade(trade.id, current_price, pnl_amount, pnl_pct, exit_type.value)`
   - Create ExitAlert and invoke alert_callback
   - Call `stop_monitoring(trade.id)`
-- [ ] `trigger_time_exit_check(is_mandatory: bool)`:
+- [x] `trigger_time_exit_check(is_mandatory: bool)`:
   - Get all active trades
   - For each trade:
     - Get current price from market_data_store
     - Calculate unrealized P&L
     - If `is_mandatory` (3:15 PM): trigger exit with `ExitType.TIME_EXIT` for all
     - If not mandatory (3:00 PM): send advisory alert with current P&L, recommend exit
-- [ ] Write tests in `tests/test_monitor/test_exit_monitor.py`:
+- [x] Write tests in `tests/test_monitor/test_exit_monitor.py`:
   - **SL hit**: entry=100, SL=97, price drops to 97 -> exit triggered, alert sent (Req 18.1-18.3)
   - **T1 hit**: entry=100, T1=105, price reaches 105 -> advisory alert sent, trade stays open (Req 17.1, 17.3)
   - **T1 alert fires only once**: price oscillates around T1 -> only one alert
@@ -76,3 +78,16 @@
   - **Time exit 3:15 PM**: mandatory exit for all open trades (Req 20.3)
 
 **Requirement coverage:** Req 17 (target alerts), Req 18 (SL alerts), Req 19 (trailing SL), Req 20 (time exit)
+
+---
+
+## Code Review Result
+- **No Critical issues found** — approved for production
+- H1: Made trailing stop thresholds configurable (breakeven_trigger_pct, trail_trigger_pct, trail_distance_pct) instead of hardcoded (fixed)
+- H2: Documented long-only assumption in class docstring (Phase 1 BUY only)
+- M1: Added INFO-level logging for all exit events, trailing SL updates, start/stop monitoring (fixed)
+- M5: Deduplicated PnL formula in `_build_exit_alert` to use `_calc_pnl_pct` (fixed)
+- L1: Removed dead `TradeRepoProtocol` alias (fixed)
+- L4: Added test for direct jump past breakeven to trailing (fixed)
+- Bug fix: When jumping directly to +4%, set `breakeven_triggered=True` to prevent breakeven branch firing on price pullback
+- Bug fix: `trailing_active` only set when trail SL actually moves (not just when move_pct >= threshold)
