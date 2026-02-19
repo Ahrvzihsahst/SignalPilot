@@ -21,6 +21,7 @@ from signalpilot.telegram.handlers import (
     handle_status,
     handle_taken,
 )
+from signalpilot.utils.log_context import log_context
 
 logger = logging.getLogger(__name__)
 
@@ -139,33 +140,38 @@ class SignalPilotBot:
     async def _handle_taken(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
-        response = await handle_taken(
-            self._signal_repo, self._trade_repo, self._exit_monitor,
-        )
-        await update.message.reply_text(response)
+        async with log_context(command="TAKEN"):
+            response = await handle_taken(
+                self._signal_repo, self._trade_repo, self._exit_monitor,
+            )
+            await update.message.reply_text(response)
 
     async def _handle_status(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
-        response = await handle_status(
-            self._signal_repo, self._trade_repo, self._get_current_prices,
-        )
-        await update.message.reply_text(response, parse_mode="HTML")
+        async with log_context(command="STATUS"):
+            response = await handle_status(
+                self._signal_repo, self._trade_repo, self._get_current_prices,
+            )
+            await update.message.reply_text(response, parse_mode="HTML")
 
     async def _handle_journal(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
-        response = await handle_journal(self._metrics_calculator)
-        await update.message.reply_text(response, parse_mode="HTML")
+        async with log_context(command="JOURNAL"):
+            response = await handle_journal(self._metrics_calculator)
+            await update.message.reply_text(response, parse_mode="HTML")
 
     async def _handle_capital(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
-        response = await handle_capital(self._config_repo, update.message.text)
-        await update.message.reply_text(response)
+        async with log_context(command="CAPITAL"):
+            response = await handle_capital(self._config_repo, update.message.text)
+            await update.message.reply_text(response)
 
     async def _handle_help(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
-        response = await handle_help()
-        await update.message.reply_text(response, parse_mode="HTML")
+        async with log_context(command="HELP"):
+            response = await handle_help()
+            await update.message.reply_text(response, parse_mode="HTML")

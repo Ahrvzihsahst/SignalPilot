@@ -1,11 +1,13 @@
 """Tests for logging configuration."""
 
 import logging
+from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 
 import pytest
 
-from signalpilot.utils.logger import configure_logging
+from signalpilot.utils.log_context import set_context
+from signalpilot.utils.logger import SignalPilotFormatter, configure_logging
 
 
 class TestConfigureLogging:
@@ -30,15 +32,19 @@ class TestConfigureLogging:
         assert len(logger.handlers) == 1
         assert isinstance(logger.handlers[0], logging.StreamHandler)
 
+    def test_console_handler_is_error_level(self):
+        configure_logging(log_file=None)
+        logger = logging.getLogger("signalpilot")
+        console = logger.handlers[0]
+        assert console.level == logging.ERROR
+
     def test_attaches_file_handler_when_log_file_specified(self, tmp_path):
         log_file = str(tmp_path / "test.log")
         configure_logging(log_file=log_file)
         logger = logging.getLogger("signalpilot")
         assert len(logger.handlers) == 2
         handler_types = {type(h) for h in logger.handlers}
-        from logging.handlers import RotatingFileHandler
-
-        assert RotatingFileHandler in handler_types
+        assert TimedRotatingFileHandler in handler_types
 
     def test_no_file_handler_when_log_file_is_none(self):
         configure_logging(log_file=None)
@@ -61,11 +67,40 @@ class TestConfigureLogging:
         configure_logging(log_file=log_file)
         assert Path(log_file).parent.exists()
 
-    def test_log_message_format(self, tmp_path):
+    def test_log_message_format_without_context(self, tmp_path):
         log_file = str(tmp_path / "test.log")
         configure_logging(log_file=log_file)
         logger = logging.getLogger("signalpilot.test")
         logger.info("test message")
 
         content = Path(log_file).read_text()
-        assert "| INFO     | signalpilot.test | test message" in content
+        assert "[-] [-] [-] [INFO] [signalpilot.test] test message" in content
+
+    def test_log_message_format_with_context(self, tmp_path):
+        log_file = str(tmp_path / "test.log")
+        configure_logging(log_file=log_file)
+        logger = logging.getLogger("signalpilot.test")
+        set_context(cycle_id="abc12345", phase="OPENING", symbol="RELIANCE")
+        try:
+            logger.info("context message")
+        finally:
+            from signalpilot.utils.log_context import reset_context
+            reset_context()
+
+        content = Path(log_file).read_text()
+        assert "[abc12345] [OPENING] [RELIANCE]" in content
+        assert "[INFO] [signalpilot.test] context message" in content
+
+    def test_formatter_class_is_signalpilot_formatter(self):
+        configure_logging(log_file=None)
+        logger = logging.getLogger("signalpilot")
+        assert isinstance(logger.handlers[0].formatter, SignalPilotFormatter)
+
+    def test_noisy_loggers_suppressed(self):
+        configure_logging(log_file=None)
+        noisy = (
+            "apscheduler", "telegram", "httpx",
+            "SmartApi", "yfinance", "urllib3", "asyncio",
+        )
+        for name in noisy:
+            assert logging.getLogger(name).level == logging.WARNING

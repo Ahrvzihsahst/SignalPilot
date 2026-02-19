@@ -17,6 +17,10 @@ class AppConfig(BaseSettings):
     telegram_bot_token: str = Field(..., description="Telegram Bot API token")
     telegram_chat_id: str = Field(..., description="Telegram chat ID for delivery")
 
+    # Logging
+    log_level: str = Field(default="INFO", description="Log level (DEBUG, INFO, WARNING, ERROR)")
+    log_file: str = Field(default="log/signalpilot.log", description="Path to the rotating log file")
+
     # Database
     db_path: str = Field(default="signalpilot.db", description="SQLite database path")
 

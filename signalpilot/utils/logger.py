@@ -2,8 +2,39 @@
 
 import logging
 import sys
-from logging.handlers import RotatingFileHandler
+from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
+
+from signalpilot.utils.log_context import (
+    get_command,
+    get_cycle_id,
+    get_job_name,
+    get_phase,
+    get_symbol,
+)
+
+# Noisy third-party loggers that should be suppressed to WARNING
+_NOISY_LOGGERS = (
+    "apscheduler",
+    "telegram",
+    "httpx",
+    "SmartApi",
+    "yfinance",
+    "urllib3",
+    "asyncio",
+)
+
+
+class SignalPilotFormatter(logging.Formatter):
+    """Custom formatter that injects ContextVar fields into log records."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        record.cycle_id = get_cycle_id() or "-"
+        record.phase = get_phase() or "-"
+        record.symbol = get_symbol() or "-"
+        record.job_name = get_job_name() or "-"
+        record.command = get_command() or "-"
+        return super().format(record)
 
 
 def configure_logging(
@@ -20,28 +51,35 @@ def configure_logging(
     if not isinstance(numeric_level, int):
         raise ValueError(f"Invalid log level: {level!r}")
 
-    formatter = logging.Formatter(
-        fmt="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
+    fmt = (
+        "%(asctime)s [%(cycle_id)s] [%(phase)s] [%(symbol)s]"
+        " [%(levelname)s] [%(name)s] %(message)s"
     )
+    formatter = SignalPilotFormatter(fmt=fmt, datefmt="%Y-%m-%d %H:%M:%S")
 
     root = logging.getLogger("signalpilot")
     root.handlers.clear()
     root.setLevel(numeric_level)
 
-    # Console handler
+    # Console handler — errors only
     console = logging.StreamHandler(sys.stdout)
+    console.setLevel(logging.ERROR)
     console.setFormatter(formatter)
     root.addHandler(console)
 
-    # File handler (rotating, optional)
+    # File handler (timed rotating, optional)
     if log_file:
         log_path = Path(log_file)
         log_path.parent.mkdir(parents=True, exist_ok=True)
-        file_handler = RotatingFileHandler(
+        file_handler = TimedRotatingFileHandler(
             log_path,
-            maxBytes=10 * 1024 * 1024,  # 10 MB
-            backupCount=5,
+            when="midnight",
+            backupCount=7,
+            utc=True,
         )
         file_handler.setFormatter(formatter)
         root.addHandler(file_handler)
+
+    # Suppress noisy third-party loggers
+    for name in _NOISY_LOGGERS:
+        logging.getLogger(name).setLevel(logging.WARNING)

@@ -3,8 +3,6 @@
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
-
 
 async def test_main_normal_startup_outside_market_hours() -> None:
     """When not market hours, main() should call startup()."""
@@ -17,6 +15,7 @@ async def test_main_normal_startup_outside_market_hours() -> None:
         raise asyncio.CancelledError
 
     with patch("signalpilot.main.AppConfig"), \
+         patch("signalpilot.main.configure_logging"), \
          patch("signalpilot.main.create_app", return_value=mock_app), \
          patch("signalpilot.main.is_market_hours", return_value=False), \
          patch("asyncio.sleep", side_effect=_cancel_immediately):
@@ -39,6 +38,7 @@ async def test_main_crash_recovery_during_market_hours() -> None:
         raise asyncio.CancelledError
 
     with patch("signalpilot.main.AppConfig"), \
+         patch("signalpilot.main.configure_logging"), \
          patch("signalpilot.main.create_app", return_value=mock_app), \
          patch("signalpilot.main.is_market_hours", return_value=True), \
          patch("signalpilot.main.is_trading_day", return_value=True), \
@@ -61,6 +61,7 @@ async def test_main_startup_on_weekend_during_market_time() -> None:
         raise asyncio.CancelledError
 
     with patch("signalpilot.main.AppConfig"), \
+         patch("signalpilot.main.configure_logging"), \
          patch("signalpilot.main.create_app", return_value=mock_app), \
          patch("signalpilot.main.is_market_hours", return_value=True), \
          patch("signalpilot.main.is_trading_day", return_value=False), \

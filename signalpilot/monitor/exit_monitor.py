@@ -5,6 +5,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 from signalpilot.db.models import ExitAlert, ExitType, TickData, TradeRecord
+from signalpilot.utils.log_context import log_context
 
 logger = logging.getLogger(__name__)
 
@@ -74,69 +75,71 @@ class ExitMonitor:
 
         Returns the ExitAlert if an exit or advisory was triggered, None otherwise.
         """
-        state = self._active_states.get(trade.id)
-        if state is None:
+        async with log_context(symbol=trade.symbol):
+            state = self._active_states.get(trade.id)
+            if state is None:
+                return None
+
+            tick = await self._get_tick(trade.symbol)
+            if tick is None:
+                return None
+
+            current_price = tick.ltp
+
+            # Update highest price seen
+            state.highest_price = max(state.highest_price, current_price)
+
+            # Update trailing stop
+            trailing_alert = self._update_trailing_stop(trade, state, current_price)
+
+            # Check SL hit (using current trailing stop)
+            if current_price <= state.current_sl:
+                exit_type = (
+                    ExitType.TRAILING_SL_HIT if state.trailing_active else ExitType.SL_HIT
+                )
+                alert = self._build_exit_alert(trade, current_price, exit_type)
+                logger.info(
+                    "%s for trade %d (%s): price=%.2f, sl=%.2f",
+                    exit_type.value, trade.id, trade.symbol, current_price, state.current_sl,
+                )
+                self.stop_monitoring(trade.id)
+                await self._alert_callback(alert)
+                return alert
+
+            # Check T2 hit (full exit)
+            if current_price >= trade.target_2:
+                alert = self._build_exit_alert(trade, current_price, ExitType.T2_HIT)
+                logger.info(
+                    "T2 exit for trade %d (%s): price=%.2f", trade.id, trade.symbol, current_price,
+                )
+                self.stop_monitoring(trade.id)
+                await self._alert_callback(alert)
+                return alert
+
+            # Check T1 hit (advisory, once only)
+            if current_price >= trade.target_1 and not state.t1_alerted:
+                state.t1_alerted = True
+                pnl_pct = self._calc_pnl_pct(trade.entry_price, current_price)
+                alert = ExitAlert(
+                    trade=trade,
+                    exit_type=ExitType.T1_HIT,
+                    current_price=current_price,
+                    pnl_pct=pnl_pct,
+                    is_alert_only=True,
+                )
+                logger.info(
+                    "T1 advisory for trade %d (%s): price=%.2f",
+                    trade.id, trade.symbol, current_price,
+                )
+                await self._alert_callback(alert)
+                return alert
+
+            # Send trailing SL update alert if one occurred
+            if trailing_alert is not None:
+                await self._alert_callback(trailing_alert)
+                return trailing_alert
+
             return None
-
-        tick = await self._get_tick(trade.symbol)
-        if tick is None:
-            return None
-
-        current_price = tick.ltp
-
-        # Update highest price seen
-        state.highest_price = max(state.highest_price, current_price)
-
-        # Update trailing stop
-        trailing_alert = self._update_trailing_stop(trade, state, current_price)
-
-        # Check SL hit (using current trailing stop)
-        if current_price <= state.current_sl:
-            exit_type = (
-                ExitType.TRAILING_SL_HIT if state.trailing_active else ExitType.SL_HIT
-            )
-            alert = self._build_exit_alert(trade, current_price, exit_type)
-            logger.info(
-                "%s for trade %d (%s): price=%.2f, sl=%.2f",
-                exit_type.value, trade.id, trade.symbol, current_price, state.current_sl,
-            )
-            self.stop_monitoring(trade.id)
-            await self._alert_callback(alert)
-            return alert
-
-        # Check T2 hit (full exit)
-        if current_price >= trade.target_2:
-            alert = self._build_exit_alert(trade, current_price, ExitType.T2_HIT)
-            logger.info(
-                "T2 exit for trade %d (%s): price=%.2f", trade.id, trade.symbol, current_price,
-            )
-            self.stop_monitoring(trade.id)
-            await self._alert_callback(alert)
-            return alert
-
-        # Check T1 hit (advisory, once only)
-        if current_price >= trade.target_1 and not state.t1_alerted:
-            state.t1_alerted = True
-            pnl_pct = self._calc_pnl_pct(trade.entry_price, current_price)
-            alert = ExitAlert(
-                trade=trade,
-                exit_type=ExitType.T1_HIT,
-                current_price=current_price,
-                pnl_pct=pnl_pct,
-                is_alert_only=True,
-            )
-            logger.info(
-                "T1 advisory for trade %d (%s): price=%.2f", trade.id, trade.symbol, current_price,
-            )
-            await self._alert_callback(alert)
-            return alert
-
-        # Send trailing SL update alert if one occurred
-        if trailing_alert is not None:
-            await self._alert_callback(trailing_alert)
-            return trailing_alert
-
-        return None
 
     def _update_trailing_stop(
         self,
@@ -204,34 +207,35 @@ class ExitMonitor:
         """
         alerts: list[ExitAlert] = []
         for trade in trades:
-            tick = await self._get_tick(trade.symbol)
-            if tick is None:
-                continue
-            current_price = tick.ltp
-            pnl_pct = self._calc_pnl_pct(trade.entry_price, current_price)
+            async with log_context(symbol=trade.symbol):
+                tick = await self._get_tick(trade.symbol)
+                if tick is None:
+                    continue
+                current_price = tick.ltp
+                pnl_pct = self._calc_pnl_pct(trade.entry_price, current_price)
 
-            if is_mandatory:
-                alert = self._build_exit_alert(trade, current_price, ExitType.TIME_EXIT)
-                logger.info(
-                    "Mandatory time exit for trade %d (%s): price=%.2f",
-                    trade.id, trade.symbol, current_price,
-                )
-                self.stop_monitoring(trade.id)
-            else:
-                alert = ExitAlert(
-                    trade=trade,
-                    exit_type=ExitType.TIME_EXIT,
-                    current_price=current_price,
-                    pnl_pct=pnl_pct,
-                    is_alert_only=True,
-                )
-                logger.info(
-                    "Time exit advisory for trade %d (%s): price=%.2f, pnl=%.2f%%",
-                    trade.id, trade.symbol, current_price, pnl_pct,
-                )
+                if is_mandatory:
+                    alert = self._build_exit_alert(trade, current_price, ExitType.TIME_EXIT)
+                    logger.info(
+                        "Mandatory time exit for trade %d (%s): price=%.2f",
+                        trade.id, trade.symbol, current_price,
+                    )
+                    self.stop_monitoring(trade.id)
+                else:
+                    alert = ExitAlert(
+                        trade=trade,
+                        exit_type=ExitType.TIME_EXIT,
+                        current_price=current_price,
+                        pnl_pct=pnl_pct,
+                        is_alert_only=True,
+                    )
+                    logger.info(
+                        "Time exit advisory for trade %d (%s): price=%.2f, pnl=%.2f%%",
+                        trade.id, trade.symbol, current_price, pnl_pct,
+                    )
 
-            await self._alert_callback(alert)
-            alerts.append(alert)
+                await self._alert_callback(alert)
+                alerts.append(alert)
 
         return alerts
 

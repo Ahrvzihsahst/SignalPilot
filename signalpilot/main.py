@@ -9,6 +9,7 @@ from signalpilot.config import AppConfig
 from signalpilot.scheduler.lifecycle import SignalPilotApp
 from signalpilot.scheduler.scheduler import MarketScheduler
 from signalpilot.utils.constants import IST
+from signalpilot.utils.logger import configure_logging
 from signalpilot.utils.market_calendar import is_market_hours, is_trading_day
 
 logger = logging.getLogger(__name__)
@@ -49,6 +50,7 @@ def create_app(config: AppConfig) -> SignalPilotApp:
 async def main() -> None:
     """Application entry point."""
     config = AppConfig()
+    configure_logging(level=config.log_level, log_file=config.log_file)
     app = create_app(config)
 
     loop = asyncio.get_running_loop()
