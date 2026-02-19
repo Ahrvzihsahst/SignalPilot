@@ -1,0 +1,183 @@
+{
+  "_description": "Angel One instrument master entries for NSE equity stocks. Includes Nifty 500 members and some non-members for exclusion testing.",
+
+  "instruments": [
+    {
+      "token": "3045",
+      "symbol": "SBIN-EQ",
+      "name": "State Bank of India",
+      "expiry": "",
+      "strike": "-1.000000",
+      "lotsize": "1",
+      "instrumenttype": "",
+      "exch_seg": "NSE",
+      "tick_size": "5.000000",
+      "_in_nifty_500": true
+    },
+    {
+      "token": "11536",
+      "symbol": "TCS-EQ",
+      "name": "Tata Consultancy Services Ltd",
+      "expiry": "",
+      "strike": "-1.000000",
+      "lotsize": "1",
+      "instrumenttype": "",
+      "exch_seg": "NSE",
+      "tick_size": "5.000000",
+      "_in_nifty_500": true
+    },
+    {
+      "token": "2885",
+      "symbol": "RELIANCE-EQ",
+      "name": "Reliance Industries Ltd",
+      "expiry": "",
+      "strike": "-1.000000",
+      "lotsize": "1",
+      "instrumenttype": "",
+      "exch_seg": "NSE",
+      "tick_size": "5.000000",
+      "_in_nifty_500": true
+    },
+    {
+      "token": "1594",
+      "symbol": "INFY-EQ",
+      "name": "Infosys Ltd",
+      "expiry": "",
+      "strike": "-1.000000",
+      "lotsize": "1",
+      "instrumenttype": "",
+      "exch_seg": "NSE",
+      "tick_size": "5.000000",
+      "_in_nifty_500": true
+    },
+    {
+      "token": "1333",
+      "symbol": "HDFCBANK-EQ",
+      "name": "HDFC Bank Ltd",
+      "expiry": "",
+      "strike": "-1.000000",
+      "lotsize": "1",
+      "instrumenttype": "",
+      "exch_seg": "NSE",
+      "tick_size": "5.000000",
+      "_in_nifty_500": true
+    },
+    {
+      "token": "4963",
+      "symbol": "ICICIBANK-EQ",
+      "name": "ICICI Bank Ltd",
+      "expiry": "",
+      "strike": "-1.000000",
+      "lotsize": "1",
+      "instrumenttype": "",
+      "exch_seg": "NSE",
+      "tick_size": "5.000000",
+      "_in_nifty_500": true
+    },
+    {
+      "token": "5900",
+      "symbol": "AXISBANK-EQ",
+      "name": "Axis Bank Ltd",
+      "expiry": "",
+      "strike": "-1.000000",
+      "lotsize": "1",
+      "instrumenttype": "",
+      "exch_seg": "NSE",
+      "tick_size": "5.000000",
+      "_in_nifty_500": true
+    },
+    {
+      "token": "14977",
+      "symbol": "WIPRO-EQ",
+      "name": "Wipro Ltd",
+      "expiry": "",
+      "strike": "-1.000000",
+      "lotsize": "1",
+      "instrumenttype": "",
+      "exch_seg": "NSE",
+      "tick_size": "5.000000",
+      "_in_nifty_500": true
+    },
+    {
+      "token": "7229",
+      "symbol": "HCLTECH-EQ",
+      "name": "HCL Technologies Ltd",
+      "expiry": "",
+      "strike": "-1.000000",
+      "lotsize": "1",
+      "instrumenttype": "",
+      "exch_seg": "NSE",
+      "tick_size": "5.000000",
+      "_in_nifty_500": true
+    },
+    {
+      "token": "317",
+      "symbol": "BAJFINANCE-EQ",
+      "name": "Bajaj Finance Ltd",
+      "expiry": "",
+      "strike": "-1.000000",
+      "lotsize": "1",
+      "instrumenttype": "",
+      "exch_seg": "NSE",
+      "tick_size": "5.000000",
+      "_in_nifty_500": true
+    },
+    {
+      "_description": "BSE entry — should be excluded by NSE filter",
+      "token": "500325",
+      "symbol": "RELIANCE",
+      "name": "Reliance Industries Ltd",
+      "expiry": "",
+      "strike": "-1.000000",
+      "lotsize": "1",
+      "instrumenttype": "",
+      "exch_seg": "BSE",
+      "tick_size": "1.000000",
+      "_in_nifty_500": false
+    },
+    {
+      "_description": "NSE FnO entry — should be excluded (not equity)",
+      "token": "51601",
+      "symbol": "SBIN",
+      "name": "State Bank of India",
+      "expiry": "28JAN2025",
+      "strike": "800.000000",
+      "lotsize": "1500",
+      "instrumenttype": "OPTSTK",
+      "exch_seg": "NFO",
+      "tick_size": "5.000000",
+      "_in_nifty_500": false
+    },
+    {
+      "_description": "Small-cap stock NOT in Nifty 500 — should be excluded by universe filter",
+      "token": "19943",
+      "symbol": "NESCO-EQ",
+      "name": "Nesco Ltd",
+      "expiry": "",
+      "strike": "-1.000000",
+      "lotsize": "1",
+      "instrumenttype": "",
+      "exch_seg": "NSE",
+      "tick_size": "5.000000",
+      "_in_nifty_500": false
+    },
+    {
+      "_description": "Another small-cap NOT in Nifty 500",
+      "token": "22394",
+      "symbol": "DEEPAKFERT-EQ",
+      "name": "Deepak Fertilisers & Petrochemicals",
+      "expiry": "",
+      "strike": "-1.000000",
+      "lotsize": "1",
+      "instrumenttype": "",
+      "exch_seg": "NSE",
+      "tick_size": "5.000000",
+      "_in_nifty_500": false
+    }
+  ],
+
+  "nifty_500_symbols": [
+    "SBIN", "TCS", "RELIANCE", "INFY", "HDFCBANK",
+    "ICICIBANK", "AXISBANK", "WIPRO", "HCLTECH", "BAJFINANCE"
+  ]
+}

@@ -6,7 +6,7 @@ import aiosqlite
 
 from signalpilot.db.models import SignalRecord
 
-_VALID_STATUSES = frozenset({"sent", "expired"})
+_VALID_STATUSES = frozenset({"sent", "taken", "expired"})
 
 
 class SignalRepository:

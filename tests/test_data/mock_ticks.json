@@ -1,0 +1,116 @@
+{
+  "_description": "Tick sequences for various trading scenarios. Each scenario is an array of tick objects in chronological order.",
+
+  "gap_up_valid": {
+    "_description": "SBIN: 4% gap, high volume, price holds above open — valid Gap & Go setup",
+    "symbol": "SBIN",
+    "previous_close": 500.0,
+    "previous_high": 510.0,
+    "average_daily_volume": 5000000,
+    "ticks": [
+      {"ltp": 520.0, "open_price": 520.0, "high": 520.0, "low": 520.0, "close": 500.0, "volume": 800000,  "time": "09:15:00"},
+      {"ltp": 522.0, "open_price": 520.0, "high": 522.0, "low": 519.0, "close": 500.0, "volume": 1200000, "time": "09:18:00"},
+      {"ltp": 524.0, "open_price": 520.0, "high": 524.0, "low": 519.0, "close": 500.0, "volume": 1800000, "time": "09:22:00"},
+      {"ltp": 523.0, "open_price": 520.0, "high": 524.0, "low": 519.0, "close": 500.0, "volume": 2400000, "time": "09:26:00"},
+      {"ltp": 525.0, "open_price": 520.0, "high": 525.0, "low": 519.0, "close": 500.0, "volume": 3200000, "time": "09:30:00"}
+    ]
+  },
+
+  "gap_too_small": {
+    "_description": "TCS: 2% gap — below the 3% minimum threshold",
+    "symbol": "TCS",
+    "previous_close": 3500.0,
+    "previous_high": 3550.0,
+    "average_daily_volume": 1500000,
+    "ticks": [
+      {"ltp": 3570.0, "open_price": 3570.0, "high": 3570.0, "low": 3570.0, "close": 3500.0, "volume": 200000, "time": "09:15:00"},
+      {"ltp": 3575.0, "open_price": 3570.0, "high": 3575.0, "low": 3568.0, "close": 3500.0, "volume": 350000, "time": "09:20:00"},
+      {"ltp": 3572.0, "open_price": 3570.0, "high": 3575.0, "low": 3568.0, "close": 3500.0, "volume": 500000, "time": "09:25:00"},
+      {"ltp": 3574.0, "open_price": 3570.0, "high": 3575.0, "low": 3568.0, "close": 3500.0, "volume": 650000, "time": "09:30:00"}
+    ]
+  },
+
+  "low_volume": {
+    "_description": "RELIANCE: 4% gap but 15-min volume is only 30% of ADV (below 50% threshold)",
+    "symbol": "RELIANCE",
+    "previous_close": 2500.0,
+    "previous_high": 2530.0,
+    "average_daily_volume": 3000000,
+    "ticks": [
+      {"ltp": 2600.0, "open_price": 2600.0, "high": 2600.0, "low": 2600.0, "close": 2500.0, "volume": 200000, "time": "09:15:00"},
+      {"ltp": 2605.0, "open_price": 2600.0, "high": 2605.0, "low": 2598.0, "close": 2500.0, "volume": 400000, "time": "09:20:00"},
+      {"ltp": 2602.0, "open_price": 2600.0, "high": 2605.0, "low": 2598.0, "close": 2500.0, "volume": 600000, "time": "09:25:00"},
+      {"ltp": 2608.0, "open_price": 2600.0, "high": 2608.0, "low": 2598.0, "close": 2500.0, "volume": 900000, "time": "09:30:00"}
+    ]
+  },
+
+  "price_drops_below_open": {
+    "_description": "INFY: 4% gap, good volume, but price drops below opening price — disqualified",
+    "symbol": "INFY",
+    "previous_close": 1500.0,
+    "previous_high": 1520.0,
+    "average_daily_volume": 2000000,
+    "ticks": [
+      {"ltp": 1560.0, "open_price": 1560.0, "high": 1560.0, "low": 1560.0, "close": 1500.0, "volume": 500000,  "time": "09:15:00"},
+      {"ltp": 1565.0, "open_price": 1560.0, "high": 1565.0, "low": 1558.0, "close": 1500.0, "volume": 800000,  "time": "09:20:00"},
+      {"ltp": 1555.0, "open_price": 1560.0, "high": 1565.0, "low": 1555.0, "close": 1500.0, "volume": 1100000, "time": "09:25:00"},
+      {"ltp": 1548.0, "open_price": 1560.0, "high": 1565.0, "low": 1548.0, "close": 1500.0, "volume": 1400000, "time": "09:30:00"}
+    ]
+  },
+
+  "sl_hit": {
+    "_description": "Price declines from entry to stop loss — trade should be closed",
+    "entry_price": 100.0,
+    "stop_loss": 97.0,
+    "ticks": [
+      {"ltp": 100.0, "time": "09:40:00"},
+      {"ltp": 99.5,  "time": "09:45:00"},
+      {"ltp": 99.0,  "time": "09:50:00"},
+      {"ltp": 98.0,  "time": "09:55:00"},
+      {"ltp": 97.0,  "time": "10:00:00"}
+    ]
+  },
+
+  "t1_hit": {
+    "_description": "Price rises from entry to Target 1 — advisory alert expected",
+    "entry_price": 100.0,
+    "target_1": 105.0,
+    "ticks": [
+      {"ltp": 100.0, "time": "09:40:00"},
+      {"ltp": 101.5, "time": "09:50:00"},
+      {"ltp": 103.0, "time": "10:00:00"},
+      {"ltp": 104.0, "time": "10:10:00"},
+      {"ltp": 105.0, "time": "10:20:00"}
+    ]
+  },
+
+  "t2_hit": {
+    "_description": "Price rises from entry through T1 to T2 — full exit expected",
+    "entry_price": 100.0,
+    "target_1": 105.0,
+    "target_2": 107.0,
+    "ticks": [
+      {"ltp": 100.0, "time": "09:40:00"},
+      {"ltp": 102.0, "time": "09:50:00"},
+      {"ltp": 105.0, "time": "10:00:00"},
+      {"ltp": 106.0, "time": "10:10:00"},
+      {"ltp": 107.0, "time": "10:20:00"}
+    ]
+  },
+
+  "trailing_sl_progression": {
+    "_description": "Full trailing SL lifecycle: entry 100, SL 97 — breakeven at +2%, trail at +4%, retrace to trailing SL exit",
+    "entry_price": 100.0,
+    "stop_loss": 97.0,
+    "ticks": [
+      {"ltp": 100.0,  "time": "09:40:00", "_note": "Entry — SL stays at 97"},
+      {"ltp": 101.0,  "time": "09:50:00", "_note": "Below +2% — SL stays at 97"},
+      {"ltp": 102.0,  "time": "10:00:00", "_note": "+2% — SL moves to breakeven (100.0)"},
+      {"ltp": 103.0,  "time": "10:10:00", "_note": "Between +2% and +4% — SL stays at 100"},
+      {"ltp": 104.0,  "time": "10:20:00", "_note": "+4% — trailing SL activated at 101.92 (104*0.98)"},
+      {"ltp": 106.0,  "time": "10:30:00", "_note": "+6% — trailing SL moves to 103.88 (106*0.98)"},
+      {"ltp": 105.0,  "time": "10:40:00", "_note": "Retrace — trailing SL stays at 103.88 (never moves down)"},
+      {"ltp": 103.88, "time": "10:50:00", "_note": "Trailing SL hit — exit triggered"}
+    ]
+  }
+}

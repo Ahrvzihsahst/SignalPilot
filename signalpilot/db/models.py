@@ -211,7 +211,7 @@ class SignalRecord:
     reason: str = ""
     created_at: datetime | None = None
     expires_at: datetime | None = None
-    status: str = "sent"        # "sent" | "expired"
+    status: str = "sent"        # "sent" | "taken" | "expired"
 
 
 @dataclass
