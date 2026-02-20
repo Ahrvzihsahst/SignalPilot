@@ -127,7 +127,9 @@ class SignalPilotApp:
                                 "Signal sent for %s (id=%d)", record.symbol, signal_id
                             )
 
-                await self._exit_monitor.check_all_trades()
+                active_trades = await self._trade_repo.get_active_trades()
+                for trade in active_trades:
+                    await self._exit_monitor.check_trade(trade)
                 await self._expire_stale_signals()
                 consecutive_errors = 0
 
@@ -184,7 +186,8 @@ class SignalPilotApp:
         """Send exit reminder (called at 3:00 PM)."""
         set_context(job_name="trigger_exit_reminder")
         try:
-            await self._exit_monitor.trigger_time_exit_check(is_mandatory=False)
+            active_trades = await self._trade_repo.get_active_trades()
+            await self._exit_monitor.trigger_time_exit(active_trades, is_mandatory=False)
             if self._bot:
                 await self._bot.send_alert(
                     "Market closing soon. Close all intraday positions in the next 15 minutes."
@@ -197,7 +200,8 @@ class SignalPilotApp:
         """Trigger mandatory exit (called at 3:15 PM)."""
         set_context(job_name="trigger_mandatory_exit")
         try:
-            await self._exit_monitor.trigger_time_exit_check(is_mandatory=True)
+            active_trades = await self._trade_repo.get_active_trades()
+            await self._exit_monitor.trigger_time_exit(active_trades, is_mandatory=True)
             logger.info("Mandatory exit triggered")
         finally:
             reset_context()
