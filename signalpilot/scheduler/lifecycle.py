@@ -83,6 +83,9 @@ class SignalPilotApp:
         """Begin the continuous scanning loop (called at 9:15 AM)."""
         set_context(job_name="start_scanning")
         try:
+            if not self._websocket:
+                logger.warning("Skipping scan start: websocket component not configured")
+                return
             logger.info("Starting market scanning")
             await self._websocket.connect()
             self._scanning = True
@@ -105,7 +108,7 @@ class SignalPilotApp:
                     StrategyPhase.OPENING,
                     StrategyPhase.ENTRY_WINDOW,
                 ):
-                    candidates = await self._strategy.evaluate(phase)
+                    candidates = await self._strategy.evaluate(self._market_data, phase)
                     if candidates:
                         ranked = self._ranker.rank(candidates)
                         user_config = await self._config_repo.get_user_config()
@@ -181,8 +184,7 @@ class SignalPilotApp:
         """Send exit reminder (called at 3:00 PM)."""
         set_context(job_name="trigger_exit_reminder")
         try:
-            if self._exit_monitor:
-                await self._exit_monitor.trigger_time_exit_check(is_mandatory=False)
+            await self._exit_monitor.trigger_time_exit_check(is_mandatory=False)
             if self._bot:
                 await self._bot.send_alert(
                     "Market closing soon. Close all intraday positions in the next 15 minutes."
@@ -195,8 +197,7 @@ class SignalPilotApp:
         """Trigger mandatory exit (called at 3:15 PM)."""
         set_context(job_name="trigger_mandatory_exit")
         try:
-            if self._exit_monitor:
-                await self._exit_monitor.trigger_time_exit_check(is_mandatory=True)
+            await self._exit_monitor.trigger_time_exit_check(is_mandatory=True)
             logger.info("Mandatory exit triggered")
         finally:
             reset_context()

@@ -82,9 +82,14 @@ class DatabaseManager:
         return self._connection
 
     async def initialize(self) -> None:
-        """Open connection, enable WAL mode and foreign keys, create tables."""
+        """Open connection, enable WAL mode and foreign keys, create tables.
+
+        Idempotent: returns immediately if already initialized so that
+        repositories holding a reference to the original connection are
+        not invalidated.
+        """
         if self._connection is not None:
-            await self.close()
+            return
         self._connection = await aiosqlite.connect(self._db_path)
         self._connection.row_factory = aiosqlite.Row
         await self._connection.execute("PRAGMA journal_mode=WAL")
