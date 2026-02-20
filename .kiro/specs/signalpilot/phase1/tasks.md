@@ -1,8 +1,8 @@
 # SignalPilot -- Implementation Tasks
 
 ## References
-- Requirements: `/.kiro/specs/signalpilot/requirements.md`
-- Design: `/.kiro/specs/signalpilot/design.md`
+- Requirements: `/.kiro/specs/signalpilot/phase1/requirements.md`
+- Design: `/.kiro/specs/signalpilot/phase1/design.md`
 
 ---
 
