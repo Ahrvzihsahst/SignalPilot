@@ -1,6 +1,5 @@
 """Instrument manager for Nifty 500 universe with Angel One token mappings."""
 
-import asyncio
 import csv
 import logging
 from pathlib import Path

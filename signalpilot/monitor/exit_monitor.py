@@ -14,6 +14,38 @@ MarketDataGetter = Callable[[str], Awaitable[TickData | None]]
 
 
 @dataclass
+class TrailingStopConfig:
+    """Per-strategy trailing stop loss configuration."""
+
+    breakeven_trigger_pct: float
+    trail_trigger_pct: float | None = None
+    trail_distance_pct: float | None = None
+
+
+# Default configs per strategy (and setup type for VWAP)
+DEFAULT_TRAILING_CONFIGS: dict[str, TrailingStopConfig] = {
+    "Gap & Go": TrailingStopConfig(
+        breakeven_trigger_pct=2.0, trail_trigger_pct=4.0, trail_distance_pct=2.0
+    ),
+    "gap_go": TrailingStopConfig(
+        breakeven_trigger_pct=2.0, trail_trigger_pct=4.0, trail_distance_pct=2.0
+    ),
+    "ORB": TrailingStopConfig(
+        breakeven_trigger_pct=1.5, trail_trigger_pct=2.0, trail_distance_pct=1.0
+    ),
+    "VWAP Reversal": TrailingStopConfig(
+        breakeven_trigger_pct=1.0, trail_trigger_pct=None, trail_distance_pct=None
+    ),
+    "VWAP Reversal:uptrend_pullback": TrailingStopConfig(
+        breakeven_trigger_pct=1.0, trail_trigger_pct=None, trail_distance_pct=None
+    ),
+    "VWAP Reversal:vwap_reclaim": TrailingStopConfig(
+        breakeven_trigger_pct=1.5, trail_trigger_pct=None, trail_distance_pct=None
+    ),
+}
+
+
+@dataclass
 class TrailingStopState:
     """Per-trade trailing stop loss state."""
 
@@ -21,6 +53,7 @@ class TrailingStopState:
     original_sl: float
     current_sl: float
     highest_price: float
+    strategy: str = "gap_go"
     breakeven_triggered: bool = False
     trailing_active: bool = False
     t1_alerted: bool = False
@@ -35,8 +68,7 @@ class ExitMonitor:
     3. Target 1 hit (advisory alert, trade stays open)
     4. Trailing SL updates (breakeven at configurable %, trail at configurable %)
 
-    Note: Phase 1 supports BUY (long) trades only. All price comparisons
-    and PnL calculations assume long direction.
+    Supports per-strategy trailing stop configurations.
     """
 
     def __init__(
@@ -46,12 +78,21 @@ class ExitMonitor:
         breakeven_trigger_pct: float = 2.0,
         trail_trigger_pct: float = 4.0,
         trail_distance_pct: float = 2.0,
+        trailing_configs: dict[str, TrailingStopConfig] | None = None,
     ) -> None:
         self._get_tick = get_tick
         self._alert_callback = alert_callback
         self._breakeven_trigger_pct = breakeven_trigger_pct
         self._trail_trigger_pct = trail_trigger_pct
         self._trail_factor = 1.0 - trail_distance_pct / 100.0
+        # When trailing_configs is explicitly provided, use per-strategy lookup.
+        # Otherwise, constructor-level params apply to all trades (backward compat).
+        self._trailing_configs = trailing_configs
+        self._fallback_config = TrailingStopConfig(
+            breakeven_trigger_pct=breakeven_trigger_pct,
+            trail_trigger_pct=trail_trigger_pct,
+            trail_distance_pct=trail_distance_pct,
+        )
         self._active_states: dict[int, TrailingStopState] = {}
 
     def start_monitoring(self, trade: TradeRecord) -> None:
@@ -61,9 +102,31 @@ class ExitMonitor:
             original_sl=trade.stop_loss,
             current_sl=trade.stop_loss,
             highest_price=trade.entry_price,
+            strategy=getattr(trade, "strategy", "gap_go"),
         )
         self._active_states[trade.id] = state
         logger.info("Started monitoring trade %d (%s)", trade.id, trade.symbol)
+
+    def _get_config_for_trade(self, trade: TradeRecord) -> TrailingStopConfig:
+        """Look up trailing stop config by trade strategy and setup type."""
+        if self._trailing_configs is None:
+            # No per-strategy configs provided; use constructor-level params
+            return self._fallback_config
+
+        strategy = getattr(trade, "strategy", "gap_go")
+        # Try strategy:setup_type key first (for VWAP sub-types)
+        setup_type = getattr(trade, "setup_type", None)
+        if setup_type:
+            key = f"{strategy}:{setup_type}"
+            config = self._trailing_configs.get(key)
+            if config:
+                return config
+        # Fall back to strategy key
+        config = self._trailing_configs.get(strategy)
+        if config:
+            return config
+        # Default to constructor-level params
+        return self._fallback_config
 
     def stop_monitoring(self, trade_id: int) -> None:
         """Stop monitoring a trade and clean up its state."""
@@ -147,19 +210,25 @@ class ExitMonitor:
         state: TrailingStopState,
         current_price: float,
     ) -> ExitAlert | None:
-        """Update trailing stop loss based on current price.
+        """Update trailing stop loss based on current price using per-strategy config.
 
         - At +breakeven_trigger_pct above entry: SL moves to entry (breakeven)
         - At +trail_trigger_pct above entry: SL trails at trail_distance below current
         - Trailing SL never moves down
+        - If trail_trigger_pct is None, only breakeven is applied (no trailing)
         """
+        config = self._get_config_for_trade(trade)
         move_pct = self._calc_pnl_pct(trade.entry_price, current_price)
 
         # Trailing logic (check first since it supersedes breakeven)
-        if move_pct >= self._trail_trigger_pct:
-            # Breakeven is implied once we reach trail trigger
+        if (
+            config.trail_trigger_pct is not None
+            and config.trail_distance_pct is not None
+            and move_pct >= config.trail_trigger_pct
+        ):
             state.breakeven_triggered = True
-            new_sl = current_price * self._trail_factor
+            trail_factor = 1.0 - config.trail_distance_pct / 100.0
+            new_sl = current_price * trail_factor
             if new_sl > state.current_sl:
                 state.current_sl = new_sl
                 state.trailing_active = True
@@ -177,7 +246,7 @@ class ExitMonitor:
                 )
 
         # Breakeven logic
-        elif move_pct >= self._breakeven_trigger_pct and not state.breakeven_triggered:
+        elif move_pct >= config.breakeven_trigger_pct and not state.breakeven_triggered:
             state.current_sl = trade.entry_price
             state.breakeven_triggered = True
             logger.info(

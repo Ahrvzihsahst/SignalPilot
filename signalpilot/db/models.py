@@ -37,6 +37,8 @@ __all__ = [
     # Performance
     "PerformanceMetrics",
     "DailySummary",
+    "StrategyDaySummary",
+    "StrategyPerformanceRecord",
 ]
 
 
@@ -131,11 +133,13 @@ class CandidateSignal:
     stop_loss: float
     target_1: float
     target_2: float
-    gap_pct: float
-    volume_ratio: float
-    price_distance_from_open_pct: float
-    reason: str
-    generated_at: datetime
+    gap_pct: float = 0.0
+    volume_ratio: float = 0.0
+    price_distance_from_open_pct: float = 0.0
+    reason: str = ""
+    generated_at: datetime = field(default_factory=datetime.now)
+    setup_type: str | None = None
+    strategy_specific_score: float | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -211,7 +215,9 @@ class SignalRecord:
     reason: str = ""
     created_at: datetime | None = None
     expires_at: datetime | None = None
-    status: str = "sent"        # "sent" | "taken" | "expired"
+    status: str = "sent"        # "sent" | "taken" | "expired" | "paper" | "position_full"
+    setup_type: str | None = None
+    strategy_specific_score: float | None = None
 
 
 @dataclass
@@ -222,6 +228,7 @@ class TradeRecord:
     signal_id: int = 0
     date: date = field(default_factory=date.today)
     symbol: str = ""
+    strategy: str = "gap_go"
     entry_price: float = 0.0
     exit_price: float | None = None
     stop_loss: float = 0.0
@@ -242,7 +249,10 @@ class UserConfig:
     id: int | None = None
     telegram_chat_id: str = ""
     total_capital: float = 50000.0
-    max_positions: int = 5
+    max_positions: int = 8
+    gap_go_enabled: bool = True
+    orb_enabled: bool = True
+    vwap_enabled: bool = True
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
@@ -302,3 +312,33 @@ class DailySummary:
     total_pnl: float
     cumulative_pnl: float
     trades: list[TradeRecord] = field(default_factory=list)
+    strategy_breakdown: dict[str, "StrategyDaySummary"] | None = None
+
+
+@dataclass
+class StrategyDaySummary:
+    """Per-strategy breakdown within a daily summary."""
+
+    strategy_name: str
+    signals_generated: int
+    signals_taken: int
+    pnl: float
+
+
+@dataclass
+class StrategyPerformanceRecord:
+    """Aggregated strategy performance record for a single date."""
+
+    id: int | None = None
+    strategy: str = ""
+    date: str = ""
+    signals_generated: int = 0
+    signals_taken: int = 0
+    wins: int = 0
+    losses: int = 0
+    total_pnl: float = 0.0
+    win_rate: float = 0.0
+    avg_win: float = 0.0
+    avg_loss: float = 0.0
+    expectancy: float = 0.0
+    capital_weight_pct: float = 0.0

@@ -46,6 +46,16 @@ class MarketScheduler:
             )
             logger.info("Registered job %s at %02d:%02d IST", job_id, hour, minute)
 
+        # Weekly capital rebalancing — Sunday 18:00 IST (before next trading week)
+        if hasattr(app, "run_weekly_rebalance"):
+            self._scheduler.add_job(
+                app.run_weekly_rebalance,
+                CronTrigger(day_of_week="sun", hour=18, minute=0, timezone=IST),
+                id="weekly_rebalance",
+                replace_existing=True,
+            )
+            logger.info("Registered job weekly_rebalance on Sundays at 18:00 IST")
+
     def start(self) -> None:
         """Start the scheduler."""
         self._scheduler.start()

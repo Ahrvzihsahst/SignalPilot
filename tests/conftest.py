@@ -11,7 +11,9 @@ from pathlib import Path
 import pytest
 
 from signalpilot.config import AppConfig
+from signalpilot.db.config_repo import ConfigRepository
 from signalpilot.db.database import DatabaseManager
+from signalpilot.db.metrics import MetricsCalculator
 from signalpilot.db.models import (
     CandidateSignal,
     FinalSignal,
@@ -24,8 +26,6 @@ from signalpilot.db.models import (
 )
 from signalpilot.db.signal_repo import SignalRepository
 from signalpilot.db.trade_repo import TradeRepository
-from signalpilot.db.config_repo import ConfigRepository
-from signalpilot.db.metrics import MetricsCalculator
 from signalpilot.utils.constants import IST
 
 TEST_DATA_DIR = Path(__file__).parent / "test_data"
@@ -311,3 +311,64 @@ def load_test_data(filename: str) -> dict | list:
         )
     with open(path) as f:
         return json.load(f)
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 Sample Signal Objects
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def sample_orb_candidate():
+    """A valid ORB CandidateSignal with breakout data."""
+    return CandidateSignal(
+        symbol="TCS",
+        direction=SignalDirection.BUY,
+        strategy_name="ORB",
+        entry_price=3550.0,
+        stop_loss=3500.0,
+        target_1=3603.25,
+        target_2=3638.75,
+        gap_pct=0.0,
+        volume_ratio=2.0,
+        reason="ORB breakout: range 3500-3550, volume 2.0x",
+        generated_at=datetime(2025, 1, 15, 10, 0, tzinfo=IST),
+    )
+
+
+@pytest.fixture
+def sample_vwap_candidate():
+    """A VWAP Uptrend Pullback CandidateSignal."""
+    return CandidateSignal(
+        symbol="RELIANCE",
+        direction=SignalDirection.BUY,
+        strategy_name="VWAP Reversal",
+        entry_price=2520.0,
+        stop_loss=2507.4,
+        target_1=2545.2,
+        target_2=2557.8,
+        gap_pct=0.0,
+        volume_ratio=1.5,
+        reason="VWAP Reversal: uptrend pullback to VWAP",
+        generated_at=datetime(2025, 1, 15, 10, 30, tzinfo=IST),
+        setup_type="uptrend_pullback",
+    )
+
+
+@pytest.fixture
+def sample_vwap_reclaim_candidate():
+    """A VWAP Reclaim CandidateSignal (Higher Risk)."""
+    return CandidateSignal(
+        symbol="INFY",
+        direction=SignalDirection.BUY,
+        strategy_name="VWAP Reversal",
+        entry_price=1510.0,
+        stop_loss=1495.0,
+        target_1=1525.1,
+        target_2=1532.65,
+        gap_pct=0.0,
+        volume_ratio=1.8,
+        reason="VWAP Reversal: reclaim (Higher Risk)",
+        generated_at=datetime(2025, 1, 15, 11, 0, tzinfo=IST),
+        setup_type="vwap_reclaim",
+    )

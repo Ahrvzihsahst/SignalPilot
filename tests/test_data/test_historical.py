@@ -1,6 +1,6 @@
 """Tests for HistoricalDataFetcher."""
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pandas as pd
 import pytest

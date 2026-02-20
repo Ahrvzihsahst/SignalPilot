@@ -8,13 +8,18 @@ import asyncio
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
-
 from signalpilot.scheduler.lifecycle import SignalPilotApp
 from signalpilot.utils.constants import IST
 from signalpilot.utils.market_calendar import StrategyPhase
+from tests.test_integration.conftest import make_final_signal
 
-from tests.test_integration.conftest import make_final_signal, make_signal_record
+
+def _make_mock_strategy(evaluate_return=None, active_phases=None, name="Gap & Go"):
+    """Create a mock strategy with required attributes for the scan loop."""
+    mock = AsyncMock(evaluate=AsyncMock(return_value=evaluate_return or []))
+    mock.name = name
+    mock.active_phases = active_phases or [StrategyPhase.OPENING, StrategyPhase.ENTRY_WINDOW]
+    return mock
 
 
 async def test_valid_signal_stored_and_sent(db, repos):
@@ -25,7 +30,7 @@ async def test_valid_signal_stored_and_sent(db, repos):
     signal = make_final_signal(generated_at=now)
 
     mock_bot = AsyncMock()
-    mock_strategy = AsyncMock(evaluate=AsyncMock(return_value=["candidate"]))
+    mock_strategy = _make_mock_strategy(evaluate_return=["candidate"])
     mock_ranker = MagicMock(rank=MagicMock(return_value=["ranked"]))
     mock_risk = MagicMock(filter_and_size=MagicMock(return_value=[signal]))
 
@@ -46,7 +51,7 @@ async def test_valid_signal_stored_and_sent(db, repos):
         strategy=mock_strategy,
         ranker=mock_ranker,
         risk_manager=mock_risk,
-        exit_monitor=MagicMock(check_all_trades=AsyncMock()),
+        exit_monitor=MagicMock(check_trade=AsyncMock()),
         bot=mock_bot,
         scheduler=MagicMock(),
     )
@@ -74,12 +79,12 @@ async def test_valid_signal_stored_and_sent(db, repos):
     assert signals[0].status == "sent"
 
     # Verify bot was called
-    mock_bot.send_signal.assert_awaited_once_with(signal)
+    mock_bot.send_signal.assert_awaited_once_with(signal, is_paper=False)
 
 
 async def test_no_candidates_no_signal(db, repos):
     """Strategy returns empty list. Verify no signals in DB."""
-    mock_strategy = AsyncMock(evaluate=AsyncMock(return_value=[]))
+    mock_strategy = _make_mock_strategy(evaluate_return=[])
     await repos["config_repo"].initialize_default("123")
 
     app = SignalPilotApp(
@@ -96,7 +101,7 @@ async def test_no_candidates_no_signal(db, repos):
         strategy=mock_strategy,
         ranker=MagicMock(),
         risk_manager=MagicMock(),
-        exit_monitor=MagicMock(check_all_trades=AsyncMock()),
+        exit_monitor=MagicMock(check_trade=AsyncMock()),
         bot=AsyncMock(),
         scheduler=MagicMock(),
     )
@@ -129,7 +134,7 @@ async def test_multiple_signals_all_stored(db, repos):
     ]
 
     mock_bot = AsyncMock()
-    mock_strategy = AsyncMock(evaluate=AsyncMock(return_value=["c1", "c2", "c3"]))
+    mock_strategy = _make_mock_strategy(evaluate_return=["c1", "c2", "c3"])
     mock_ranker = MagicMock(rank=MagicMock(return_value=["r1", "r2", "r3"]))
     mock_risk = MagicMock(filter_and_size=MagicMock(return_value=final_signals))
 
@@ -149,7 +154,7 @@ async def test_multiple_signals_all_stored(db, repos):
         strategy=mock_strategy,
         ranker=mock_ranker,
         risk_manager=mock_risk,
-        exit_monitor=MagicMock(check_all_trades=AsyncMock()),
+        exit_monitor=MagicMock(check_trade=AsyncMock()),
         bot=mock_bot,
         scheduler=MagicMock(),
     )
@@ -177,9 +182,14 @@ async def test_multiple_signals_all_stored(db, repos):
     assert mock_bot.send_signal.await_count == 3
 
 
-async def test_signal_not_generated_during_continuous(db, repos):
-    """Strategy returns candidates but phase is CONTINUOUS. No signals generated."""
-    mock_strategy = AsyncMock(evaluate=AsyncMock(return_value=["candidate"]))
+async def test_signal_not_generated_outside_active_phases(db, repos):
+    """Strategy whose active_phases don't include CONTINUOUS is not evaluated
+    during CONTINUOUS phase."""
+    # Strategy only active during OPENING/ENTRY_WINDOW
+    mock_strategy = _make_mock_strategy(
+        evaluate_return=["candidate"],
+        active_phases=[StrategyPhase.OPENING, StrategyPhase.ENTRY_WINDOW],
+    )
     await repos["config_repo"].initialize_default("123")
 
     app = SignalPilotApp(
@@ -196,7 +206,7 @@ async def test_signal_not_generated_during_continuous(db, repos):
         strategy=mock_strategy,
         ranker=MagicMock(),
         risk_manager=MagicMock(),
-        exit_monitor=MagicMock(check_all_trades=AsyncMock()),
+        exit_monitor=MagicMock(check_trade=AsyncMock()),
         bot=AsyncMock(),
         scheduler=MagicMock(),
     )
@@ -215,5 +225,5 @@ async def test_signal_not_generated_during_continuous(db, repos):
         app._accepting_signals = True
         await app._scan_loop()
 
-    # Strategy should not even be called during CONTINUOUS phase
+    # Strategy should not be called since CONTINUOUS is not in its active_phases
     mock_strategy.evaluate.assert_not_awaited()

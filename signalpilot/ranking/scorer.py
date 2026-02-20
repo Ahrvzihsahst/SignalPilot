@@ -1,25 +1,51 @@
 """Multi-factor composite scoring for candidate signals."""
 
 from signalpilot.db.models import CandidateSignal, ScoringWeights
+from signalpilot.ranking.orb_scorer import ORBScorer
+from signalpilot.ranking.vwap_scorer import VWAPScorer
 
 
 class SignalScorer:
     """Calculates composite scores for candidate signals.
 
-    Each factor (gap %, volume ratio, price distance from open) is normalized
-    to 0.0-1.0 and then weighted according to ``ScoringWeights``.
+    Dispatches to strategy-specific scorers for ORB and VWAP signals.
+    Falls back to the default Gap & Go scoring for unrecognized strategies.
     """
 
-    def __init__(self, weights: ScoringWeights) -> None:
+    def __init__(
+        self,
+        weights: ScoringWeights,
+        orb_scorer: ORBScorer | None = None,
+        vwap_scorer: VWAPScorer | None = None,
+    ) -> None:
         self._weights = weights
+        self._orb_scorer = orb_scorer
+        self._vwap_scorer = vwap_scorer
 
     def score(self, signal: CandidateSignal) -> float:
         """Compute a composite score in [0.0, 1.0] for a candidate signal.
 
-        composite = (norm_gap * gap_weight) +
-                    (norm_volume * volume_weight) +
-                    (norm_price_distance * price_distance_weight)
+        Dispatches based on strategy_name:
+        - "ORB" -> ORBScorer
+        - "VWAP Reversal" -> VWAPScorer
+        - default -> Gap & Go scoring
         """
+        if signal.strategy_name == "ORB" and self._orb_scorer is not None:
+            return self._orb_scorer.score(
+                volume_ratio=signal.volume_ratio,
+                range_size_pct=signal.gap_pct,  # reused for range size
+                distance_from_breakout_pct=signal.price_distance_from_open_pct,
+            )
+        if signal.strategy_name == "VWAP Reversal" and self._vwap_scorer is not None:
+            return self._vwap_scorer.score(
+                volume_ratio=signal.volume_ratio,
+                vwap_touch_pct=signal.price_distance_from_open_pct,
+                candles_above_vwap_ratio=signal.gap_pct,  # reused for trend ratio
+            )
+        return self._score_gap_and_go(signal)
+
+    def _score_gap_and_go(self, signal: CandidateSignal) -> float:
+        """Default Gap & Go scoring."""
         norm_gap = self._normalize_gap(signal.gap_pct)
         norm_vol = self._normalize_volume_ratio(signal.volume_ratio)
         norm_dist = self._normalize_price_distance(signal.price_distance_from_open_pct)

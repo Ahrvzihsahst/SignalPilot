@@ -24,5 +24,10 @@ DAILY_SUMMARY = time(15, 30)
 APP_SHUTDOWN = time(15, 35)
 APP_AUTO_START = time(8, 50)
 
+# Phase 2 time constants
+ORB_WINDOW_END = time(11, 0)
+VWAP_SCAN_START = time(10, 0)
+OPENING_RANGE_LOCK = time(9, 45)
+
 # Signal management (static, non-configurable)
-MAX_SIGNALS_PER_BATCH = 5
+MAX_SIGNALS_PER_BATCH = 8

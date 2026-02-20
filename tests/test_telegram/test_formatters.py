@@ -17,11 +17,13 @@ from signalpilot.db.models import (
     TradeRecord,
 )
 from signalpilot.telegram.formatters import (
+    format_allocation_summary,
     format_daily_summary,
     format_exit_alert,
     format_journal_message,
     format_signal_message,
     format_status_message,
+    format_strategy_report,
     star_rating,
 )
 from signalpilot.utils.constants import IST
@@ -330,3 +332,201 @@ def test_daily_summary_with_trades() -> None:
     assert "+5,000" in msg
     assert "SBIN" in msg
     assert "t1_hit" in msg
+
+
+# =========================================================================
+# Phase 2: format_signal_message — strategy variants
+# =========================================================================
+
+
+def test_signal_message_orb_strategy() -> None:
+    """format_signal_message with ORB strategy shows 'ORB' in Strategy field."""
+    signal = _make_final_signal(strategy_name="ORB")
+    msg = format_signal_message(signal)
+    assert "Strategy: ORB" in msg
+
+
+def test_signal_message_vwap_reversal_with_setup_type() -> None:
+    """VWAP Reversal + setup_type shows 'VWAP Reversal (Uptrend Pullback)'."""
+    signal = _make_final_signal(strategy_name="VWAP Reversal")
+    signal.ranked_signal.candidate.setup_type = "uptrend_pullback"
+    msg = format_signal_message(signal)
+    assert "Strategy: VWAP Reversal (Uptrend Pullback)" in msg
+
+
+def test_signal_message_vwap_reclaim_shows_higher_risk() -> None:
+    """VWAP Reversal with setup_type='vwap_reclaim' shows 'Higher Risk' warning."""
+    signal = _make_final_signal(strategy_name="VWAP Reversal")
+    signal.ranked_signal.candidate.setup_type = "vwap_reclaim"
+    msg = format_signal_message(signal)
+    assert "Higher Risk" in msg
+
+
+def test_signal_message_paper_trade_prefix() -> None:
+    """format_signal_message with is_paper=True shows 'PAPER TRADE' prefix."""
+    signal = _make_final_signal()
+    msg = format_signal_message(signal, is_paper=True)
+    assert "PAPER TRADE" in msg
+    # Prefix should appear before the signal header
+    paper_idx = msg.index("PAPER TRADE")
+    signal_idx = msg.index("SIGNAL")
+    assert paper_idx < signal_idx
+
+
+def test_signal_message_positions_format() -> None:
+    """format_signal_message shows 'Positions open: 3/8' format."""
+    signal = _make_final_signal()
+    msg = format_signal_message(signal, active_count=3, max_positions=8)
+    assert "Positions open: 3/8" in msg
+
+
+# =========================================================================
+# Phase 2: format_daily_summary — strategy breakdown
+# =========================================================================
+
+
+def test_daily_summary_with_strategy_breakdown() -> None:
+    """format_daily_summary with strategy_breakdown shows BY STRATEGY section."""
+    from signalpilot.db.models import StrategyDaySummary
+
+    summary = DailySummary(
+        date=date(2025, 1, 6),
+        signals_sent=10,
+        trades_taken=6,
+        wins=4,
+        losses=2,
+        total_pnl=2500.0,
+        cumulative_pnl=8000.0,
+        strategy_breakdown={
+            "Gap & Go": StrategyDaySummary(
+                strategy_name="Gap & Go",
+                signals_generated=4,
+                signals_taken=3,
+                pnl=1500.0,
+            ),
+            "ORB": StrategyDaySummary(
+                strategy_name="ORB",
+                signals_generated=3,
+                signals_taken=2,
+                pnl=800.0,
+            ),
+            "VWAP Reversal": StrategyDaySummary(
+                strategy_name="VWAP Reversal",
+                signals_generated=3,
+                signals_taken=1,
+                pnl=200.0,
+            ),
+        },
+    )
+    msg = format_daily_summary(summary)
+    assert "BY STRATEGY" in msg
+    assert "Gap & Go" in msg
+    assert "ORB" in msg
+    assert "VWAP Reversal" in msg
+    assert "4 signals" in msg
+    assert "+1,500" in msg
+    assert "+800" in msg
+
+
+# =========================================================================
+# Phase 2: format_strategy_report
+# =========================================================================
+
+
+def test_format_strategy_report_with_records() -> None:
+    """format_strategy_report with records returns formatted report."""
+    from signalpilot.db.models import StrategyPerformanceRecord
+
+    records = [
+        StrategyPerformanceRecord(
+            strategy="Gap & Go",
+            date="2025-01-06",
+            signals_generated=5,
+            signals_taken=3,
+            wins=2,
+            losses=1,
+            total_pnl=1500.0,
+            win_rate=66.7,
+            avg_win=900.0,
+            avg_loss=-300.0,
+            capital_weight_pct=40.0,
+        ),
+        StrategyPerformanceRecord(
+            strategy="ORB",
+            date="2025-01-06",
+            signals_generated=3,
+            signals_taken=2,
+            wins=1,
+            losses=1,
+            total_pnl=200.0,
+            win_rate=50.0,
+            avg_win=500.0,
+            avg_loss=-300.0,
+            capital_weight_pct=20.0,
+        ),
+    ]
+    msg = format_strategy_report(records)
+    assert "Strategy Performance (30-day)" in msg
+    assert "Gap & Go" in msg
+    assert "ORB" in msg
+    assert "Win Rate" in msg
+    assert "Net P&L" in msg
+    assert "Allocation: 40%" in msg
+    assert "Allocation: 20%" in msg
+
+
+def test_format_strategy_report_empty_records() -> None:
+    """format_strategy_report with empty records returns 'No data' message."""
+    msg = format_strategy_report([])
+    assert "No strategy performance data available" in msg
+
+
+def test_format_strategy_report_none_records() -> None:
+    """format_strategy_report with None returns 'No data' message."""
+    msg = format_strategy_report(None)
+    assert "No strategy performance data available" in msg
+
+
+# =========================================================================
+# Phase 2: format_allocation_summary
+# =========================================================================
+
+
+def test_format_allocation_summary() -> None:
+    """format_allocation_summary formats correctly with all strategies."""
+    from dataclasses import dataclass as _dc
+
+    @_dc
+    class AllocResult:
+        strategy_name: str
+        weight_pct: float
+        allocated_capital: float
+        max_positions: int
+
+    allocations = {
+        "Gap & Go": AllocResult(
+            strategy_name="Gap & Go",
+            weight_pct=40.0,
+            allocated_capital=40_000.0,
+            max_positions=3,
+        ),
+        "ORB": AllocResult(
+            strategy_name="ORB",
+            weight_pct=20.0,
+            allocated_capital=20_000.0,
+            max_positions=2,
+        ),
+        "VWAP Reversal": AllocResult(
+            strategy_name="VWAP Reversal",
+            weight_pct=20.0,
+            allocated_capital=20_000.0,
+            max_positions=2,
+        ),
+    }
+    msg = format_allocation_summary(allocations)
+    assert "Weekly Capital Rebalancing" in msg
+    assert "Gap & Go: 40%" in msg
+    assert "ORB: 20%" in msg
+    assert "VWAP Reversal: 20%" in msg
+    assert "40,000" in msg
+    assert "Reserve: 20%" in msg

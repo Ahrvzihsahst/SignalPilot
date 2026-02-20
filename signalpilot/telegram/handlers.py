@@ -7,7 +7,7 @@ without depending on python-telegram-bot's Update/Context objects.
 
 import logging
 import re
-from datetime import date, datetime
+from datetime import datetime
 
 from signalpilot.db.models import SignalRecord, TradeRecord
 from signalpilot.telegram.formatters import (
@@ -119,6 +119,128 @@ async def handle_capital(config_repo, text: str, max_positions: int = 5) -> str:
     return f"Capital updated to {amount:,.0f}. Per-trade allocation is now {per_trade:,.0f}."
 
 
+_STRATEGY_MAP = {
+    "GAP": ("gap_go_enabled", "Gap & Go"),
+    "ORB": ("orb_enabled", "ORB"),
+    "VWAP": ("vwap_enabled", "VWAP Reversal"),
+}
+
+_PAUSE_PATTERN = re.compile(r"(?i)^pause\s+(\w+)$")
+_RESUME_PATTERN = re.compile(r"(?i)^resume\s+(\w+)$")
+_ALLOCATE_PATTERN = re.compile(r"(?i)^allocate\s+(.*)")
+
+
+async def handle_pause(config_repo, text: str) -> str:
+    """Process the PAUSE command."""
+    match = _PAUSE_PATTERN.match(text.strip())
+    if not match:
+        return "Usage: PAUSE GAP | PAUSE ORB | PAUSE VWAP"
+
+    key = match.group(1).upper()
+    if key not in _STRATEGY_MAP:
+        return f"Unknown strategy: {key}. Use GAP, ORB, or VWAP."
+
+    field, name = _STRATEGY_MAP[key]
+    current = await config_repo.get_strategy_enabled(field)
+    if not current:
+        return f"{name} is already paused."
+
+    await config_repo.set_strategy_enabled(field, False)
+    logger.info("Strategy paused: %s", name)
+    return f"{name} paused. No signals will be generated from this strategy."
+
+
+async def handle_resume(config_repo, text: str) -> str:
+    """Process the RESUME command."""
+    match = _RESUME_PATTERN.match(text.strip())
+    if not match:
+        return "Usage: RESUME GAP | RESUME ORB | RESUME VWAP"
+
+    key = match.group(1).upper()
+    if key not in _STRATEGY_MAP:
+        return f"Unknown strategy: {key}. Use GAP, ORB, or VWAP."
+
+    field, name = _STRATEGY_MAP[key]
+    current = await config_repo.get_strategy_enabled(field)
+    if current:
+        return f"{name} is already active."
+
+    await config_repo.set_strategy_enabled(field, True)
+    logger.info("Strategy resumed: %s", name)
+    return f"{name} resumed. Signals will be generated when conditions are met."
+
+
+async def handle_allocate(capital_allocator, config_repo, text: str) -> str:
+    """Process the ALLOCATE command."""
+    stripped = text.strip()
+
+    if re.match(r"(?i)^allocate$", stripped):
+        # Show current allocation
+        if capital_allocator is None:
+            return "Capital allocator not configured."
+        config = await config_repo.get_user_config()
+        if config is None:
+            return "No user config found."
+        today = datetime.now(IST).date()
+        allocs = await capital_allocator.calculate_allocations(
+            config.total_capital, config.max_positions, today
+        )
+        lines = ["<b>Current Allocation</b>"]
+        for name, alloc in allocs.items():
+            lines.append(
+                f"  {alloc.strategy_name}: {alloc.weight_pct:.0f}% | "
+                f"{alloc.allocated_capital:,.0f} | {alloc.max_positions} positions"
+            )
+        lines.append("  Reserve: 20% buffer for exceptional signals")
+        return "\n".join(lines)
+
+    if re.match(r"(?i)^allocate\s+auto$", stripped):
+        if capital_allocator is None:
+            return "Capital allocator not configured."
+        capital_allocator.enable_auto_allocation()
+        return "Auto allocation re-enabled. Weights will recalculate weekly."
+
+    # Manual allocation: ALLOCATE GAP 40 ORB 20 VWAP 20
+    match = _ALLOCATE_PATTERN.match(stripped)
+    if match and capital_allocator is not None:
+        parts = match.group(1).upper().split()
+        weights: dict[str, float] = {}
+        i = 0
+        while i < len(parts) - 1:
+            key = parts[i]
+            try:
+                pct = float(parts[i + 1])
+            except (ValueError, IndexError):
+                return "Usage: ALLOCATE GAP 40 ORB 20 VWAP 20"
+            if key in _STRATEGY_MAP:
+                _, name = _STRATEGY_MAP[key]
+                weights[name] = pct / 100
+            i += 2
+
+        total_pct = sum(weights.values()) * 100
+        if total_pct > 80:
+            return f"Total allocation ({total_pct:.0f}%) exceeds 80% limit. 20% must be reserved."
+
+        capital_allocator.set_manual_allocation(weights)
+        return f"Manual allocation set. Total: {total_pct:.0f}% (20% reserve)."
+
+    return "Usage: ALLOCATE | ALLOCATE AUTO | ALLOCATE GAP 40 ORB 20 VWAP 20"
+
+
+async def handle_strategy(strategy_performance_repo) -> str:
+    """Process the STRATEGY command — show per-strategy performance."""
+    if strategy_performance_repo is None:
+        return "Strategy performance tracking not configured."
+
+    today = datetime.now(IST).date()
+    from datetime import timedelta
+    start = today - timedelta(days=30)
+
+    from signalpilot.telegram.formatters import format_strategy_report
+    records = await strategy_performance_repo.get_by_date_range(start, today)
+    return format_strategy_report(records)
+
+
 async def handle_help() -> str:
     """Process the HELP command.
 
@@ -131,5 +253,9 @@ async def handle_help() -> str:
         "<b>STATUS</b> - View active signals and open trades\n"
         "<b>JOURNAL</b> - View trading performance summary\n"
         "<b>CAPITAL &lt;amount&gt;</b> - Update trading capital\n"
+        "<b>PAUSE &lt;strategy&gt;</b> - Pause a strategy (GAP/ORB/VWAP)\n"
+        "<b>RESUME &lt;strategy&gt;</b> - Resume a strategy\n"
+        "<b>ALLOCATE</b> - View/set capital allocation\n"
+        "<b>STRATEGY</b> - View per-strategy performance\n"
         "<b>HELP</b> - Show this help message"
     )

@@ -12,7 +12,7 @@ SignalPilot is an intraday signal generation tool for Indian equity markets (NSE
 # Install (uses pip + setuptools)
 pip install -e ".[dev]"
 
-# Run all tests (246 tests, ~0.5s)
+# Run all tests (456 tests, ~1s)
 pytest tests/
 
 # Run a single test file
@@ -49,7 +49,7 @@ Data Engine (Angel One WebSocket + yfinance fallback)
 
 ### Orchestration
 
-`SignalPilotApp` (`signalpilot/scheduler/lifecycle.py`) is the central orchestrator. All 16 components are **dependency-injected** as keyword-only constructor parameters. This enables duck-typing — components on separate branches can be mocked in tests.
+`SignalPilotApp` (`signalpilot/scheduler/lifecycle.py`) is the central orchestrator. All 16 components are **dependency-injected** as keyword-only constructor parameters. This enables duck-typing and easy mocking in tests. The exit monitor receives active trades explicitly via `TradeRepository.get_active_trades()` rather than maintaining internal state.
 
 `MarketScheduler` (`signalpilot/scheduler/scheduler.py`) wraps APScheduler 3.x with 7 IST cron jobs: pre-market alert (9:00), start scanning (9:15), stop signals (14:30), exit reminder (15:00), mandatory exit (15:15), daily summary (15:30), shutdown (15:35).
 
@@ -71,6 +71,14 @@ Signal status lifecycle: `"sent"` → `"taken"` (via TAKEN command) or `"expired
 
 All inter-component contracts are Python `dataclasses` in `signalpilot/db/models.py`. Key chain: `CandidateSignal` → `RankedSignal` → `FinalSignal` → `SignalRecord` (persisted).
 
+### Logging
+
+Structured logging with async context injection via `contextvars`. `SignalPilotFormatter` (`signalpilot/utils/logger.py`) injects `cycle_id`, `phase`, `symbol`, `job_name`, and `command` fields into every log record. Context is set/reset via `set_context()`/`reset_context()` helpers or the `log_context()` async context manager in `signalpilot/utils/log_context.py`. Logs rotate daily (7-day retention) via `TimedRotatingFileHandler`.
+
+### Rate Limiting
+
+`TokenBucketRateLimiter` (`signalpilot/utils/rate_limiter.py`) enforces per-second and optional per-minute caps for external API calls (primarily Angel One historical data API). Used in `signalpilot/data/historical.py`.
+
 ### Configuration
 
 `AppConfig` (`signalpilot/config.py`) uses `pydantic-settings` to load from `.env` and environment variables. All strategy parameters (gap thresholds, volume thresholds, targets, scoring weights, trailing SL, retry counts) are configurable.
@@ -87,12 +95,23 @@ All inter-component contracts are Python `dataclasses` in `signalpilot/db/models
 - **Timezone**: Always use `datetime.now(IST)` (from `signalpilot/utils/constants.py`), never naive `datetime.now()` or `date.today()`
 - **Async-first**: Database operations, API calls, bot interactions are all async
 - **Retry decorator**: `@with_retry()` from `signalpilot/utils/retry.py` for external API calls
+- **Rate limiting**: Use `TokenBucketRateLimiter` from `signalpilot/utils/rate_limiter.py` for external API throttling
+- **Structured logging**: Use `set_context()`/`reset_context()` from `signalpilot/utils/log_context.py` to annotate log records with async-safe context
 - **IST constant**: `IST = ZoneInfo("Asia/Kolkata")` in `signalpilot/utils/constants.py`
 
 ## Branch Strategy
 
-Each implementation task gets a feature branch: `feat/0001-project-scaffolding`, `feat/0002-data-models`, etc. Tasks 0004-0012 diverge independently from task 0003 (database layer) and have not been merged to main. Components on other branches are duck-typed and mocked in tests.
+All feature branches (`feat/0001` through `feat/0012`) have been merged into `main`. New work uses descriptive branches (e.g., `fix/rate-limit-historical-api`) merged back into `main` when complete.
 
 ## Spec System
 
-Task specifications live in `.kiro/specs/signalpilot/tasks/` (files `0001-*` through `0012-*`). Each file has subtasks with checkboxes and requirement coverage mappings. The design document (`.kiro/specs/signalpilot/design.md`) and requirements (`.kiro/specs/signalpilot/requirements.md`) are the authoritative references.
+Specs are organized by phase under `.kiro/specs/signalpilot/`:
+
+- **Phase 1 (Gap & Go — complete):** `.kiro/specs/signalpilot/phase1/`
+  - `requirements.md` — Phase 1 requirements
+  - `design.md` — Phase 1 technical design
+  - `tasks.md` — Phase 1 implementation tasks summary
+  - `tasks/0001-*` through `tasks/0012-*` — individual task specs with checkboxes and requirement coverage
+
+- **Phase 2 (ORB + VWAP Reversal — in development):** `.kiro/specs/signalpilot/phase2/`
+  - `requirements.md` — Phase 2 requirements (42 requirements, REQ-P2-001 through REQ-P2-042)

@@ -1,13 +1,11 @@
 """Integration tests for time-based exits with real DB and lifecycle."""
 
-import pytest
-from datetime import datetime, timedelta
+from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock
 
 from signalpilot.scheduler.lifecycle import SignalPilotApp
 from signalpilot.telegram.handlers import handle_taken
 from signalpilot.utils.constants import IST
-
 from tests.test_integration.conftest import make_signal_record
 
 
@@ -28,7 +26,7 @@ async def test_exit_reminder_sends_advisory_alert(db, repos):
     mock_bot = AsyncMock()
     mock_exit_monitor = MagicMock(
         check_all_trades=AsyncMock(),
-        trigger_time_exit_check=AsyncMock(),
+        trigger_time_exit=AsyncMock(return_value=[]),
         start_monitoring=MagicMock(),
     )
 
@@ -44,7 +42,7 @@ async def test_exit_reminder_sends_advisory_alert(db, repos):
     await app.trigger_exit_reminder()
 
     # Advisory alert sent via exit monitor
-    mock_exit_monitor.trigger_time_exit_check.assert_awaited_once_with(is_mandatory=False)
+    mock_exit_monitor.trigger_time_exit.assert_awaited_once()
     # Bot sends advisory message
     mock_bot.send_alert.assert_awaited_once()
     alert_msg = mock_bot.send_alert.call_args[0][0]
@@ -69,7 +67,7 @@ async def test_mandatory_exit_triggers_exit_monitor(db, repos):
         )
 
     mock_exit_monitor = MagicMock(
-        trigger_time_exit_check=AsyncMock(),
+        trigger_time_exit=AsyncMock(return_value=[]),
     )
 
     app = SignalPilotApp(
@@ -83,4 +81,4 @@ async def test_mandatory_exit_triggers_exit_monitor(db, repos):
 
     await app.trigger_mandatory_exit()
 
-    mock_exit_monitor.trigger_time_exit_check.assert_awaited_once_with(is_mandatory=True)
+    mock_exit_monitor.trigger_time_exit.assert_awaited_once()

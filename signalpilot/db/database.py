@@ -109,3 +109,73 @@ class DatabaseManager:
         """Create all tables defined in the schema."""
         await self.connection.executescript(SCHEMA_SQL)
         await self.connection.commit()
+        await self._run_phase2_migration()
+
+    async def _run_phase2_migration(self) -> None:
+        """Phase 2 idempotent migration: add new columns and tables.
+
+        Uses PRAGMA table_info() to check column existence before adding
+        since SQLite lacks ADD COLUMN IF NOT EXISTS.
+        """
+        conn = self.connection
+
+        async def _has_column(table: str, column: str) -> bool:
+            cursor = await conn.execute(f"PRAGMA table_info({table})")
+            rows = await cursor.fetchall()
+            return any(row["name"] == column for row in rows)
+
+        # signals table: add setup_type, strategy_specific_score
+        if not await _has_column("signals", "setup_type"):
+            await conn.execute("ALTER TABLE signals ADD COLUMN setup_type TEXT")
+        if not await _has_column("signals", "strategy_specific_score"):
+            await conn.execute("ALTER TABLE signals ADD COLUMN strategy_specific_score REAL")
+
+        # trades table: add strategy
+        if not await _has_column("trades", "strategy"):
+            await conn.execute(
+                "ALTER TABLE trades ADD COLUMN strategy TEXT NOT NULL DEFAULT 'gap_go'"
+            )
+
+        # user_config table: add strategy enabled flags
+        if not await _has_column("user_config", "gap_go_enabled"):
+            await conn.execute(
+                "ALTER TABLE user_config ADD COLUMN gap_go_enabled INTEGER NOT NULL DEFAULT 1"
+            )
+        if not await _has_column("user_config", "orb_enabled"):
+            await conn.execute(
+                "ALTER TABLE user_config ADD COLUMN orb_enabled INTEGER NOT NULL DEFAULT 1"
+            )
+        if not await _has_column("user_config", "vwap_enabled"):
+            await conn.execute(
+                "ALTER TABLE user_config ADD COLUMN vwap_enabled INTEGER NOT NULL DEFAULT 1"
+            )
+
+        # New tables
+        await conn.executescript("""
+            CREATE TABLE IF NOT EXISTS strategy_performance (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                strategy        TEXT    NOT NULL,
+                date            TEXT    NOT NULL,
+                signals_generated INTEGER NOT NULL DEFAULT 0,
+                signals_taken   INTEGER NOT NULL DEFAULT 0,
+                wins            INTEGER NOT NULL DEFAULT 0,
+                losses          INTEGER NOT NULL DEFAULT 0,
+                total_pnl       REAL    NOT NULL DEFAULT 0.0,
+                win_rate        REAL    NOT NULL DEFAULT 0.0,
+                avg_win         REAL    NOT NULL DEFAULT 0.0,
+                avg_loss        REAL    NOT NULL DEFAULT 0.0,
+                expectancy      REAL    NOT NULL DEFAULT 0.0,
+                capital_weight_pct REAL NOT NULL DEFAULT 0.0,
+                UNIQUE(strategy, date)
+            );
+
+            CREATE TABLE IF NOT EXISTS vwap_cooldown (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol          TEXT    NOT NULL,
+                last_signal_at  TEXT    NOT NULL,
+                signal_count_today INTEGER NOT NULL DEFAULT 0
+            );
+        """)
+
+        await conn.commit()
+        logger.info("Phase 2 migration complete")
