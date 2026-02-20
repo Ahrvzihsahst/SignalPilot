@@ -9,8 +9,13 @@ import yfinance as yf
 from signalpilot.data.auth import SmartAPIAuthenticator
 from signalpilot.data.instruments import InstrumentManager
 from signalpilot.db.models import HistoricalReference, PreviousDayData
+from signalpilot.utils.rate_limiter import TokenBucketRateLimiter
 
 logger = logging.getLogger("signalpilot.data.historical")
+
+# Angel One returns HTTP 403 (not 429) on rate limit breach.
+_RATE_LIMIT_RETRIES = 3
+_RATE_LIMIT_BASE_DELAY = 2.0
 
 
 class HistoricalDataFetcher:
@@ -24,6 +29,7 @@ class HistoricalDataFetcher:
     ) -> None:
         self._auth = authenticator
         self._instruments = instruments
+        self._limiter = TokenBucketRateLimiter(rate=rate_limit, per_minute=170)
         self._semaphore = asyncio.Semaphore(rate_limit)
 
     async def fetch_previous_day_data(self) -> dict[str, PreviousDayData]:
@@ -60,10 +66,9 @@ class HistoricalDataFetcher:
 
         # Try Angel One first
         try:
-            async with self._semaphore:
-                data = await self._fetch_from_angel_one(
-                    symbol, instrument.angel_token, days=2
-                )
+            data = await self._rate_limited_call(
+                self._fetch_from_angel_one, symbol, instrument.angel_token, days=2
+            )
             if data is not None:
                 return data
         except Exception as e:
@@ -115,10 +120,10 @@ class HistoricalDataFetcher:
 
         # Try Angel One first
         try:
-            async with self._semaphore:
-                adv = await self._fetch_adv_from_angel_one(
-                    symbol, instrument.angel_token, lookback_days
-                )
+            adv = await self._rate_limited_call(
+                self._fetch_adv_from_angel_one,
+                symbol, instrument.angel_token, lookback_days,
+            )
             if adv is not None:
                 return adv
         except Exception as e:
@@ -136,6 +141,32 @@ class HistoricalDataFetcher:
             logger.error("yfinance ADV also failed for %s: %s — excluding", symbol, e)
 
         return None
+
+    async def _rate_limited_call(self, func, *args, **kwargs):
+        """Acquire a rate-limiter token, then call *func* inside the semaphore.
+
+        Retries with exponential backoff when Angel One returns a 403
+        rate-limit error (they don't use HTTP 429).
+        """
+        for attempt in range(_RATE_LIMIT_RETRIES + 1):
+            await self._limiter.acquire()
+            try:
+                async with self._semaphore:
+                    return await func(*args, **kwargs)
+            except Exception as exc:
+                if "exceeding access rate" in str(exc).lower() or "403" in str(exc):
+                    if attempt < _RATE_LIMIT_RETRIES:
+                        delay = _RATE_LIMIT_BASE_DELAY * (2 ** attempt)
+                        logger.warning(
+                            "Rate-limited by Angel One (attempt %d/%d), "
+                            "backing off %.1fs",
+                            attempt + 1,
+                            _RATE_LIMIT_RETRIES + 1,
+                            delay,
+                        )
+                        await asyncio.sleep(delay)
+                        continue
+                raise
 
     async def _fetch_from_angel_one(
         self, symbol: str, token: str, days: int
@@ -255,11 +286,13 @@ class HistoricalDataFetcher:
     async def build_historical_references(
         self,
     ) -> dict[str, HistoricalReference]:
-        """Convenience method: fetch prev day data + ADV, build HistoricalReference map."""
-        prev_data, adv_data = await asyncio.gather(
-            self.fetch_previous_day_data(),
-            self.fetch_average_daily_volume(),
-        )
+        """Convenience method: fetch prev day data + ADV, build HistoricalReference map.
+
+        Runs sequentially (not concurrently) because both methods share
+        the same Angel One rate limit (3 req/s, 180 req/min).
+        """
+        prev_data = await self.fetch_previous_day_data()
+        adv_data = await self.fetch_average_daily_volume()
 
         refs: dict[str, HistoricalReference] = {}
         for symbol in self._instruments.symbols:
