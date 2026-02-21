@@ -1,13 +1,10 @@
 """Integration tests for signal expiry through real DB and real handlers."""
 
-import pytest
 from datetime import datetime, timedelta
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
-from signalpilot.db.models import SignalRecord
 from signalpilot.telegram.handlers import handle_taken
 from signalpilot.utils.constants import IST
-
 from tests.test_integration.conftest import make_signal_record
 
 

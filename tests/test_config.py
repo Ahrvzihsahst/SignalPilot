@@ -30,7 +30,7 @@ class TestAppConfig:
 
         # Risk management
         assert config.default_capital == 50000.0
-        assert config.default_max_positions == 5
+        assert config.default_max_positions == 8
 
         # Strategy parameters
         assert config.gap_min_pct == 3.0

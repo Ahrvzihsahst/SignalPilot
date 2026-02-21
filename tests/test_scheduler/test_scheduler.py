@@ -1,7 +1,8 @@
 """Tests for MarketScheduler."""
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 from signalpilot.scheduler.scheduler import MarketScheduler
 from signalpilot.utils.constants import IST
@@ -17,10 +18,11 @@ def _make_mock_app():
     app.trigger_mandatory_exit = AsyncMock()
     app.send_daily_summary = AsyncMock()
     app.shutdown = AsyncMock()
+    app.run_weekly_rebalance = AsyncMock()
     return app
 
 
-EXPECTED_JOBS = {
+DAILY_JOBS = {
     "pre_market_alert": (9, 0),
     "start_scanning": (9, 15),
     "stop_new_signals": (14, 30),
@@ -30,18 +32,20 @@ EXPECTED_JOBS = {
     "shutdown": (15, 35),
 }
 
+ALL_EXPECTED_JOB_IDS = set(DAILY_JOBS.keys()) | {"weekly_rebalance"}
 
-def test_all_seven_jobs_registered() -> None:
+
+def test_all_jobs_registered() -> None:
     scheduler = MarketScheduler()
     app = _make_mock_app()
     scheduler.configure_jobs(app)
 
     job_ids = {job.id for job in scheduler.jobs}
-    assert job_ids == set(EXPECTED_JOBS.keys())
-    assert len(scheduler.jobs) == 7
+    assert job_ids == ALL_EXPECTED_JOB_IDS
+    assert len(scheduler.jobs) == 8
 
 
-@pytest.mark.parametrize("job_id,expected_time", list(EXPECTED_JOBS.items()))
+@pytest.mark.parametrize("job_id,expected_time", list(DAILY_JOBS.items()))
 def test_job_trigger_times(job_id: str, expected_time: tuple[int, int]) -> None:
     scheduler = MarketScheduler()
     app = _make_mock_app()
@@ -53,6 +57,18 @@ def test_job_trigger_times(job_id: str, expected_time: tuple[int, int]) -> None:
     # CronTrigger fields: 0=year, 1=month, 2=day, 3=week, 4=day_of_week, 5=hour, 6=minute
     assert str(trigger.fields[5]) == str(hour)
     assert str(trigger.fields[6]) == str(minute)
+
+
+def test_weekly_rebalance_on_sunday() -> None:
+    scheduler = MarketScheduler()
+    app = _make_mock_app()
+    scheduler.configure_jobs(app)
+
+    job = next(j for j in scheduler.jobs if j.id == "weekly_rebalance")
+    trigger = job.trigger
+    assert str(trigger.fields[4]) == "sun"  # day_of_week
+    assert str(trigger.fields[5]) == "18"   # hour
+    assert str(trigger.fields[6]) == "0"    # minute
 
 
 def test_jobs_use_ist_timezone() -> None:
@@ -70,7 +86,7 @@ async def test_start_and_shutdown() -> None:
     app = _make_mock_app()
     scheduler.configure_jobs(app)
     scheduler.start()
-    assert len(scheduler.jobs) == 7
+    assert len(scheduler.jobs) == 8
     scheduler.shutdown()
 
 
@@ -79,7 +95,7 @@ def test_configure_without_start() -> None:
     scheduler = MarketScheduler()
     app = _make_mock_app()
     scheduler.configure_jobs(app)
-    assert len(scheduler.jobs) == 7
+    assert len(scheduler.jobs) == 8
 
 
 def test_shutdown_without_start_does_not_raise() -> None:

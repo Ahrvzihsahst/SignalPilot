@@ -12,8 +12,13 @@ logger = logging.getLogger(__name__)
 class RiskManager:
     """Applies risk filters to ranked signals before delivery."""
 
-    def __init__(self, position_sizer: PositionSizer) -> None:
+    def __init__(
+        self,
+        position_sizer: PositionSizer,
+        capital_allocator=None,
+    ) -> None:
         self._sizer = position_sizer
+        self._capital_allocator = capital_allocator
 
     def filter_and_size(
         self,

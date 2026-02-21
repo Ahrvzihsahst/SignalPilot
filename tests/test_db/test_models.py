@@ -362,7 +362,10 @@ class TestUserConfig:
         assert cfg.id is None
         assert cfg.telegram_chat_id == ""
         assert cfg.total_capital == 50000.0
-        assert cfg.max_positions == 5
+        assert cfg.max_positions == 8
+        assert cfg.gap_go_enabled is True
+        assert cfg.orb_enabled is True
+        assert cfg.vwap_enabled is True
         assert cfg.created_at is None
         assert cfg.updated_at is None
 

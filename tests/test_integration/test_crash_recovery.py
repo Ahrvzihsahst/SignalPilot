@@ -1,14 +1,12 @@
 """Integration tests for crash recovery with pre-populated DB."""
 
-import pytest
-from datetime import datetime, timedelta
+from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from signalpilot.db.models import TradeRecord
 from signalpilot.scheduler.lifecycle import SignalPilotApp
 from signalpilot.utils.constants import IST
 from signalpilot.utils.market_calendar import StrategyPhase
-
 from tests.test_integration.conftest import make_signal_record
 
 
@@ -37,7 +35,8 @@ async def test_recovery_reloads_active_trades(db, repos):
 
     mock_bot = AsyncMock()
     mock_exit_monitor = MagicMock(
-        check_all_trades=AsyncMock(),
+        check_trade=AsyncMock(),
+        trigger_time_exit=AsyncMock(return_value=[]),
         start_monitoring=MagicMock(),
     )
     mock_auth = AsyncMock()
@@ -99,11 +98,10 @@ async def test_recovery_reloads_active_trades(db, repos):
 
 async def test_recovery_during_entry_window_accepts_signals(db, repos):
     """Recovery during ENTRY_WINDOW should keep signal generation enabled."""
-    now = datetime.now(IST)
-
     mock_bot = AsyncMock()
     mock_exit_monitor = MagicMock(
-        check_all_trades=AsyncMock(),
+        check_trade=AsyncMock(),
+        trigger_time_exit=AsyncMock(return_value=[]),
         start_monitoring=MagicMock(),
     )
     mock_scheduler = MagicMock()

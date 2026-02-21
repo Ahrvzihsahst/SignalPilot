@@ -4,7 +4,7 @@ from datetime import date
 
 import aiosqlite
 
-from signalpilot.db.models import DailySummary, PerformanceMetrics, TradeRecord
+from signalpilot.db.models import DailySummary, PerformanceMetrics, StrategyDaySummary
 from signalpilot.db.trade_repo import TradeRepository
 
 
@@ -162,6 +162,8 @@ class MetricsCalculator:
         cum_row = await cum_cursor.fetchone()
         cumulative_pnl = cum_row[0] or 0.0
 
+        strategy_breakdown = await self.calculate_daily_summary_by_strategy(d)
+
         return DailySummary(
             date=d,
             signals_sent=signals_sent,
@@ -171,4 +173,53 @@ class MetricsCalculator:
             total_pnl=total_pnl,
             cumulative_pnl=cumulative_pnl,
             trades=trades,
+            strategy_breakdown=strategy_breakdown if strategy_breakdown else None,
         )
+
+    async def calculate_daily_summary_by_strategy(
+        self, d: date
+    ) -> dict[str, StrategyDaySummary]:
+        """Calculate per-strategy breakdown for a given date."""
+        # Count signals per strategy
+        sig_cursor = await self._conn.execute(
+            "SELECT strategy, COUNT(*) as cnt FROM signals WHERE date = ? GROUP BY strategy",
+            (d.isoformat(),),
+        )
+        sig_rows = await sig_cursor.fetchall()
+        signal_counts: dict[str, int] = {row["strategy"]: row["cnt"] for row in sig_rows}
+
+        # Count trades per strategy
+        trade_cursor = await self._conn.execute(
+            """
+            SELECT strategy,
+                   COUNT(*) as taken,
+                   COALESCE(SUM(CASE WHEN pnl_amount > 0 THEN pnl_amount ELSE 0 END), 0)
+                   + COALESCE(SUM(CASE WHEN pnl_amount <= 0 THEN pnl_amount ELSE 0 END), 0) as pnl
+            FROM trades WHERE date = ?
+            GROUP BY strategy
+            """,
+            (d.isoformat(),),
+        )
+        trade_rows = await trade_cursor.fetchall()
+
+        result: dict[str, StrategyDaySummary] = {}
+        strategies = set(signal_counts.keys())
+        for row in trade_rows:
+            strategies.add(row["strategy"])
+
+        for strategy in strategies:
+            signals_generated = signal_counts.get(strategy, 0)
+            # Find matching trade row
+            trade_data = next(
+                (r for r in trade_rows if r["strategy"] == strategy), None
+            )
+            signals_taken = trade_data["taken"] if trade_data else 0
+            pnl = trade_data["pnl"] if trade_data else 0.0
+            result[strategy] = StrategyDaySummary(
+                strategy_name=strategy,
+                signals_generated=signals_generated,
+                signals_taken=signals_taken,
+                pnl=pnl,
+            )
+
+        return result

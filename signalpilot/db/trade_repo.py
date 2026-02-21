@@ -20,15 +20,16 @@ class TradeRepository:
         cursor = await self._conn.execute(
             """
             INSERT INTO trades
-                (signal_id, date, symbol, entry_price, exit_price, stop_loss,
+                (signal_id, date, symbol, strategy, entry_price, exit_price, stop_loss,
                  target_1, target_2, quantity, pnl_amount, pnl_pct,
                  exit_reason, taken_at, exited_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 trade.signal_id,
                 trade.date.isoformat(),
                 trade.symbol,
+                trade.strategy,
                 trade.entry_price,
                 trade.exit_price,
                 trade.stop_loss,
@@ -114,6 +115,15 @@ class TradeRepository:
         rows = await cursor.fetchall()
         return [self._row_to_record(row) for row in rows]
 
+    async def get_trades_by_strategy(self, strategy: str) -> list[TradeRecord]:
+        """Return all trades for a given strategy."""
+        cursor = await self._conn.execute(
+            "SELECT * FROM trades WHERE strategy = ? ORDER BY taken_at",
+            (strategy,),
+        )
+        rows = await cursor.fetchall()
+        return [self._row_to_record(row) for row in rows]
+
     @staticmethod
     def _row_to_record(row: aiosqlite.Row) -> TradeRecord:
         """Convert a database row to a TradeRecord."""
@@ -122,6 +132,7 @@ class TradeRepository:
             signal_id=row["signal_id"],
             date=date.fromisoformat(row["date"]),
             symbol=row["symbol"],
+            strategy=row["strategy"] if "strategy" in row.keys() else "gap_go",
             entry_price=row["entry_price"],
             exit_price=row["exit_price"],
             stop_loss=row["stop_loss"],

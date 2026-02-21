@@ -4,8 +4,6 @@ import asyncio
 from datetime import date, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
-
 from signalpilot.db.models import (
     CandidateSignal,
     DailySummary,
@@ -21,6 +19,21 @@ from signalpilot.utils.constants import IST
 from signalpilot.utils.market_calendar import StrategyPhase
 
 
+def _make_mock_strategy(
+    evaluate_return=None,
+    active_phases=None,
+    name="Gap & Go",
+):
+    """Create a mock strategy with required attributes for the scan loop."""
+    mock = AsyncMock(evaluate=AsyncMock(return_value=evaluate_return or []))
+    mock.name = name
+    mock.active_phases = active_phases or [
+        StrategyPhase.OPENING,
+        StrategyPhase.ENTRY_WINDOW,
+    ]
+    return mock
+
+
 def _make_app(**overrides) -> SignalPilotApp:
     """Create a SignalPilotApp with all mocked dependencies."""
     defaults = {
@@ -34,12 +47,12 @@ def _make_app(**overrides) -> SignalPilotApp:
         "market_data": MagicMock(),
         "historical": AsyncMock(),
         "websocket": AsyncMock(),
-        "strategy": AsyncMock(),
+        "strategy": _make_mock_strategy(),
         "ranker": MagicMock(),
         "risk_manager": MagicMock(),
         "exit_monitor": MagicMock(
-            check_all_trades=AsyncMock(),
-            trigger_time_exit_check=AsyncMock(),
+            check_trade=AsyncMock(return_value=None),
+            trigger_time_exit=AsyncMock(return_value=[]),
             start_monitoring=MagicMock(),
         ),
         "bot": AsyncMock(),
@@ -103,9 +116,9 @@ async def test_startup_initializes_default_config() -> None:
 
 async def test_scan_loop_evaluates_strategy_during_entry_window() -> None:
     """Scan loop should evaluate strategy during OPENING/ENTRY_WINDOW phases."""
-    app = _make_app()
-    app._strategy.evaluate = AsyncMock(return_value=[])
-    app._exit_monitor.check_all_trades = AsyncMock()
+    mock_strategy = _make_mock_strategy(evaluate_return=[])
+    app = _make_app(strategy=mock_strategy)
+    app._exit_monitor.check_trade = AsyncMock()
     app._signal_repo.expire_stale_signals = AsyncMock(return_value=0)
 
     call_count = 0
@@ -126,14 +139,14 @@ async def test_scan_loop_evaluates_strategy_during_entry_window() -> None:
         app._accepting_signals = True
         await app._scan_loop()
 
-    app._strategy.evaluate.assert_awaited()
+    mock_strategy.evaluate.assert_awaited()
 
 
 async def test_scan_loop_skips_strategy_when_not_accepting() -> None:
     """Scan loop should not evaluate strategy when _accepting_signals is False."""
-    app = _make_app()
-    app._strategy.evaluate = AsyncMock(return_value=[])
-    app._exit_monitor.check_all_trades = AsyncMock()
+    mock_strategy = _make_mock_strategy(evaluate_return=[])
+    app = _make_app(strategy=mock_strategy)
+    app._exit_monitor.check_trade = AsyncMock()
     app._signal_repo.expire_stale_signals = AsyncMock(return_value=0)
 
     call_count = 0
@@ -154,14 +167,18 @@ async def test_scan_loop_skips_strategy_when_not_accepting() -> None:
         app._accepting_signals = False
         await app._scan_loop()
 
-    app._strategy.evaluate.assert_not_awaited()
+    mock_strategy.evaluate.assert_not_awaited()
 
 
-async def test_scan_loop_skips_strategy_during_continuous() -> None:
-    """Scan loop should not evaluate strategy during CONTINUOUS phase."""
-    app = _make_app()
-    app._strategy.evaluate = AsyncMock(return_value=[])
-    app._exit_monitor.check_all_trades = AsyncMock()
+async def test_scan_loop_skips_strategy_outside_active_phases() -> None:
+    """Strategy not active during CONTINUOUS should not be evaluated."""
+    # Strategy only active during OPENING/ENTRY_WINDOW (not CONTINUOUS)
+    mock_strategy = _make_mock_strategy(
+        evaluate_return=[],
+        active_phases=[StrategyPhase.OPENING, StrategyPhase.ENTRY_WINDOW],
+    )
+    app = _make_app(strategy=mock_strategy)
+    app._exit_monitor.check_trade = AsyncMock()
     app._signal_repo.expire_stale_signals = AsyncMock(return_value=0)
 
     call_count = 0
@@ -182,13 +199,15 @@ async def test_scan_loop_skips_strategy_during_continuous() -> None:
         app._accepting_signals = True
         await app._scan_loop()
 
-    app._strategy.evaluate.assert_not_awaited()
+    mock_strategy.evaluate.assert_not_awaited()
 
 
 async def test_scan_loop_always_checks_exits() -> None:
     """Exit monitor should be checked every iteration regardless of phase."""
     app = _make_app()
-    app._exit_monitor.check_all_trades = AsyncMock()
+    mock_trade = TradeRecord(id=1, symbol="SBIN", entry_price=100.0, stop_loss=97.0, quantity=10)
+    app._trade_repo.get_active_trades = AsyncMock(return_value=[mock_trade])
+    app._exit_monitor.check_trade = AsyncMock(return_value=None)
     app._signal_repo.expire_stale_signals = AsyncMock(return_value=0)
 
     call_count = 0
@@ -208,24 +227,24 @@ async def test_scan_loop_always_checks_exits() -> None:
         app._scanning = True
         await app._scan_loop()
 
-    app._exit_monitor.check_all_trades.assert_awaited()
+    app._exit_monitor.check_trade.assert_awaited()
 
 
 async def test_scan_loop_sends_signal_when_candidates_found() -> None:
     """When strategy produces candidates, they should be ranked, filtered, saved, and sent."""
     signal = _make_final_signal()
 
-    app = _make_app()
-    app._strategy.evaluate = AsyncMock(return_value=["candidate1"])
+    mock_strategy = _make_mock_strategy(evaluate_return=["candidate1"])
+    app = _make_app(strategy=mock_strategy)
     app._ranker.rank = MagicMock(return_value=["ranked1"])
     app._config_repo.get_user_config = AsyncMock(
-        return_value=UserConfig(total_capital=50000.0, max_positions=5)
+        return_value=UserConfig(total_capital=50000.0, max_positions=8)
     )
     app._trade_repo.get_active_trade_count = AsyncMock(return_value=0)
     app._risk_manager.filter_and_size = MagicMock(return_value=[signal])
     app._signal_repo.insert_signal = AsyncMock(return_value=1)
     app._bot.send_signal = AsyncMock()
-    app._exit_monitor.check_all_trades = AsyncMock()
+    app._exit_monitor.check_trade = AsyncMock()
     app._signal_repo.expire_stale_signals = AsyncMock(return_value=0)
 
     call_count = 0
@@ -247,7 +266,7 @@ async def test_scan_loop_sends_signal_when_candidates_found() -> None:
         await app._scan_loop()
 
     app._signal_repo.insert_signal.assert_awaited_once()
-    app._bot.send_signal.assert_awaited_once_with(signal)
+    app._bot.send_signal.assert_awaited_once_with(signal, is_paper=False)
 
 
 # -- stop_new_signals ----------------------------------------------------------
@@ -277,19 +296,17 @@ async def test_send_pre_market_alert() -> None:
 
 async def test_trigger_exit_reminder() -> None:
     app = _make_app()
+    app._trade_repo.get_active_trades = AsyncMock(return_value=[])
     await app.trigger_exit_reminder()
-    app._exit_monitor.trigger_time_exit_check.assert_awaited_once_with(
-        is_mandatory=False
-    )
+    app._exit_monitor.trigger_time_exit.assert_awaited_once()
     app._bot.send_alert.assert_awaited_once()
 
 
 async def test_trigger_mandatory_exit() -> None:
     app = _make_app()
+    app._trade_repo.get_active_trades = AsyncMock(return_value=[])
     await app.trigger_mandatory_exit()
-    app._exit_monitor.trigger_time_exit_check.assert_awaited_once_with(
-        is_mandatory=True
-    )
+    app._exit_monitor.trigger_time_exit.assert_awaited_once()
 
 
 # -- daily summary -------------------------------------------------------------
@@ -420,17 +437,19 @@ def test_signal_to_record_conversion() -> None:
 async def test_scan_loop_continues_after_error() -> None:
     """The scan loop should log errors but keep running."""
     app = _make_app()
+    mock_trade = TradeRecord(id=1, symbol="SBIN", entry_price=100.0, stop_loss=97.0, quantity=10)
+    app._trade_repo.get_active_trades = AsyncMock(return_value=[mock_trade])
 
     iteration = 0
     original_sleep = asyncio.sleep
 
-    async def failing_check():
+    async def failing_check(trade):
         nonlocal iteration
         iteration += 1
         if iteration == 1:
             raise RuntimeError("test error")
 
-    app._exit_monitor.check_all_trades = failing_check
+    app._exit_monitor.check_trade = failing_check
     app._signal_repo.expire_stale_signals = AsyncMock(return_value=0)
 
     call_count = 0
@@ -460,11 +479,13 @@ async def test_scan_loop_circuit_breaker_stops_after_max_errors() -> None:
     """Scan loop should stop after max consecutive errors."""
     app = _make_app()
     app._max_consecutive_errors = 3
+    mock_trade = TradeRecord(id=1, symbol="SBIN", entry_price=100.0, stop_loss=97.0, quantity=10)
+    app._trade_repo.get_active_trades = AsyncMock(return_value=[mock_trade])
 
-    async def always_fail():
+    async def always_fail(trade):
         raise RuntimeError("persistent failure")
 
-    app._exit_monitor.check_all_trades = always_fail
+    app._exit_monitor.check_trade = always_fail
     app._signal_repo.expire_stale_signals = AsyncMock(return_value=0)
 
     original_sleep = asyncio.sleep

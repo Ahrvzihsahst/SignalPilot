@@ -7,7 +7,7 @@ from signalpilot.ranking.scorer import SignalScorer
 class SignalRanker:
     """Ranks scored signals, assigns star ratings, and selects top N."""
 
-    def __init__(self, scorer: SignalScorer, max_signals: int = 5) -> None:
+    def __init__(self, scorer: SignalScorer, max_signals: int = 8) -> None:
         self._scorer = scorer
         self._max_signals = max_signals
 

@@ -5,7 +5,7 @@ import logging
 import uuid
 from datetime import datetime
 
-from signalpilot.db.models import FinalSignal, SignalRecord
+from signalpilot.db.models import FinalSignal, SignalRecord, UserConfig
 from signalpilot.telegram.formatters import format_daily_summary
 from signalpilot.utils.constants import IST
 from signalpilot.utils.log_context import reset_context, set_context
@@ -30,12 +30,16 @@ class SignalPilotApp:
         market_data,
         historical,
         websocket,
-        strategy,
+        strategy=None,
+        strategies: list | None = None,
         ranker,
         risk_manager,
         exit_monitor,
         bot,
         scheduler,
+        duplicate_checker=None,
+        capital_allocator=None,
+        strategy_performance_repo=None,
     ) -> None:
         self._db = db
         self._signal_repo = signal_repo
@@ -47,12 +51,22 @@ class SignalPilotApp:
         self._market_data = market_data
         self._historical = historical
         self._websocket = websocket
-        self._strategy = strategy
+        # Support both single strategy (Phase 1 compat) and list (Phase 2)
+        if strategies is not None:
+            self._strategies = strategies
+        elif strategy is not None:
+            self._strategies = [strategy]
+        else:
+            self._strategies = []
+        self._strategy = strategy  # backward compat for tests
         self._ranker = ranker
         self._risk_manager = risk_manager
         self._exit_monitor = exit_monitor
         self._bot = bot
         self._scheduler = scheduler
+        self._duplicate_checker = duplicate_checker
+        self._capital_allocator = capital_allocator
+        self._strategy_performance_repo = strategy_performance_repo
         self._scanning = False
         self._accepting_signals = True
         self._scan_task: asyncio.Task | None = None
@@ -114,25 +128,47 @@ class SignalPilotApp:
                 if self._accepting_signals and phase in (
                     StrategyPhase.OPENING,
                     StrategyPhase.ENTRY_WINDOW,
+                    StrategyPhase.CONTINUOUS,
                 ):
-                    candidates = await self._strategy.evaluate(self._market_data, phase)
-                    if candidates:
-                        ranked = self._ranker.rank(candidates)
-                        user_config = await self._config_repo.get_user_config()
-                        active_count = await self._trade_repo.get_active_trade_count()
-                        final_signals = self._risk_manager.filter_and_size(
-                            ranked,
-                            user_config,
-                            active_count,
-                        )
-                        for signal in final_signals:
-                            record = self._signal_to_record(signal, now)
-                            signal_id = await self._signal_repo.insert_signal(record)
-                            record.id = signal_id
-                            await self._bot.send_signal(signal)
-                            logger.info(
-                                "Signal sent for %s (id=%d)", record.symbol, signal_id
+                    user_config = await self._config_repo.get_user_config()
+                    enabled_strategies = self._get_enabled_strategies(user_config)
+
+                    all_candidates = []
+                    for strat in enabled_strategies:
+                        if phase in strat.active_phases:
+                            candidates = await strat.evaluate(self._market_data, phase)
+                            if candidates:
+                                all_candidates.extend(candidates)
+
+                    if all_candidates:
+                        # Deduplicate across strategies
+                        if self._duplicate_checker:
+                            all_candidates = await self._duplicate_checker.filter_duplicates(
+                                all_candidates, now.date()
                             )
+
+                        if all_candidates:
+                            ranked = self._ranker.rank(all_candidates)
+                            active_count = await self._trade_repo.get_active_trade_count()
+                            final_signals = self._risk_manager.filter_and_size(
+                                ranked,
+                                user_config,
+                                active_count,
+                            )
+                            for signal in final_signals:
+                                record = self._signal_to_record(signal, now)
+                                is_paper = self._is_paper_mode(signal, user_config)
+                                if is_paper:
+                                    record.status = "paper"
+                                signal_id = await self._signal_repo.insert_signal(record)
+                                record.id = signal_id
+                                await self._bot.send_signal(signal, is_paper=is_paper)
+                                logger.info(
+                                    "Signal %s for %s (id=%d)",
+                                    "paper-sent" if is_paper else "sent",
+                                    record.symbol,
+                                    signal_id,
+                                )
 
                 active_trades = await self._trade_repo.get_active_trades()
                 for trade in active_trades:
@@ -296,12 +332,88 @@ class SignalPilotApp:
         finally:
             reset_context()
 
+    async def run_weekly_rebalance(self) -> None:
+        """Weekly capital rebalancing (called Sunday 18:00 IST)."""
+        set_context(job_name="weekly_rebalance")
+        try:
+            if not self._capital_allocator or not self._config_repo:
+                logger.warning("Skipping weekly rebalance: allocator or config not configured")
+                return
+
+            user_config = await self._config_repo.get_user_config()
+            if user_config is None:
+                logger.warning("Skipping weekly rebalance: no user config")
+                return
+
+            today = datetime.now(IST).date()
+            allocations = await self._capital_allocator.calculate_allocations(
+                user_config.total_capital, user_config.max_positions, today
+            )
+
+            # Check for auto-pause recommendations
+            pause_list = await self._capital_allocator.check_auto_pause(today)
+            for strategy_name in pause_list:
+                logger.warning("Auto-pause recommended for %s (win rate < 40%%)", strategy_name)
+
+            if self._bot:
+                from signalpilot.telegram.formatters import format_allocation_summary
+
+                message = format_allocation_summary(allocations)
+                await self._bot.send_alert(message)
+
+                if pause_list:
+                    pause_msg = (
+                        "Auto-pause recommended for: "
+                        + ", ".join(pause_list)
+                        + ". Use PAUSE <strategy> to disable."
+                    )
+                    await self._bot.send_alert(pause_msg)
+
+            logger.info("Weekly rebalance complete: %d strategies allocated", len(allocations))
+        finally:
+            reset_context()
+
     async def _expire_stale_signals(self) -> None:
         """Expire signals past their expiry time."""
         now = datetime.now(IST)
         count = await self._signal_repo.expire_stale_signals(now)
         if count > 0:
             logger.info("Expired %d stale signals", count)
+
+    def _get_enabled_strategies(self, user_config: UserConfig | None) -> list:
+        """Filter strategies by the corresponding enabled flag in user_config."""
+        if not self._strategies:
+            return []
+        if user_config is None:
+            return list(self._strategies)
+
+        enabled = []
+        strategy_flag_map = {
+            "Gap & Go": "gap_go_enabled",
+            "gap_go": "gap_go_enabled",
+            "ORB": "orb_enabled",
+            "VWAP Reversal": "vwap_enabled",
+        }
+        for strat in self._strategies:
+            flag = strategy_flag_map.get(strat.name, None)
+            if flag is None or getattr(user_config, flag, True):
+                enabled.append(strat)
+        return enabled
+
+    @staticmethod
+    def _is_paper_mode(signal: FinalSignal, user_config) -> bool:
+        """Check if the signal's strategy is in paper trading mode.
+
+        Paper mode is determined by the per-strategy paper_mode flags on the
+        user config (sourced from AppConfig defaults).  Gap & Go is never
+        paper-traded because it was validated in Phase 1.
+        """
+        strategy_name = signal.ranked_signal.candidate.strategy_name
+        if strategy_name == "ORB" and getattr(user_config, "orb_paper_mode", True):
+            return True
+        if strategy_name == "VWAP Reversal" and getattr(user_config, "vwap_paper_mode", True):
+            return True
+        return False
 
     @staticmethod
     def _signal_to_record(signal: FinalSignal, now: datetime) -> SignalRecord:
@@ -324,4 +436,6 @@ class SignalPilotApp:
             created_at=c.generated_at,
             expires_at=signal.expires_at,
             status="sent",
+            setup_type=c.setup_type,
+            strategy_specific_score=c.strategy_specific_score,
         )

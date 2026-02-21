@@ -1,7 +1,7 @@
 """NSE trading day checks and market phase determination."""
 
 import logging
-from datetime import date, datetime, time
+from datetime import date, datetime
 from enum import Enum
 
 from signalpilot.utils.constants import (

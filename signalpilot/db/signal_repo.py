@@ -6,7 +6,7 @@ import aiosqlite
 
 from signalpilot.db.models import SignalRecord
 
-_VALID_STATUSES = frozenset({"sent", "taken", "expired"})
+_VALID_STATUSES = frozenset({"sent", "taken", "expired", "paper", "position_full"})
 
 
 class SignalRepository:
@@ -22,8 +22,9 @@ class SignalRepository:
             INSERT INTO signals
                 (date, symbol, strategy, entry_price, stop_loss, target_1,
                  target_2, quantity, capital_required, signal_strength,
-                 gap_pct, volume_ratio, reason, created_at, expires_at, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 gap_pct, volume_ratio, reason, created_at, expires_at, status,
+                 setup_type, strategy_specific_score)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 signal.date.isoformat(),
@@ -42,12 +43,23 @@ class SignalRepository:
                 signal.created_at.isoformat() if signal.created_at else datetime.now().isoformat(),
                 signal.expires_at.isoformat() if signal.expires_at else datetime.now().isoformat(),
                 signal.status,
+                signal.setup_type,
+                signal.strategy_specific_score,
             ),
         )
         await self._conn.commit()
         row_id = cursor.lastrowid
         assert row_id is not None, "INSERT did not return a row ID"
         return row_id
+
+    async def has_signal_for_stock_today(self, symbol: str, today: date) -> bool:
+        """Check if a signal exists for a stock on a given date (any strategy, any status)."""
+        cursor = await self._conn.execute(
+            "SELECT COUNT(*) FROM signals WHERE symbol = ? AND date = ?",
+            (symbol, today.isoformat()),
+        )
+        row = await cursor.fetchone()
+        return row[0] > 0
 
     async def update_status(self, signal_id: int, status: str) -> None:
         """Update the status of a signal (e.g., 'sent' -> 'expired')."""
@@ -135,4 +147,6 @@ class SignalRepository:
             created_at=datetime.fromisoformat(row["created_at"]),
             expires_at=datetime.fromisoformat(row["expires_at"]),
             status=row["status"],
+            setup_type=row["setup_type"],
+            strategy_specific_score=row["strategy_specific_score"],
         )

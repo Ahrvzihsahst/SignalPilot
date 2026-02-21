@@ -1,12 +1,10 @@
 """Integration tests for trailing SL lifecycle through real DB."""
 
-import pytest
 from datetime import datetime
 from unittest.mock import MagicMock
 
 from signalpilot.telegram.handlers import handle_taken
 from signalpilot.utils.constants import IST
-
 from tests.test_integration.conftest import make_signal_record
 
 

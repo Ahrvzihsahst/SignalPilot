@@ -34,6 +34,7 @@ class TestDatabaseManager:
                 "target_1", "target_2", "quantity", "capital_required",
                 "signal_strength", "gap_pct", "volume_ratio", "reason",
                 "created_at", "expires_at", "status",
+                "setup_type", "strategy_specific_score",
             }
             assert columns == expected
         finally:
@@ -47,7 +48,8 @@ class TestDatabaseManager:
             cursor = await manager.connection.execute("PRAGMA table_info(trades)")
             columns = {row[1] for row in await cursor.fetchall()}
             expected = {
-                "id", "signal_id", "date", "symbol", "entry_price", "exit_price",
+                "id", "signal_id", "date", "symbol", "strategy",
+                "entry_price", "exit_price",
                 "stop_loss", "target_1", "target_2", "quantity", "pnl_amount",
                 "pnl_pct", "exit_reason", "taken_at", "exited_at",
             }
@@ -64,6 +66,7 @@ class TestDatabaseManager:
             columns = {row[1] for row in await cursor.fetchall()}
             expected = {
                 "id", "telegram_chat_id", "total_capital", "max_positions",
+                "gap_go_enabled", "orb_enabled", "vwap_enabled",
                 "created_at", "updated_at",
             }
             assert columns == expected

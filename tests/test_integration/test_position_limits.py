@@ -1,12 +1,10 @@
 """Integration tests for position limit enforcement with real DB."""
 
-import pytest
 from datetime import datetime, timedelta
 from unittest.mock import MagicMock
 
 from signalpilot.telegram.handlers import handle_taken
 from signalpilot.utils.constants import IST
-
 from tests.test_integration.conftest import make_signal_record
 
 

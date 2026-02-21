@@ -5,7 +5,12 @@ from datetime import datetime
 import pytest
 
 from signalpilot.db.models import ExitAlert, ExitType, TickData, TradeRecord
-from signalpilot.monitor.exit_monitor import ExitMonitor, TrailingStopState
+from signalpilot.monitor.exit_monitor import (
+    DEFAULT_TRAILING_CONFIGS,
+    ExitMonitor,
+    TrailingStopConfig,
+    TrailingStopState,
+)
 from signalpilot.utils.constants import IST
 
 
@@ -573,3 +578,385 @@ async def test_sl_checked_before_t2() -> None:
 
     # SL check (101 <= 101) fires before T2 check (101 >= 101)
     assert result.exit_type == ExitType.SL_HIT
+
+
+# =========================================================================
+# Per-strategy trailing stop configs (Phase 2)
+# =========================================================================
+
+
+def _build_monitor_with_configs(
+    tick: TickData | None = None,
+    trailing_configs: dict[str, TrailingStopConfig] | None = DEFAULT_TRAILING_CONFIGS,
+) -> tuple[ExitMonitor, MockAlertSink]:
+    """Create an ExitMonitor with per-strategy trailing configs and a mock tick source."""
+    alert_sink = MockAlertSink()
+
+    async def get_tick(symbol: str) -> TickData | None:
+        if tick is not None and tick.symbol == symbol:
+            return tick
+        return None
+
+    monitor = ExitMonitor(
+        get_tick=get_tick,
+        alert_callback=alert_sink,
+        trailing_configs=trailing_configs,
+    )
+    return monitor, alert_sink
+
+
+def _build_monitor_with_configs_and_prices(
+    symbol: str,
+    prices: list[float],
+    trailing_configs: dict[str, TrailingStopConfig] | None = DEFAULT_TRAILING_CONFIGS,
+) -> tuple[ExitMonitor, MockAlertSink]:
+    """Create an ExitMonitor with per-strategy configs and successive prices."""
+    alert_sink = MockAlertSink()
+    price_iter = iter(prices)
+
+    async def get_tick(sym: str) -> TickData | None:
+        if sym != symbol:
+            return None
+        try:
+            price = next(price_iter)
+        except StopIteration:
+            return None
+        return _make_tick(sym, price)
+
+    monitor = ExitMonitor(
+        get_tick=get_tick,
+        alert_callback=alert_sink,
+        trailing_configs=trailing_configs,
+    )
+    return monitor, alert_sink
+
+
+def _make_trade_with_strategy(
+    trade_id: int = 1,
+    symbol: str = "SBIN",
+    entry_price: float = 100.0,
+    stop_loss: float = 97.0,
+    target_1: float = 105.0,
+    target_2: float = 110.0,
+    quantity: int = 10,
+    strategy: str = "gap_go",
+    setup_type: str | None = None,
+) -> TradeRecord:
+    """Create a TradeRecord with strategy and optional setup_type."""
+    trade = TradeRecord(
+        id=trade_id,
+        signal_id=1,
+        symbol=symbol,
+        strategy=strategy,
+        entry_price=entry_price,
+        stop_loss=stop_loss,
+        target_1=target_1,
+        target_2=target_2,
+        quantity=quantity,
+        taken_at=datetime(2025, 1, 6, 9, 35, 0, tzinfo=IST),
+    )
+    if setup_type is not None:
+        trade.setup_type = setup_type
+    return trade
+
+
+# ── ORB trailing stop: breakeven at +1.5%, trail at +2% with 1% distance ──
+
+
+@pytest.mark.asyncio
+async def test_orb_breakeven_at_1_5pct() -> None:
+    """ORB trade: breakeven triggers at +1.5% above entry."""
+    trade = _make_trade_with_strategy(
+        entry_price=100.0, stop_loss=97.0, strategy="ORB",
+        target_1=105.0, target_2=110.0,
+    )
+    tick = _make_tick(ltp=101.5)  # +1.5%
+    monitor, alerts = _build_monitor_with_configs(tick)
+    monitor.start_monitoring(trade)
+
+    result = await monitor.check_trade(trade)
+
+    assert result is not None
+    assert result.is_alert_only is True
+    assert result.trailing_sl_update == pytest.approx(100.0)  # Breakeven = entry
+    state = monitor._active_states[trade.id]
+    assert state.breakeven_triggered is True
+    assert state.current_sl == pytest.approx(100.0)
+
+
+@pytest.mark.asyncio
+async def test_orb_trail_at_2pct() -> None:
+    """ORB trade: trailing SL activates at +2%, distance is 1%."""
+    trade = _make_trade_with_strategy(
+        entry_price=100.0, stop_loss=97.0, strategy="ORB",
+        target_1=105.0, target_2=110.0,
+    )
+    tick = _make_tick(ltp=102.0)  # +2.0% -> trail triggers
+    monitor, alerts = _build_monitor_with_configs(tick)
+    monitor.start_monitoring(trade)
+
+    result = await monitor.check_trade(trade)
+
+    assert result is not None
+    assert result.is_alert_only is True
+    # Trail distance = 1%, so trailing SL = 102.0 * 0.99 = 100.98
+    expected_sl = 102.0 * 0.99
+    assert result.trailing_sl_update == pytest.approx(expected_sl)
+    state = monitor._active_states[trade.id]
+    assert state.trailing_active is True
+    assert state.current_sl == pytest.approx(expected_sl)
+
+
+@pytest.mark.asyncio
+async def test_orb_trail_moves_up_with_price() -> None:
+    """ORB trade: trailing SL moves up as price rises above +2%."""
+    trade = _make_trade_with_strategy(
+        entry_price=100.0, stop_loss=97.0, strategy="ORB",
+        target_1=108.0, target_2=112.0,
+    )
+    monitor, alerts = _build_monitor_with_configs_and_prices(
+        "SBIN", [102.0, 104.0]
+    )
+    monitor.start_monitoring(trade)
+
+    # First tick: 102.0 -> trail at 100.98
+    await monitor.check_trade(trade)
+    assert monitor._active_states[trade.id].current_sl == pytest.approx(102.0 * 0.99)
+
+    # Second tick: 104.0 -> trail at 102.96
+    await monitor.check_trade(trade)
+    assert monitor._active_states[trade.id].current_sl == pytest.approx(104.0 * 0.99)
+
+
+# ── VWAP Reversal Setup 1 (uptrend_pullback): breakeven at +1.0%, NO trailing ──
+
+
+@pytest.mark.asyncio
+async def test_vwap_setup1_breakeven_at_1pct() -> None:
+    """VWAP Reversal (uptrend_pullback): breakeven triggers at +1.0%."""
+    trade = _make_trade_with_strategy(
+        entry_price=100.0, stop_loss=97.0, strategy="VWAP Reversal",
+        setup_type="uptrend_pullback",
+        target_1=105.0, target_2=110.0,
+    )
+    tick = _make_tick(ltp=101.0)  # +1.0%
+    monitor, alerts = _build_monitor_with_configs(tick)
+    monitor.start_monitoring(trade)
+
+    result = await monitor.check_trade(trade)
+
+    assert result is not None
+    assert result.is_alert_only is True
+    assert result.trailing_sl_update == pytest.approx(100.0)  # Breakeven
+    state = monitor._active_states[trade.id]
+    assert state.breakeven_triggered is True
+    assert state.current_sl == pytest.approx(100.0)
+
+
+@pytest.mark.asyncio
+async def test_vwap_setup1_no_trailing_beyond_breakeven() -> None:
+    """VWAP Reversal (uptrend_pullback): no trailing SL beyond breakeven, even at +5%."""
+    trade = _make_trade_with_strategy(
+        entry_price=100.0, stop_loss=97.0, strategy="VWAP Reversal",
+        setup_type="uptrend_pullback",
+        target_1=108.0, target_2=112.0,
+    )
+    monitor, alerts = _build_monitor_with_configs_and_prices(
+        "SBIN", [101.0, 105.0]
+    )
+    monitor.start_monitoring(trade)
+
+    # First tick: breakeven triggers at +1%
+    r1 = await monitor.check_trade(trade)
+    assert r1 is not None
+    assert r1.trailing_sl_update == pytest.approx(100.0)
+
+    # Second tick: +5% -- but trail_trigger_pct is None, so SL stays at breakeven
+    r2 = await monitor.check_trade(trade)
+    assert r2 is None  # No trailing update
+    state = monitor._active_states[trade.id]
+    assert state.current_sl == pytest.approx(100.0)  # Still at breakeven
+    assert state.trailing_active is False
+
+
+# ── VWAP Reversal Setup 2 (vwap_reclaim): breakeven at +1.5%, NO trailing ──
+
+
+@pytest.mark.asyncio
+async def test_vwap_setup2_breakeven_at_1_5pct() -> None:
+    """VWAP Reversal (vwap_reclaim): breakeven triggers at +1.5%."""
+    trade = _make_trade_with_strategy(
+        entry_price=100.0, stop_loss=97.0, strategy="VWAP Reversal",
+        setup_type="vwap_reclaim",
+        target_1=105.0, target_2=110.0,
+    )
+    tick = _make_tick(ltp=101.5)  # +1.5%
+    monitor, alerts = _build_monitor_with_configs(tick)
+    monitor.start_monitoring(trade)
+
+    result = await monitor.check_trade(trade)
+
+    assert result is not None
+    assert result.is_alert_only is True
+    assert result.trailing_sl_update == pytest.approx(100.0)  # Breakeven
+
+
+@pytest.mark.asyncio
+async def test_vwap_setup2_no_breakeven_below_threshold() -> None:
+    """VWAP Reversal (vwap_reclaim): no breakeven at +1.0% (threshold is 1.5%)."""
+    trade = _make_trade_with_strategy(
+        entry_price=100.0, stop_loss=97.0, strategy="VWAP Reversal",
+        setup_type="vwap_reclaim",
+        target_1=105.0, target_2=110.0,
+    )
+    tick = _make_tick(ltp=101.0)  # Only +1.0%
+    monitor, alerts = _build_monitor_with_configs(tick)
+    monitor.start_monitoring(trade)
+
+    result = await monitor.check_trade(trade)
+
+    assert result is None
+    state = monitor._active_states[trade.id]
+    assert state.breakeven_triggered is False
+
+
+@pytest.mark.asyncio
+async def test_vwap_setup2_no_trailing() -> None:
+    """VWAP Reversal (vwap_reclaim): no trailing SL even at +5%."""
+    trade = _make_trade_with_strategy(
+        entry_price=100.0, stop_loss=97.0, strategy="VWAP Reversal",
+        setup_type="vwap_reclaim",
+        target_1=108.0, target_2=112.0,
+    )
+    monitor, alerts = _build_monitor_with_configs_and_prices(
+        "SBIN", [101.5, 105.0]
+    )
+    monitor.start_monitoring(trade)
+
+    # First tick: breakeven at +1.5%
+    r1 = await monitor.check_trade(trade)
+    assert r1 is not None
+    assert r1.trailing_sl_update == pytest.approx(100.0)
+
+    # Second tick: +5% -- no trailing
+    r2 = await monitor.check_trade(trade)
+    assert r2 is None
+    state = monitor._active_states[trade.id]
+    assert state.current_sl == pytest.approx(100.0)
+    assert state.trailing_active is False
+
+
+# ── Gap & Go: unchanged behavior (2.0%/4.0%/2.0%) ──
+
+
+@pytest.mark.asyncio
+async def test_gap_go_unchanged_breakeven_at_2pct() -> None:
+    """Gap & Go trade with DEFAULT_TRAILING_CONFIGS: breakeven at +2%."""
+    trade = _make_trade_with_strategy(
+        entry_price=100.0, stop_loss=97.0, strategy="Gap & Go",
+        target_1=105.0, target_2=110.0,
+    )
+    tick = _make_tick(ltp=102.0)  # +2.0%
+    monitor, alerts = _build_monitor_with_configs(tick)
+    monitor.start_monitoring(trade)
+
+    result = await monitor.check_trade(trade)
+
+    assert result is not None
+    assert result.trailing_sl_update == pytest.approx(100.0)  # Breakeven
+    state = monitor._active_states[trade.id]
+    assert state.breakeven_triggered is True
+
+
+@pytest.mark.asyncio
+async def test_gap_go_unchanged_trail_at_4pct() -> None:
+    """Gap & Go trade with DEFAULT_TRAILING_CONFIGS: trail at +4%, 2% distance."""
+    trade = _make_trade_with_strategy(
+        entry_price=100.0, stop_loss=97.0, strategy="Gap & Go",
+        target_1=108.0, target_2=112.0,
+    )
+    tick = _make_tick(ltp=104.0)  # +4.0%
+    monitor, alerts = _build_monitor_with_configs(tick)
+    monitor.start_monitoring(trade)
+
+    result = await monitor.check_trade(trade)
+
+    assert result is not None
+    # Trail distance = 2%, so trailing SL = 104.0 * 0.98 = 101.92
+    assert result.trailing_sl_update == pytest.approx(104.0 * 0.98)
+    state = monitor._active_states[trade.id]
+    assert state.trailing_active is True
+    assert state.current_sl == pytest.approx(101.92)
+
+
+# ── Unknown strategy: falls back to constructor-level defaults ──
+
+
+@pytest.mark.asyncio
+async def test_unknown_strategy_uses_fallback() -> None:
+    """Trade with unknown strategy falls back to constructor-level defaults."""
+    trade = _make_trade_with_strategy(
+        entry_price=100.0, stop_loss=97.0, strategy="MYSTERY",
+        target_1=105.0, target_2=110.0,
+    )
+    tick = _make_tick(ltp=102.0)  # +2.0%
+    monitor, alerts = _build_monitor_with_configs(tick)
+    monitor.start_monitoring(trade)
+
+    result = await monitor.check_trade(trade)
+
+    # Fallback defaults: breakeven_trigger_pct=2.0 (from ExitMonitor constructor)
+    assert result is not None
+    assert result.is_alert_only is True
+    assert result.trailing_sl_update == pytest.approx(100.0)  # Breakeven
+
+
+@pytest.mark.asyncio
+async def test_unknown_strategy_fallback_trail_at_4pct() -> None:
+    """Unknown strategy fallback: trail at +4% with 2% distance (constructor defaults)."""
+    trade = _make_trade_with_strategy(
+        entry_price=100.0, stop_loss=97.0, strategy="MYSTERY",
+        target_1=108.0, target_2=112.0,
+    )
+    tick = _make_tick(ltp=104.0)  # +4.0%
+    monitor, alerts = _build_monitor_with_configs(tick)
+    monitor.start_monitoring(trade)
+
+    result = await monitor.check_trade(trade)
+
+    assert result is not None
+    assert result.trailing_sl_update == pytest.approx(104.0 * 0.98)
+    state = monitor._active_states[trade.id]
+    assert state.trailing_active is True
+
+
+# ── Verify DEFAULT_TRAILING_CONFIGS has expected entries ──
+
+
+def test_default_trailing_configs_keys() -> None:
+    """DEFAULT_TRAILING_CONFIGS contains all expected strategy keys."""
+    expected_keys = {
+        "Gap & Go", "gap_go", "ORB",
+        "VWAP Reversal", "VWAP Reversal:uptrend_pullback", "VWAP Reversal:vwap_reclaim",
+    }
+    assert set(DEFAULT_TRAILING_CONFIGS.keys()) == expected_keys
+
+
+def test_default_trailing_configs_orb_values() -> None:
+    """ORB config has breakeven=1.5%, trail=2.0%, distance=1.0%."""
+    cfg = DEFAULT_TRAILING_CONFIGS["ORB"]
+    assert cfg.breakeven_trigger_pct == 1.5
+    assert cfg.trail_trigger_pct == 2.0
+    assert cfg.trail_distance_pct == 1.0
+
+
+def test_default_trailing_configs_vwap_no_trail() -> None:
+    """VWAP Reversal configs have trail_trigger_pct=None (no trailing)."""
+    cfg = DEFAULT_TRAILING_CONFIGS["VWAP Reversal"]
+    assert cfg.breakeven_trigger_pct == 1.0
+    assert cfg.trail_trigger_pct is None
+    assert cfg.trail_distance_pct is None
+
+    cfg_reclaim = DEFAULT_TRAILING_CONFIGS["VWAP Reversal:vwap_reclaim"]
+    assert cfg_reclaim.breakeven_trigger_pct == 1.5
+    assert cfg_reclaim.trail_trigger_pct is None

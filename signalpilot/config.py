@@ -1,6 +1,6 @@
 """Application configuration loaded from environment variables."""
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings
 
 
@@ -32,9 +32,9 @@ class AppConfig(BaseSettings):
 
     # Risk management defaults
     default_capital: float = Field(default=50000.0, description="Default trading capital (INR)")
-    default_max_positions: int = Field(default=5, description="Max simultaneous positions")
+    default_max_positions: int = Field(default=8, description="Max simultaneous positions")
 
-    # Strategy parameters
+    # Strategy parameters (Gap & Go)
     gap_min_pct: float = Field(default=3.0, description="Minimum gap % for Gap & Go")
     gap_max_pct: float = Field(default=5.0, description="Maximum gap % for Gap & Go")
     volume_threshold_pct: float = Field(
@@ -46,15 +46,57 @@ class AppConfig(BaseSettings):
     max_risk_pct: float = Field(default=3.0, description="Max stop loss risk % from entry")
     signal_expiry_minutes: int = Field(default=30, description="Signal expiry in minutes")
 
-    # Scoring weights
+    # Gap & Go scoring weights
     scoring_gap_weight: float = Field(default=0.40)
     scoring_volume_weight: float = Field(default=0.35)
     scoring_price_distance_weight: float = Field(default=0.25)
 
-    # Trailing stop loss
+    # Trailing stop loss (Gap & Go defaults)
     trailing_sl_breakeven_trigger_pct: float = Field(default=2.0)
     trailing_sl_trail_trigger_pct: float = Field(default=4.0)
     trailing_sl_trail_distance_pct: float = Field(default=2.0)
+
+    # ORB strategy parameters
+    orb_range_min_pct: float = Field(default=0.5, description="Min opening range size %")
+    orb_range_max_pct: float = Field(default=3.0, description="Max opening range size %")
+    orb_volume_multiplier: float = Field(default=1.5, description="Volume multiplier for ORB breakout")
+    orb_signal_window_end: str = Field(default="11:00", description="ORB signal window end time")
+    orb_target_1_pct: float = Field(default=1.5, description="ORB Target 1 %")
+    orb_target_2_pct: float = Field(default=2.5, description="ORB Target 2 %")
+    orb_breakeven_trigger_pct: float = Field(default=1.5, description="ORB breakeven trigger %")
+    orb_trail_trigger_pct: float = Field(default=2.0, description="ORB trailing trigger %")
+    orb_trail_distance_pct: float = Field(default=1.0, description="ORB trailing distance %")
+    orb_gap_exclusion_pct: float = Field(default=3.0, description="Exclude stocks gapping >= this %")
+
+    # ORB scoring weights
+    orb_scoring_volume_weight: float = Field(default=0.40)
+    orb_scoring_range_weight: float = Field(default=0.30)
+    orb_scoring_distance_weight: float = Field(default=0.30)
+
+    # VWAP strategy parameters
+    vwap_scan_start: str = Field(default="10:00", description="VWAP scan start time")
+    vwap_scan_end: str = Field(default="14:30", description="VWAP scan end time")
+    vwap_touch_threshold_pct: float = Field(default=0.3, description="VWAP touch threshold %")
+    vwap_reclaim_volume_multiplier: float = Field(default=1.5, description="VWAP reclaim volume multiplier")
+    vwap_pullback_volume_multiplier: float = Field(default=1.0, description="VWAP pullback volume multiplier")
+    vwap_max_signals_per_stock: int = Field(default=2, description="Max VWAP signals per stock per day")
+    vwap_cooldown_minutes: int = Field(default=60, description="VWAP cooldown between signals (minutes)")
+    vwap_setup1_sl_below_vwap_pct: float = Field(default=0.5, description="Setup 1 SL below VWAP %")
+    vwap_setup1_target1_pct: float = Field(default=1.0, description="Setup 1 Target 1 %")
+    vwap_setup1_target2_pct: float = Field(default=1.5, description="Setup 1 Target 2 %")
+    vwap_setup2_target1_pct: float = Field(default=1.5, description="Setup 2 Target 1 %")
+    vwap_setup2_target2_pct: float = Field(default=2.0, description="Setup 2 Target 2 %")
+    vwap_setup1_breakeven_trigger_pct: float = Field(default=1.0, description="Setup 1 breakeven trigger %")
+    vwap_setup2_breakeven_trigger_pct: float = Field(default=1.5, description="Setup 2 breakeven trigger %")
+
+    # VWAP scoring weights
+    vwap_scoring_volume_weight: float = Field(default=0.35)
+    vwap_scoring_touch_weight: float = Field(default=0.35)
+    vwap_scoring_trend_weight: float = Field(default=0.30)
+
+    # Paper trading mode
+    orb_paper_mode: bool = Field(default=True, description="ORB paper trading mode")
+    vwap_paper_mode: bool = Field(default=True, description="VWAP paper trading mode")
 
     # Retry / resilience
     auth_max_retries: int = Field(default=3)
@@ -66,3 +108,24 @@ class AppConfig(BaseSettings):
         "env_file": ".env",
         "env_file_encoding": "utf-8",
     }
+
+    @model_validator(mode="after")
+    def _validate_scoring_weights(self) -> "AppConfig":
+        """Validate that all scoring weight groups sum to 1.0."""
+        tolerance = 0.01
+        gap_go_sum = self.scoring_gap_weight + self.scoring_volume_weight + self.scoring_price_distance_weight
+        if abs(gap_go_sum - 1.0) > tolerance:
+            raise ValueError(
+                f"Gap & Go scoring weights must sum to 1.0, got {gap_go_sum:.3f}"
+            )
+        orb_sum = self.orb_scoring_volume_weight + self.orb_scoring_range_weight + self.orb_scoring_distance_weight
+        if abs(orb_sum - 1.0) > tolerance:
+            raise ValueError(
+                f"ORB scoring weights must sum to 1.0, got {orb_sum:.3f}"
+            )
+        vwap_sum = self.vwap_scoring_volume_weight + self.vwap_scoring_touch_weight + self.vwap_scoring_trend_weight
+        if abs(vwap_sum - 1.0) > tolerance:
+            raise ValueError(
+                f"VWAP scoring weights must sum to 1.0, got {vwap_sum:.3f}"
+            )
+        return self

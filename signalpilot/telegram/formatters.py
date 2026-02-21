@@ -25,7 +25,7 @@ def star_rating(strength: int) -> str:
     return f"{filled}{empty} ({label})"
 
 
-def format_signal_message(signal: FinalSignal) -> str:
+def format_signal_message(signal: FinalSignal, active_count: int = 0, max_positions: int = 8, is_paper: bool = False) -> str:
     """Format a FinalSignal into the user-facing Telegram message (HTML)."""
     c = signal.ranked_signal.candidate
     risk_pct = abs((c.stop_loss - c.entry_price) / c.entry_price * 100)
@@ -34,7 +34,23 @@ def format_signal_message(signal: FinalSignal) -> str:
     stars = star_rating(signal.ranked_signal.signal_strength)
 
     direction = c.direction.value
+
+    # Strategy display with setup type
+    strategy_display = c.strategy_name
+    if c.setup_type:
+        setup_label = c.setup_type.replace("_", " ").title()
+        strategy_display = f"{c.strategy_name} ({setup_label})"
+
+    # Build prefix/warnings
+    prefix = ""
+    if is_paper:
+        prefix = "<b>PAPER TRADE</b>\n"
+    warnings = ""
+    if c.setup_type == "vwap_reclaim":
+        warnings = "\n⚠️ Higher Risk setup"
+
     return (
+        f"{prefix}"
         f"<b>{direction} SIGNAL -- {c.symbol}</b>\n"
         f"\n"
         f"Entry Price: {c.entry_price:,.2f}\n"
@@ -44,8 +60,9 @@ def format_signal_message(signal: FinalSignal) -> str:
         f"Quantity: {signal.quantity} shares\n"
         f"Capital Required: {signal.capital_required:,.0f}\n"
         f"Signal Strength: {stars}\n"
-        f"Strategy: {c.strategy_name}\n"
-        f"Reason: {c.reason}\n"
+        f"Strategy: {strategy_display}\n"
+        f"Positions open: {active_count}/{max_positions}\n"
+        f"Reason: {c.reason}{warnings}\n"
         f"\n"
         f"Valid Until: {signal.expires_at.strftime('%I:%M %p')} (auto-expires)\n"
         f"{'=' * 30}\n"
@@ -185,13 +202,27 @@ def format_daily_summary(summary: DailySummary) -> str:
 
     parts = [
         f"<b>Daily Summary -- {summary.date}</b>",
-        f"",
+        "",
         f"Signals Generated: {summary.signals_sent}",
         f"Trades Taken: {summary.trades_taken}",
         f"Wins: {summary.wins} | Losses: {summary.losses}",
         f"Today's P&L: {summary.total_pnl:+,.0f}",
         f"Cumulative P&L: {summary.cumulative_pnl:+,.0f}",
     ]
+
+    # Per-strategy breakdown
+    if summary.strategy_breakdown:
+        parts.append("")
+        parts.append("<b>BY STRATEGY</b>")
+        strategy_icons = {"Gap & Go": "📈", "ORB": "📊", "VWAP Reversal": "📉"}
+        for name, breakdown in summary.strategy_breakdown.items():
+            icon = strategy_icons.get(name, "📋")
+            parts.append(
+                f"  {icon} {name}: "
+                f"{breakdown.signals_generated} signals, "
+                f"{breakdown.signals_taken} taken, "
+                f"P&L {breakdown.pnl:+,.0f}"
+            )
 
     if summary.trades:
         parts.append("")
@@ -201,4 +232,58 @@ def format_daily_summary(summary: DailySummary) -> str:
             pnl_str = f"{t.pnl_amount:+,.0f}" if t.pnl_amount is not None else "n/a"
             parts.append(f"  {t.symbol}: {outcome} | P&L: {pnl_str}")
 
+    return "\n".join(parts)
+
+
+def format_strategy_report(records) -> str:
+    """Format STRATEGY command output showing per-strategy performance."""
+    if not records:
+        return "No strategy performance data available yet."
+
+    # Group by strategy
+    by_strategy: dict[str, list] = {}
+    for r in records:
+        by_strategy.setdefault(r.strategy, []).append(r)
+
+    parts = ["<b>Strategy Performance (30-day)</b>"]
+    for strategy, recs in by_strategy.items():
+        total_taken = sum(r.signals_taken for r in recs)
+        total_wins = sum(r.wins for r in recs)
+        total_losses = sum(r.losses for r in recs)
+        total_pnl = sum(r.total_pnl for r in recs)
+
+        win_rate = (total_wins / total_taken * 100) if total_taken > 0 else 0
+        avg_win = (
+            sum(r.avg_win * r.wins for r in recs if r.wins > 0) / total_wins
+            if total_wins > 0
+            else 0
+        )
+        avg_loss = (
+            sum(abs(r.avg_loss) * r.losses for r in recs if r.losses > 0) / total_losses
+            if total_losses > 0
+            else 0
+        )
+        alloc = recs[-1].capital_weight_pct if recs else 0
+
+        parts.append(f"\n<b>{strategy}</b>")
+        if total_taken == 0:
+            parts.append(f"  No trades | Allocation: {alloc:.0f}%")
+        else:
+            parts.append(f"  Win Rate: {win_rate:.0f}% ({total_taken} trades)")
+            parts.append(f"  Avg Win: +{avg_win:,.0f} | Avg Loss: -{avg_loss:,.0f}")
+            parts.append(f"  Net P&L: {total_pnl:+,.0f}")
+            parts.append(f"  Allocation: {alloc:.0f}%")
+
+    return "\n".join(parts)
+
+
+def format_allocation_summary(allocations: dict) -> str:
+    """Format weekly rebalance allocation summary."""
+    parts = ["<b>Weekly Capital Rebalancing</b>"]
+    for name, alloc in allocations.items():
+        parts.append(
+            f"  {alloc.strategy_name}: {alloc.weight_pct:.0f}% | "
+            f"{alloc.allocated_capital:,.0f} | {alloc.max_positions} positions"
+        )
+    parts.append("  Reserve: 20%")
     return "\n".join(parts)
