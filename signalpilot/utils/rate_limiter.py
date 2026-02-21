@@ -77,3 +77,8 @@ class TokenBucketRateLimiter:
             await asyncio.sleep(wait)
             self._minute_window_start = time.monotonic()
             self._minute_count = 0
+
+    def reset_minute_counter(self) -> None:
+        """Reset the per-minute counter (call between independent fetch passes)."""
+        self._minute_window_start = time.monotonic()
+        self._minute_count = 0

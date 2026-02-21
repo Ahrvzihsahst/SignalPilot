@@ -17,6 +17,10 @@ logger = logging.getLogger("signalpilot.data.historical")
 _RATE_LIMIT_RETRIES = 3
 _RATE_LIMIT_BASE_DELAY = 2.0
 
+# Batch settings for bulk fetches (avoids thundering herd on 499 symbols).
+_BATCH_SIZE = 3
+_BATCH_DELAY = 1.2  # seconds between batches (slightly above 1/rate)
+
 
 class HistoricalDataFetcher:
     """Fetches historical OHLCV data from Angel One or yfinance."""
@@ -32,29 +36,37 @@ class HistoricalDataFetcher:
         self._limiter = TokenBucketRateLimiter(rate=rate_limit, per_minute=170)
         self._semaphore = asyncio.Semaphore(rate_limit)
 
+    def reset_rate_limiter(self) -> None:
+        """Reset the per-minute counter between independent fetch passes."""
+        self._limiter.reset_minute_counter()
+
     async def fetch_previous_day_data(self) -> dict[str, PreviousDayData]:
         """Fetch previous day's OHLCV for all Nifty 500 stocks.
 
         Returns mapping of symbol -> PreviousDayData.
         Falls back to yfinance on Angel One failure.
         Excludes instruments where both sources fail.
+        Processes in batches to avoid overwhelming the API.
         """
         results: dict[str, PreviousDayData] = {}
-        tasks = []
-        for symbol in self._instruments.symbols:
-            tasks.append(self._fetch_single_previous_day(symbol))
+        symbols = self._instruments.symbols
 
-        outcomes = await asyncio.gather(*tasks, return_exceptions=True)
-        for symbol, outcome in zip(self._instruments.symbols, outcomes):
-            if isinstance(outcome, Exception):
-                logger.error("Failed to fetch previous day data for %s: %s", symbol, outcome)
-            elif outcome is not None:
-                results[symbol] = outcome
+        for i in range(0, len(symbols), _BATCH_SIZE):
+            batch = symbols[i : i + _BATCH_SIZE]
+            tasks = [self._fetch_single_previous_day(s) for s in batch]
+            outcomes = await asyncio.gather(*tasks, return_exceptions=True)
+            for symbol, outcome in zip(batch, outcomes):
+                if isinstance(outcome, Exception):
+                    logger.error("Failed to fetch previous day data for %s: %s", symbol, outcome)
+                elif outcome is not None:
+                    results[symbol] = outcome
+            if i + _BATCH_SIZE < len(symbols):
+                await asyncio.sleep(_BATCH_DELAY)
 
         logger.info(
             "Fetched previous day data for %d/%d instruments",
             len(results),
-            len(self._instruments.symbols),
+            len(symbols),
         )
         return results
 
@@ -92,23 +104,27 @@ class HistoricalDataFetcher:
 
         Returns mapping of symbol -> average daily volume.
         Falls back to yfinance on Angel One failure.
+        Processes in batches to avoid overwhelming the API.
         """
         results: dict[str, float] = {}
-        tasks = []
-        for symbol in self._instruments.symbols:
-            tasks.append(self._fetch_single_adv(symbol, lookback_days))
+        symbols = self._instruments.symbols
 
-        outcomes = await asyncio.gather(*tasks, return_exceptions=True)
-        for symbol, outcome in zip(self._instruments.symbols, outcomes):
-            if isinstance(outcome, Exception):
-                logger.error("Failed to fetch ADV for %s: %s", symbol, outcome)
-            elif outcome is not None:
-                results[symbol] = outcome
+        for i in range(0, len(symbols), _BATCH_SIZE):
+            batch = symbols[i : i + _BATCH_SIZE]
+            tasks = [self._fetch_single_adv(s, lookback_days) for s in batch]
+            outcomes = await asyncio.gather(*tasks, return_exceptions=True)
+            for symbol, outcome in zip(batch, outcomes):
+                if isinstance(outcome, Exception):
+                    logger.error("Failed to fetch ADV for %s: %s", symbol, outcome)
+                elif outcome is not None:
+                    results[symbol] = outcome
+            if i + _BATCH_SIZE < len(symbols):
+                await asyncio.sleep(_BATCH_DELAY)
 
         logger.info(
             "Fetched ADV for %d/%d instruments",
             len(results),
-            len(self._instruments.symbols),
+            len(symbols),
         )
         return results
 
@@ -145,8 +161,8 @@ class HistoricalDataFetcher:
     async def _rate_limited_call(self, func, *args, **kwargs):
         """Acquire a rate-limiter token, then call *func* inside the semaphore.
 
-        Retries with exponential backoff when Angel One returns a 403
-        rate-limit error (they don't use HTTP 429).
+        Retries with exponential backoff on transient failures: rate limits
+        (403), timeouts, and connection resets.
         """
         for attempt in range(_RATE_LIMIT_RETRIES + 1):
             await self._limiter.acquire()
@@ -154,18 +170,32 @@ class HistoricalDataFetcher:
                 async with self._semaphore:
                     return await func(*args, **kwargs)
             except Exception as exc:
-                if "exceeding access rate" in str(exc).lower() or "403" in str(exc):
-                    if attempt < _RATE_LIMIT_RETRIES:
-                        delay = _RATE_LIMIT_BASE_DELAY * (2 ** attempt)
-                        logger.warning(
-                            "Rate-limited by Angel One (attempt %d/%d), "
-                            "backing off %.1fs",
-                            attempt + 1,
-                            _RATE_LIMIT_RETRIES + 1,
-                            delay,
-                        )
-                        await asyncio.sleep(delay)
-                        continue
+                exc_str = str(exc).lower()
+                is_rate_limit = "exceeding access rate" in exc_str or "403" in exc_str
+                is_timeout = "timed out" in exc_str or "timeout" in exc_str
+                is_conn_error = (
+                    "connection reset" in exc_str
+                    or "connection aborted" in exc_str
+                    or "connectionerror" in exc_str
+                )
+                is_retryable = is_rate_limit or is_timeout or is_conn_error
+                if is_retryable and attempt < _RATE_LIMIT_RETRIES:
+                    delay = _RATE_LIMIT_BASE_DELAY * (2 ** attempt)
+                    if is_rate_limit:
+                        reason = "rate-limited"
+                    elif is_timeout:
+                        reason = "timed out"
+                    else:
+                        reason = "connection error"
+                    logger.warning(
+                        "Angel One %s (attempt %d/%d), backing off %.1fs",
+                        reason,
+                        attempt + 1,
+                        _RATE_LIMIT_RETRIES + 1,
+                        delay,
+                    )
+                    await asyncio.sleep(delay)
+                    continue
                 raise
 
     async def _fetch_from_angel_one(

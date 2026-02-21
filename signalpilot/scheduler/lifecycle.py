@@ -57,6 +57,7 @@ class SignalPilotApp:
         self._accepting_signals = True
         self._scan_task: asyncio.Task | None = None
         self._max_consecutive_errors = 10
+        self._fetch_cooldown = 5  # seconds between prev-day and ADV fetch passes
 
     async def startup(self) -> None:
         """Full startup sequence."""
@@ -68,6 +69,12 @@ class SignalPilotApp:
             await self._instruments.load()
         if self._historical:
             await self._historical.fetch_previous_day_data()
+            # Cooldown: let Angel One's per-minute rate window reset before ADV pass
+            reset_fn = getattr(self._historical, "reset_rate_limiter", None)
+            if self._fetch_cooldown > 0 and reset_fn and not asyncio.iscoroutinefunction(reset_fn):
+                logger.info("Cooling down %ds before ADV fetch...", self._fetch_cooldown)
+                reset_fn()
+                await asyncio.sleep(self._fetch_cooldown)
             await self._historical.fetch_average_daily_volume()
         if self._config_repo:
             await self._config_repo.initialize_default(

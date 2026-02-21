@@ -48,7 +48,7 @@ class SmartAPIAuthenticator:
         Returns True on success, raises AuthenticationError on failure.
         """
         totp = pyotp.TOTP(self._totp_secret).now()
-        smart_connect = SmartConnect(api_key=self._api_key)
+        smart_connect = SmartConnect(api_key=self._api_key, timeout=15)
 
         def _do_auth():
             return smart_connect.generateSession(self._client_id, self._mpin, totp)

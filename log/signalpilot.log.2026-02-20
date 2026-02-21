@@ -1,0 +1,43 @@
+2026-02-20 18:05:14 [-] [-] [-] [INFO] [signalpilot.db.database] Phase 2 migration complete
+2026-02-20 18:05:14 [-] [-] [-] [INFO] [signalpilot.db.database] Database initialized at signalpilot.db
+2026-02-20 18:05:14 [-] [-] [-] [INFO] [signalpilot.scheduler.lifecycle] Starting SignalPilot...
+2026-02-20 18:05:15 [-] [-] [-] [INFO] [signalpilot.data.auth] SmartAPI authentication successful for client AACE553428
+2026-02-20 18:05:21 [-] [-] [-] [WARNING] [signalpilot.data.instruments] Symbol KWIL not found in Angel One instrument master, skipping
+2026-02-20 18:05:21 [-] [-] [-] [WARNING] [signalpilot.data.instruments] Symbol RELINFRA not found in Angel One instrument master, skipping
+2026-02-20 18:05:21 [-] [-] [-] [INFO] [signalpilot.data.instruments] Loaded 499 instruments from 501 CSV symbols
+2026-02-20 18:07:11 [-] [-] [-] [WARNING] [signalpilot.utils.rate_limiter] Per-minute rate limit reached (170/170), waiting 3.3s
+2026-02-20 18:07:15 [-] [-] [-] [WARNING] [signalpilot.data.historical] Rate-limited by Angel One (attempt 1/4), backing off 2.0s
+2026-02-20 18:07:15 [-] [-] [-] [WARNING] [signalpilot.data.historical] Rate-limited by Angel One (attempt 1/4), backing off 2.0s
+2026-02-20 18:07:15 [-] [-] [-] [WARNING] [signalpilot.data.historical] Rate-limited by Angel One (attempt 1/4), backing off 2.0s
+2026-02-20 18:08:08 [-] [-] [-] [WARNING] [signalpilot.data.historical] Rate-limited by Angel One (attempt 1/4), backing off 2.0s
+2026-02-20 18:08:10 [-] [-] [-] [WARNING] [signalpilot.utils.rate_limiter] Per-minute rate limit reached (170/170), waiting 4.2s
+2026-02-20 18:08:15 [-] [-] [-] [INFO] [signalpilot.data.historical] Fetched previous day data for 499/499 instruments
+2026-02-20 18:08:15 [-] [-] [-] [WARNING] [signalpilot.data.historical] Rate-limited by Angel One (attempt 1/4), backing off 2.0s
+2026-02-20 18:08:15 [-] [-] [-] [WARNING] [signalpilot.data.historical] Rate-limited by Angel One (attempt 1/4), backing off 2.0s
+2026-02-20 18:09:10 [-] [-] [-] [WARNING] [signalpilot.utils.rate_limiter] Per-minute rate limit reached (170/170), waiting 4.1s
+2026-02-20 18:09:15 [-] [-] [-] [WARNING] [signalpilot.data.historical] Rate-limited by Angel One (attempt 1/4), backing off 2.0s
+2026-02-20 18:09:15 [-] [-] [-] [WARNING] [signalpilot.data.historical] Rate-limited by Angel One (attempt 1/4), backing off 2.0s
+2026-02-20 18:09:15 [-] [-] [-] [WARNING] [signalpilot.data.historical] Rate-limited by Angel One (attempt 1/4), backing off 2.0s
+2026-02-20 18:09:30 [-] [-] [-] [WARNING] [signalpilot.data.historical] Rate-limited by Angel One (attempt 1/4), backing off 2.0s
+2026-02-20 18:10:01 [-] [-] [-] [WARNING] [signalpilot.data.historical] Rate-limited by Angel One (attempt 1/4), backing off 2.0s
+2026-02-20 18:10:10 [-] [-] [-] [WARNING] [signalpilot.utils.rate_limiter] Per-minute rate limit reached (170/170), waiting 4.3s
+2026-02-20 18:10:15 [-] [-] [-] [WARNING] [signalpilot.data.historical] Rate-limited by Angel One (attempt 1/4), backing off 2.0s
+2026-02-20 18:10:15 [-] [-] [-] [WARNING] [signalpilot.data.historical] Rate-limited by Angel One (attempt 1/4), backing off 2.0s
+2026-02-20 18:10:15 [-] [-] [-] [WARNING] [signalpilot.data.historical] Rate-limited by Angel One (attempt 1/4), backing off 2.0s
+2026-02-20 18:11:10 [-] [-] [-] [INFO] [signalpilot.data.historical] Fetched ADV for 499/499 instruments
+2026-02-20 18:11:12 [-] [-] [-] [INFO] [signalpilot.telegram.bot] Telegram bot started polling
+2026-02-20 18:11:12 [-] [-] [-] [INFO] [signalpilot.scheduler.scheduler] Registered job pre_market_alert at 09:00 IST
+2026-02-20 18:11:12 [-] [-] [-] [INFO] [signalpilot.scheduler.scheduler] Registered job start_scanning at 09:15 IST
+2026-02-20 18:11:12 [-] [-] [-] [INFO] [signalpilot.scheduler.scheduler] Registered job stop_new_signals at 14:30 IST
+2026-02-20 18:11:12 [-] [-] [-] [INFO] [signalpilot.scheduler.scheduler] Registered job exit_reminder at 15:00 IST
+2026-02-20 18:11:12 [-] [-] [-] [INFO] [signalpilot.scheduler.scheduler] Registered job mandatory_exit at 15:15 IST
+2026-02-20 18:11:12 [-] [-] [-] [INFO] [signalpilot.scheduler.scheduler] Registered job daily_summary at 15:30 IST
+2026-02-20 18:11:12 [-] [-] [-] [INFO] [signalpilot.scheduler.scheduler] Registered job shutdown at 15:35 IST
+2026-02-20 18:11:12 [-] [-] [-] [INFO] [signalpilot.scheduler.scheduler] Registered job weekly_rebalance on Sundays at 18:00 IST
+2026-02-20 18:11:12 [-] [-] [-] [INFO] [signalpilot.scheduler.scheduler] MarketScheduler started
+2026-02-20 18:11:12 [-] [-] [-] [INFO] [signalpilot.scheduler.lifecycle] SignalPilot startup complete
+2026-02-20 18:48:20 [-] [-] [-] [INFO] [signalpilot.scheduler.lifecycle] Shutting down SignalPilot...
+2026-02-20 18:48:21 [-] [-] [-] [INFO] [signalpilot.telegram.bot] Telegram bot stopped
+2026-02-20 18:48:21 [-] [-] [-] [INFO] [signalpilot.db.database] Database connection closed
+2026-02-20 18:48:21 [-] [-] [-] [INFO] [signalpilot.scheduler.scheduler] MarketScheduler shut down
+2026-02-20 18:48:21 [-] [-] [-] [INFO] [signalpilot.scheduler.lifecycle] SignalPilot shutdown complete

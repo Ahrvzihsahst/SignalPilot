@@ -247,6 +247,89 @@ async def test_missing_instrument_returns_none(mock_auth: MagicMock) -> None:
     assert "UNKNOWN" not in results
 
 
+# ── Retry on timeout ─────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_rate_limited_call_retries_on_timeout(
+    fetcher: HistoricalDataFetcher,
+    mock_auth: MagicMock,
+) -> None:
+    """Angel One times out on first attempt, succeeds on retry."""
+    good_response = {
+        "status": True,
+        "data": [
+            ["2024-01-01", 100.0, 105.0, 98.0, 102.0, 50000],
+            ["2024-01-02", 103.0, 108.0, 101.0, 106.0, 60000],
+            ["2024-01-03", 107.0, 110.0, 105.0, 109.0, 70000],
+        ],
+    }
+    mock_auth.smart_connect.getCandleData.side_effect = [
+        Exception("Read timed out. (read timeout=7)"),
+        good_response,
+    ]
+
+    with patch("asyncio.sleep"):  # skip actual backoff delay
+        results = await fetcher.fetch_previous_day_data()
+
+    assert "SBIN" in results
+    assert results["SBIN"].close == 106.0
+    assert mock_auth.smart_connect.getCandleData.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_rate_limited_call_falls_back_after_all_timeout_retries(
+    fetcher: HistoricalDataFetcher,
+    mock_auth: MagicMock,
+) -> None:
+    """Angel One times out on every attempt → falls back to yfinance."""
+    mock_auth.smart_connect.getCandleData.side_effect = Exception(
+        "Read timed out. (read timeout=7)"
+    )
+
+    mock_hist = pd.DataFrame({
+        "Open": [100.0, 103.0],
+        "High": [105.0, 108.0],
+        "Low": [98.0, 101.0],
+        "Close": [102.0, 106.0],
+        "Volume": [50000, 60000],
+    })
+
+    with patch("asyncio.sleep"), patch("signalpilot.data.historical.yf.Ticker") as mock_ticker:
+        mock_ticker.return_value.history.return_value = mock_hist
+        results = await fetcher.fetch_previous_day_data()
+
+    assert "SBIN" in results
+    assert results["SBIN"].close == 102.0  # yfinance iloc[-2]
+
+
+@pytest.mark.asyncio
+async def test_rate_limited_call_retries_on_connection_reset(
+    fetcher: HistoricalDataFetcher,
+    mock_auth: MagicMock,
+) -> None:
+    """Angel One resets connection on first attempt, succeeds on retry."""
+    good_response = {
+        "status": True,
+        "data": [
+            ["2024-01-01", 100.0, 105.0, 98.0, 102.0, 50000],
+            ["2024-01-02", 103.0, 108.0, 101.0, 106.0, 60000],
+            ["2024-01-03", 107.0, 110.0, 105.0, 109.0, 70000],
+        ],
+    }
+    mock_auth.smart_connect.getCandleData.side_effect = [
+        Exception("('Connection aborted.', ConnectionResetError(54, 'Connection reset by peer'))"),
+        good_response,
+    ]
+
+    with patch("asyncio.sleep"):
+        results = await fetcher.fetch_previous_day_data()
+
+    assert "SBIN" in results
+    assert results["SBIN"].close == 106.0
+    assert mock_auth.smart_connect.getCandleData.call_count == 2
+
+
 # ── Angel One API status False ───────────────────────────────────
 
 
