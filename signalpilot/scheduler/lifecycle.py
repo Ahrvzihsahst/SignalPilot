@@ -140,6 +140,18 @@ class SignalPilotApp:
                             if candidates:
                                 all_candidates.extend(candidates)
 
+                    # Exclude Gap & Go stocks from ORB scanning
+                    gap_symbols = {
+                        c.symbol
+                        for c in all_candidates
+                        if getattr(c, "strategy_name", None) == "Gap & Go"
+                    }
+                    if gap_symbols:
+                        for strat in enabled_strategies:
+                            if hasattr(strat, "mark_gap_stock"):
+                                for sym in gap_symbols:
+                                    strat.mark_gap_stock(sym)
+
                     if all_candidates:
                         # Deduplicate across strategies
                         if self._duplicate_checker:
