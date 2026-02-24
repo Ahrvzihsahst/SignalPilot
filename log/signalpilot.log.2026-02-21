@@ -1,0 +1,38 @@
+2026-02-21 09:59:57 [-] [-] [-] [INFO] [signalpilot.db.database] Phase 2 migration complete
+2026-02-21 09:59:57 [-] [-] [-] [INFO] [signalpilot.db.database] Database initialized at signalpilot.db
+2026-02-21 09:59:57 [-] [-] [-] [INFO] [signalpilot.scheduler.lifecycle] Starting SignalPilot...
+2026-02-21 09:59:57 [-] [-] [-] [INFO] [signalpilot.data.auth] SmartAPI authentication successful for client AACE553428
+2026-02-21 10:01:07 [-] [-] [-] [INFO] [signalpilot.data.instruments] Loaded 10 instruments from 10 CSV symbols
+2026-02-21 10:01:12 [-] [-] [-] [INFO] [signalpilot.data.historical] Fetched previous day data for 10/10 instruments
+2026-02-21 10:01:12 [-] [-] [-] [INFO] [signalpilot.scheduler.lifecycle] Cooling down 5s before ADV fetch...
+2026-02-21 10:01:22 [-] [-] [-] [INFO] [signalpilot.data.historical] Fetched ADV for 10/10 instruments
+2026-02-21 10:01:23 [-] [-] [-] [INFO] [signalpilot.telegram.bot] Telegram bot started polling
+2026-02-21 10:01:23 [-] [-] [-] [INFO] [signalpilot.scheduler.scheduler] Registered job pre_market_alert at 09:00 IST
+2026-02-21 10:01:23 [-] [-] [-] [INFO] [signalpilot.scheduler.scheduler] Registered job start_scanning at 09:15 IST
+2026-02-21 10:01:23 [-] [-] [-] [INFO] [signalpilot.scheduler.scheduler] Registered job stop_new_signals at 14:30 IST
+2026-02-21 10:01:23 [-] [-] [-] [INFO] [signalpilot.scheduler.scheduler] Registered job exit_reminder at 15:00 IST
+2026-02-21 10:01:23 [-] [-] [-] [INFO] [signalpilot.scheduler.scheduler] Registered job mandatory_exit at 15:15 IST
+2026-02-21 10:01:23 [-] [-] [-] [INFO] [signalpilot.scheduler.scheduler] Registered job daily_summary at 15:30 IST
+2026-02-21 10:01:23 [-] [-] [-] [INFO] [signalpilot.scheduler.scheduler] Registered job shutdown at 15:35 IST
+2026-02-21 10:01:23 [-] [-] [-] [INFO] [signalpilot.scheduler.scheduler] Registered job weekly_rebalance on Sundays at 18:00 IST
+2026-02-21 10:01:23 [-] [-] [-] [INFO] [signalpilot.scheduler.scheduler] MarketScheduler started
+2026-02-21 10:01:23 [-] [-] [-] [INFO] [signalpilot.scheduler.lifecycle] SignalPilot startup complete
+2026-02-21 10:26:13 [-] [-] [-] [INFO] [signalpilot.db.database] Phase 2 migration complete
+2026-02-21 10:26:13 [-] [-] [-] [INFO] [signalpilot.db.database] Database initialized at signalpilot.db
+2026-02-21 10:26:13 [-] [-] [-] [INFO] [signalpilot.scheduler.lifecycle] Starting SignalPilot...
+2026-02-21 10:26:13 [-] [-] [-] [INFO] [signalpilot.data.auth] SmartAPI authentication successful for client AACE553428
+2026-02-21 10:28:50 [-] [-] [-] [INFO] [signalpilot.data.instruments] Loaded 10 instruments from 10 CSV symbols
+2026-02-21 10:28:55 [-] [-] [-] [INFO] [signalpilot.data.historical] Fetched previous day data for 10/10 instruments
+2026-02-21 10:28:55 [-] [-] [-] [INFO] [signalpilot.scheduler.lifecycle] Cooling down 5s before ADV fetch...
+2026-02-21 10:29:05 [-] [-] [-] [INFO] [signalpilot.data.historical] Fetched ADV for 10/10 instruments
+2026-02-21 10:29:06 [-] [-] [-] [INFO] [signalpilot.telegram.bot] Telegram bot started polling
+2026-02-21 10:29:06 [-] [-] [-] [INFO] [signalpilot.scheduler.scheduler] Registered job pre_market_alert at 09:00 IST
+2026-02-21 10:29:06 [-] [-] [-] [INFO] [signalpilot.scheduler.scheduler] Registered job start_scanning at 09:15 IST
+2026-02-21 10:29:06 [-] [-] [-] [INFO] [signalpilot.scheduler.scheduler] Registered job stop_new_signals at 14:30 IST
+2026-02-21 10:29:06 [-] [-] [-] [INFO] [signalpilot.scheduler.scheduler] Registered job exit_reminder at 15:00 IST
+2026-02-21 10:29:06 [-] [-] [-] [INFO] [signalpilot.scheduler.scheduler] Registered job mandatory_exit at 15:15 IST
+2026-02-21 10:29:06 [-] [-] [-] [INFO] [signalpilot.scheduler.scheduler] Registered job daily_summary at 15:30 IST
+2026-02-21 10:29:06 [-] [-] [-] [INFO] [signalpilot.scheduler.scheduler] Registered job shutdown at 15:35 IST
+2026-02-21 10:29:06 [-] [-] [-] [INFO] [signalpilot.scheduler.scheduler] Registered job weekly_rebalance on Sundays at 18:00 IST
+2026-02-21 10:29:06 [-] [-] [-] [INFO] [signalpilot.scheduler.scheduler] MarketScheduler started
+2026-02-21 10:29:06 [-] [-] [-] [INFO] [signalpilot.scheduler.lifecycle] SignalPilot startup complete
