@@ -27,13 +27,21 @@ async def create_app(config: AppConfig) -> SignalPilotApp:
     from signalpilot.db.metrics import MetricsCalculator
     from signalpilot.db.models import ScoringWeights
     from signalpilot.db.signal_repo import SignalRepository
+    from signalpilot.db.strategy_performance_repo import StrategyPerformanceRepository
     from signalpilot.db.trade_repo import TradeRepository
+    from signalpilot.monitor.duplicate_checker import DuplicateChecker
     from signalpilot.monitor.exit_monitor import ExitMonitor
+    from signalpilot.monitor.vwap_cooldown import VWAPCooldownTracker
+    from signalpilot.ranking.orb_scorer import ORBScorer
     from signalpilot.ranking.ranker import SignalRanker
     from signalpilot.ranking.scorer import SignalScorer
+    from signalpilot.ranking.vwap_scorer import VWAPScorer
+    from signalpilot.risk.capital_allocator import CapitalAllocator
     from signalpilot.risk.position_sizer import PositionSizer
     from signalpilot.risk.risk_manager import RiskManager
     from signalpilot.strategy.gap_and_go import GapAndGoStrategy
+    from signalpilot.strategy.orb import ORBStrategy
+    from signalpilot.strategy.vwap_reversal import VWAPReversalStrategy
     from signalpilot.telegram.bot import SignalPilotBot
 
     # --- Database (must initialize before repos) ---
@@ -55,17 +63,40 @@ async def create_app(config: AppConfig) -> SignalPilotApp:
         authenticator, instruments, config.historical_api_rate_limit
     )
 
-    # --- Strategy ---
-    strategy = GapAndGoStrategy(config)
+    # --- Strategies ---
+    gap_and_go = GapAndGoStrategy(config)
+    orb = ORBStrategy(config, market_data)
+    cooldown_tracker = VWAPCooldownTracker(
+        max_signals_per_stock=config.vwap_max_signals_per_stock,
+        cooldown_minutes=config.vwap_cooldown_minutes,
+    )
+    vwap = VWAPReversalStrategy(config, market_data, cooldown_tracker)
 
-    # --- Ranking ---
+    # --- Cross-strategy deduplication ---
+    duplicate_checker = DuplicateChecker(signal_repo, trade_repo)
+
+    # --- Ranking (with strategy-specific scorers) ---
     weights = ScoringWeights(
         gap_pct_weight=config.scoring_gap_weight,
         volume_ratio_weight=config.scoring_volume_weight,
         price_distance_weight=config.scoring_price_distance_weight,
     )
-    scorer = SignalScorer(weights)
+    orb_scorer = ORBScorer(
+        volume_weight=config.orb_scoring_volume_weight,
+        range_weight=config.orb_scoring_range_weight,
+        distance_weight=config.orb_scoring_distance_weight,
+    )
+    vwap_scorer = VWAPScorer(
+        volume_weight=config.vwap_scoring_volume_weight,
+        touch_weight=config.vwap_scoring_touch_weight,
+        trend_weight=config.vwap_scoring_trend_weight,
+    )
+    scorer = SignalScorer(weights, orb_scorer=orb_scorer, vwap_scorer=vwap_scorer)
     ranker = SignalRanker(scorer, max_signals=config.default_max_positions)
+
+    # --- Strategy performance tracking & capital allocation ---
+    strategy_performance_repo = StrategyPerformanceRepository(connection)
+    capital_allocator = CapitalAllocator(strategy_performance_repo, config_repo)
 
     # --- Risk ---
     position_sizer = PositionSizer()
@@ -122,12 +153,15 @@ async def create_app(config: AppConfig) -> SignalPilotApp:
         market_data=market_data,
         historical=historical,
         websocket=websocket,
-        strategy=strategy,
+        strategies=[gap_and_go, orb, vwap],
         ranker=ranker,
         risk_manager=risk_manager,
         exit_monitor=exit_monitor,
         bot=bot,
         scheduler=scheduler,
+        duplicate_checker=duplicate_checker,
+        capital_allocator=capital_allocator,
+        strategy_performance_repo=strategy_performance_repo,
     )
 
 
