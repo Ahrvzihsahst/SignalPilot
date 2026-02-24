@@ -13,6 +13,7 @@ def _make_mock_app():
     app = MagicMock()
     app.send_pre_market_alert = AsyncMock()
     app.start_scanning = AsyncMock()
+    app.lock_opening_ranges = AsyncMock()
     app.stop_new_signals = AsyncMock()
     app.trigger_exit_reminder = AsyncMock()
     app.trigger_mandatory_exit = AsyncMock()
@@ -25,6 +26,7 @@ def _make_mock_app():
 DAILY_JOBS = {
     "pre_market_alert": (9, 0),
     "start_scanning": (9, 15),
+    "lock_opening_ranges": (9, 45),
     "stop_new_signals": (14, 30),
     "exit_reminder": (15, 0),
     "mandatory_exit": (15, 15),
@@ -42,7 +44,7 @@ def test_all_jobs_registered() -> None:
 
     job_ids = {job.id for job in scheduler.jobs}
     assert job_ids == ALL_EXPECTED_JOB_IDS
-    assert len(scheduler.jobs) == 8
+    assert len(scheduler.jobs) == 9
 
 
 @pytest.mark.parametrize("job_id,expected_time", list(DAILY_JOBS.items()))
@@ -86,7 +88,7 @@ async def test_start_and_shutdown() -> None:
     app = _make_mock_app()
     scheduler.configure_jobs(app)
     scheduler.start()
-    assert len(scheduler.jobs) == 8
+    assert len(scheduler.jobs) == 9
     scheduler.shutdown()
 
 
@@ -95,7 +97,7 @@ def test_configure_without_start() -> None:
     scheduler = MarketScheduler()
     app = _make_mock_app()
     scheduler.configure_jobs(app)
-    assert len(scheduler.jobs) == 8
+    assert len(scheduler.jobs) == 9
 
 
 def test_shutdown_without_start_does_not_raise() -> None:

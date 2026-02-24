@@ -22,6 +22,7 @@ class MarketScheduler:
         app should be a SignalPilotApp instance with these async methods:
         - send_pre_market_alert()
         - start_scanning()
+        - lock_opening_ranges()
         - stop_new_signals()
         - trigger_exit_reminder()
         - trigger_mandatory_exit()
@@ -31,6 +32,7 @@ class MarketScheduler:
         jobs = [
             ("pre_market_alert", 9, 0, app.send_pre_market_alert),
             ("start_scanning", 9, 15, app.start_scanning),
+            ("lock_opening_ranges", 9, 45, app.lock_opening_ranges),
             ("stop_new_signals", 14, 30, app.stop_new_signals),
             ("exit_reminder", 15, 0, app.trigger_exit_reminder),
             ("mandatory_exit", 15, 15, app.trigger_mandatory_exit),

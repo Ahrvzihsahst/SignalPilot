@@ -5,7 +5,12 @@ import logging
 import uuid
 from datetime import datetime
 
-from signalpilot.db.models import FinalSignal, SignalRecord, UserConfig
+from signalpilot.db.models import (
+    FinalSignal,
+    HistoricalReference,
+    SignalRecord,
+    UserConfig,
+)
 from signalpilot.telegram.formatters import format_daily_summary
 from signalpilot.utils.constants import IST
 from signalpilot.utils.log_context import reset_context, set_context
@@ -82,14 +87,7 @@ class SignalPilotApp:
         if self._instruments:
             await self._instruments.load()
         if self._historical:
-            await self._historical.fetch_previous_day_data()
-            # Cooldown: let Angel One's per-minute rate window reset before ADV pass
-            reset_fn = getattr(self._historical, "reset_rate_limiter", None)
-            if self._fetch_cooldown > 0 and reset_fn and not asyncio.iscoroutinefunction(reset_fn):
-                logger.info("Cooling down %ds before ADV fetch...", self._fetch_cooldown)
-                reset_fn()
-                await asyncio.sleep(self._fetch_cooldown)
-            await self._historical.fetch_average_daily_volume()
+            await self._load_historical_data()
         if self._config_repo:
             await self._config_repo.initialize_default(
                 telegram_chat_id="",
@@ -100,6 +98,43 @@ class SignalPilotApp:
         self._scheduler.start()
         logger.info("SignalPilot startup complete")
 
+    async def _load_historical_data(self) -> None:
+        """Fetch previous-day OHLCV + ADV and store as HistoricalReferences.
+
+        The two fetches run sequentially with a cooldown between them because
+        they share the same Angel One rate limit.
+        """
+        prev_data = await self._historical.fetch_previous_day_data()
+
+        # Cooldown: let Angel One's per-minute rate window reset before ADV pass
+        reset_fn = getattr(self._historical, "reset_rate_limiter", None)
+        if self._fetch_cooldown > 0 and reset_fn and not asyncio.iscoroutinefunction(reset_fn):
+            logger.info("Cooling down %ds before ADV fetch...", self._fetch_cooldown)
+            reset_fn()
+            await asyncio.sleep(self._fetch_cooldown)
+
+        adv_data = await self._historical.fetch_average_daily_volume()
+
+        # Build HistoricalReference objects and store in MarketDataStore
+        loaded = 0
+        for symbol, prev in prev_data.items():
+            adv = adv_data.get(symbol)
+            if adv is None:
+                continue
+            ref = HistoricalReference(
+                previous_close=prev.close,
+                previous_high=prev.high,
+                average_daily_volume=adv,
+            )
+            await self._market_data.set_historical(symbol, ref)
+            loaded += 1
+
+        logger.info(
+            "Loaded historical references for %d/%d instruments",
+            loaded,
+            len(prev_data),
+        )
+
     async def start_scanning(self) -> None:
         """Begin the continuous scanning loop (called at 9:15 AM)."""
         set_context(job_name="start_scanning")
@@ -107,6 +142,10 @@ class SignalPilotApp:
             if not self._websocket:
                 logger.warning("Skipping scan start: websocket component not configured")
                 return
+
+            # Reset per-session state so yesterday's data doesn't bleed over.
+            await self._reset_session()
+
             logger.info("Starting market scanning")
             await self._websocket.connect()
             self._scanning = True
@@ -115,9 +154,48 @@ class SignalPilotApp:
         finally:
             reset_context()
 
+    async def lock_opening_ranges(self) -> None:
+        """Lock opening ranges for all symbols (called at 9:45 AM).
+
+        After this, ORB breakout detection can begin because the 30-minute
+        opening range (9:15-9:45) is finalized.
+        """
+        set_context(job_name="lock_opening_ranges")
+        try:
+            if self._market_data:
+                await self._market_data.lock_opening_ranges()
+                logger.info("Opening ranges locked for ORB detection")
+        finally:
+            reset_context()
+
+    async def _reset_session(self) -> None:
+        """Reset all intraday state at the start of a new trading session.
+
+        Clears:
+        - Strategy per-day state (gap candidates, signal sets, cooldowns)
+        - MarketDataStore session data (ticks, VWAP, candles, opening ranges)
+        - WebSocket volume-tracking counters
+        Historical references are preserved.
+        """
+        # Reset strategies
+        for strat in self._strategies:
+            if hasattr(strat, "reset"):
+                strat.reset()
+                logger.info("Reset strategy: %s", strat.name)
+
+        # Clear intraday market data (keep historical references)
+        if self._market_data and hasattr(self._market_data, "clear_session"):
+            await self._market_data.clear_session()
+            logger.info("Cleared intraday market data")
+
+        # Reset WebSocket volume tracking
+        if self._websocket and hasattr(self._websocket, "reset_volume_tracking"):
+            self._websocket.reset_volume_tracking()
+
     async def _scan_loop(self) -> None:
         """Main scanning loop. Runs every second while active."""
         consecutive_errors = 0
+        _diag_cycle_count = 0
         while self._scanning:
             cycle_id = uuid.uuid4().hex[:8]
             try:
@@ -181,6 +259,24 @@ class SignalPilotApp:
                                     record.symbol,
                                     signal_id,
                                 )
+
+                    # Periodic diagnostic: log when scanning is active but
+                    # producing no candidates (every 60 cycles ≈ 1 minute).
+                    _diag_cycle_count += 1
+                    if _diag_cycle_count % 60 == 0:
+                        ws_ok = (
+                            self._websocket.is_connected
+                            if self._websocket
+                            else False
+                        )
+                        logger.info(
+                            "Scan heartbeat: phase=%s strategies=%d ws_connected=%s "
+                            "candidates_this_cycle=%d",
+                            phase.value,
+                            len(enabled_strategies),
+                            ws_ok,
+                            len(all_candidates),
+                        )
 
                 active_trades = await self._trade_repo.get_active_trades()
                 for trade in active_trades:
@@ -315,6 +411,8 @@ class SignalPilotApp:
                 await self._authenticator.authenticate()
             if self._instruments:
                 await self._instruments.load()
+            if self._historical:
+                await self._load_historical_data()
             if self._trade_repo and self._exit_monitor:
                 active_trades = await self._trade_repo.get_active_trades()
                 for trade in active_trades:

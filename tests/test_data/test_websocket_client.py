@@ -94,6 +94,7 @@ async def test_on_data_updates_store(
     """Verify _on_data parses tick message and updates MarketDataStore."""
     loop = asyncio.get_running_loop()
     client._loop = loop
+    client._connected = True
 
     message = {
         "token": "3045",
@@ -128,6 +129,7 @@ async def test_on_data_ignores_unknown_token(
     """Unknown token should be silently ignored."""
     loop = asyncio.get_running_loop()
     client._loop = loop
+    client._connected = True
 
     message = {
         "token": "9999",  # not in our instruments
@@ -149,6 +151,7 @@ async def test_on_data_accumulates_volume(
     """Verify _on_data also updates volume accumulator."""
     loop = asyncio.get_running_loop()
     client._loop = loop
+    client._connected = True
 
     message = {
         "token": "3045",
@@ -175,6 +178,7 @@ async def test_on_data_handles_malformed_message(
     """Malformed message should be logged, not crash the handler."""
     loop = asyncio.get_running_loop()
     client._loop = loop
+    client._connected = True
 
     # Missing required fields entirely
     client._on_data(None, {})

@@ -31,6 +31,32 @@ def _make_mock_strategy(
         StrategyPhase.OPENING,
         StrategyPhase.ENTRY_WINDOW,
     ]
+    # reset() is synchronous on real strategies
+    mock.reset = MagicMock()
+    return mock
+
+
+def _make_mock_historical():
+    """Create a properly configured mock for HistoricalDataFetcher."""
+    mock = AsyncMock()
+    mock.fetch_previous_day_data.return_value = {}
+    mock.fetch_average_daily_volume.return_value = {}
+    return mock
+
+
+def _make_mock_websocket():
+    """Create an AsyncMock websocket with sync methods properly configured."""
+    mock = AsyncMock()
+    mock.reset_volume_tracking = MagicMock()
+    return mock
+
+
+def _make_mock_market_data():
+    """Create a MagicMock market_data with async methods that lifecycle calls."""
+    mock = MagicMock()
+    mock.clear_session = AsyncMock()
+    mock.lock_opening_ranges = AsyncMock()
+    mock.set_historical = AsyncMock()
     return mock
 
 
@@ -44,9 +70,9 @@ def _make_app(**overrides) -> SignalPilotApp:
         "metrics_calculator": AsyncMock(),
         "authenticator": AsyncMock(),
         "instruments": AsyncMock(),
-        "market_data": MagicMock(),
-        "historical": AsyncMock(),
-        "websocket": AsyncMock(),
+        "market_data": _make_mock_market_data(),
+        "historical": _make_mock_historical(),
+        "websocket": _make_mock_websocket(),
         "strategy": _make_mock_strategy(),
         "ranker": MagicMock(),
         "risk_manager": MagicMock(),

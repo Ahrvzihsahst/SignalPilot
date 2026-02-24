@@ -214,10 +214,25 @@ class MarketDataStore:
                 return 0.0
             return sum(c.volume for c in candles) / len(candles)
 
-    # -- Clear all ----------------------------------------------------------------
+    # -- Clear / Reset ------------------------------------------------------------
+
+    async def clear_session(self) -> None:
+        """Clear intraday session data, preserving historical references.
+
+        Call at the start of each trading day (before scanning begins) so that
+        stale ticks, opening ranges, VWAP accumulators, and candle buckets
+        from the previous session do not interfere.
+        """
+        async with self._lock:
+            self._ticks.clear()
+            self._volume_accumulator.clear()
+            self._opening_ranges.clear()
+            self._vwap_state.clear()
+            self._candles_15m.clear()
+            self._current_candle.clear()
 
     async def clear(self) -> None:
-        """Clear all stored data (used for daily reset)."""
+        """Clear all stored data including historical references."""
         async with self._lock:
             self._ticks.clear()
             self._historical.clear()

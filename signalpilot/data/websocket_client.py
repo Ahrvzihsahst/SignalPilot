@@ -11,12 +11,19 @@ from signalpilot.data.auth import SmartAPIAuthenticator
 from signalpilot.data.instruments import InstrumentManager
 from signalpilot.data.market_data_store import MarketDataStore
 from signalpilot.db.models import TickData
+from signalpilot.utils.constants import IST
 
 logger = logging.getLogger("signalpilot.data.websocket_client")
 
 
 class WebSocketClient:
-    """Manages the Angel One SmartAPI WebSocket connection."""
+    """Manages the Angel One SmartAPI WebSocket connection.
+
+    The SmartWebSocketV2.connect() call is blocking (runs ``run_forever``
+    internally), so it is launched in a background thread via
+    ``loop.run_in_executor``.  The ``connect`` coroutine returns as soon as
+    ``_on_open`` fires, allowing the caller to proceed immediately.
+    """
 
     def __init__(
         self,
@@ -35,10 +42,30 @@ class WebSocketClient:
         self._reconnect_count = 0
         self._loop: asyncio.AbstractEventLoop | None = None
         self._connected = False
+        self._connected_event: asyncio.Event | None = None
+        # Track cumulative volume per symbol so we can derive per-tick deltas
+        # for VWAP and candle aggregation.
+        self._prev_volume: dict[str, int] = {}
 
     async def connect(self) -> None:
-        """Establish WebSocket connection and subscribe to all instruments."""
+        """Establish WebSocket connection and subscribe to all instruments.
+
+        Launches the blocking ``SmartWebSocketV2.connect()`` in a background
+        thread and waits (with timeout) for the ``_on_open`` callback to fire,
+        signalling that the connection is ready and subscriptions are in place.
+        Returns promptly so the caller can proceed (e.g. start the scan loop).
+        """
         self._loop = asyncio.get_running_loop()
+        self._connected_event = asyncio.Event()
+
+        # Close any lingering previous WebSocket before creating a new one
+        # (prevents duplicate threads / callbacks on reconnection).
+        if self._ws is not None:
+            try:
+                self._ws.close_connection()
+            except Exception:
+                pass
+            self._ws = None
 
         self._ws = SmartWebSocketV2(
             self._auth.auth_token,
@@ -52,30 +79,44 @@ class WebSocketClient:
         self._ws.on_error = self._on_error
         self._ws.on_open = self._on_open
 
-        # Start WebSocket in a background thread (it runs its own event loop)
-        await asyncio.to_thread(self._ws.connect)
+        # Start WebSocket in a background thread.  ``SmartWebSocketV2.connect``
+        # is blocking (calls ``run_forever``), so we must NOT await the future —
+        # it only resolves when the WebSocket disconnects.
+        self._loop.run_in_executor(None, self._ws.connect)
+
+        # Wait until ``_on_open`` fires (or timeout after 30 s).
+        try:
+            await asyncio.wait_for(self._connected_event.wait(), timeout=30)
+        except asyncio.TimeoutError:
+            logger.error("WebSocket connection timed out after 30 s")
+            raise
+
+    # -- WebSocket callbacks (run in the WS background thread) ---------------
 
     def _on_open(self, ws) -> None:
-        """Callback when WebSocket connection is established."""
+        """Called when the WebSocket connection is established."""
         logger.info("WebSocket connection established")
         self._connected = True
 
         # Subscribe to all instrument tokens
         token_list = self._instruments.get_all_tokens()
-        # Mode 1 = LTP, Mode 2 = Quote, Mode 3 = Snap Quote
-        self._ws.subscribe("abc123", 3, token_list)
+        try:
+            # Mode 1 = LTP, Mode 2 = Quote, Mode 3 = Snap Quote
+            self._ws.subscribe("abc123", 3, token_list)
+        except Exception:
+            logger.exception("Failed to subscribe to instrument tokens")
 
-        # Reset reconnect counter only after successful subscription (H5)
+        # Reset reconnect counter after successful subscription.
         self._reconnect_count = 0
         logger.info("Subscribed to %d token groups", len(token_list))
 
-    def _on_data(self, ws, message) -> None:
-        """Callback for incoming tick data.
+        # Signal the asyncio side that connection + subscription is ready.
+        if self._loop is not None and self._connected_event is not None:
+            self._loop.call_soon_threadsafe(self._connected_event.set)
 
-        Parses the tick message and updates MarketDataStore.
-        Bridges from the WebSocket thread into the asyncio event loop.
-        """
-        if self._loop is None:
+    def _on_data(self, ws, message) -> None:
+        """Parse incoming tick and bridge into the asyncio event loop."""
+        if self._loop is None or not self._connected:
             return
 
         try:
@@ -84,7 +125,7 @@ class WebSocketClient:
             if symbol is None:
                 return
 
-            now = datetime.now()
+            now = datetime.now(IST)
             tick = TickData(
                 symbol=symbol,
                 ltp=float(message.get("last_traded_price", 0)) / 100,
@@ -104,13 +145,8 @@ class WebSocketClient:
         except Exception:
             logger.exception("Error parsing tick data from message: %s", message)
 
-    async def _update_store(self, symbol: str, tick: TickData) -> None:
-        """Update the market data store with a new tick."""
-        await self._store.update_tick(symbol, tick)
-        await self._store.accumulate_volume(symbol, tick.volume)
-
     def _on_close(self, ws, code, reason) -> None:
-        """Callback for connection close. Triggers reconnection."""
+        """Handle connection close — schedule reconnection if retries remain."""
         self._connected = False
         logger.warning("WebSocket closed: code=%s reason=%s", code, reason)
 
@@ -136,6 +172,46 @@ class WebSocketClient:
                     ),
                 )
 
+    def _on_error(self, ws, error) -> None:
+        """Handle WebSocket errors — log and schedule reconnection."""
+        logger.error("WebSocket error: %s", error)
+        # Errors often precede an _on_close callback, but if they don't we
+        # still want to trigger reconnection.
+        if self._connected:
+            self._connected = False
+            if (
+                self._reconnect_count < self._max_reconnect_attempts
+                and self._loop is not None
+            ):
+                self._reconnect_count += 1
+                self._loop.call_soon_threadsafe(
+                    asyncio.ensure_future,
+                    self._reconnect_with_delay(),
+                )
+
+    # -- Internal helpers ----------------------------------------------------
+
+    async def _update_store(self, symbol: str, tick: TickData) -> None:
+        """Update all market data aggregations from a single tick."""
+        await self._store.update_tick(symbol, tick)
+        await self._store.accumulate_volume(symbol, tick.volume)
+
+        # Compute incremental volume (tick.volume is cumulative for the day).
+        prev_vol = self._prev_volume.get(symbol, 0)
+        delta_vol = max(0, tick.volume - prev_vol)
+        self._prev_volume[symbol] = tick.volume
+
+        if delta_vol > 0:
+            # Running VWAP
+            await self._store.update_vwap(symbol, tick.ltp, float(delta_vol))
+            # 15-minute candle aggregation
+            await self._store.update_candle(
+                symbol, tick.ltp, float(delta_vol), tick.updated_at
+            )
+
+        # Opening range (store ignores updates after range is locked)
+        await self._store.update_opening_range(symbol, tick.high, tick.low)
+
     async def _reconnect_with_delay(self) -> None:
         """Reconnect after an exponential backoff delay."""
         delay = 2.0 * (2 ** (self._reconnect_count - 1))
@@ -146,11 +222,10 @@ class WebSocketClient:
             self._max_reconnect_attempts,
         )
         await asyncio.sleep(delay)
-        await self.connect()
-
-    def _on_error(self, ws, error) -> None:
-        """Callback for WebSocket errors."""
-        logger.error("WebSocket error: %s", error)
+        try:
+            await self.connect()
+        except Exception:
+            logger.exception("Reconnection attempt %d failed", self._reconnect_count)
 
     async def disconnect(self) -> None:
         """Gracefully close the WebSocket connection."""
@@ -162,6 +237,10 @@ class WebSocketClient:
             self._ws = None
             self._connected = False
             logger.info("WebSocket disconnected")
+
+    def reset_volume_tracking(self) -> None:
+        """Clear per-tick volume deltas (call at session start)."""
+        self._prev_volume.clear()
 
     @property
     def is_connected(self) -> bool:
