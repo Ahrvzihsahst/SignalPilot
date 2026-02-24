@@ -73,7 +73,14 @@ All configuration is loaded from environment variables or a `.env` file. See [`.
 ```bash
 # Run the application
 python -m signalpilot.main
-```
+
+To run SignalPilot continuously on EC2 (so it survives SSH disconnection), you have a few options:
+# Simplest: nohup + background
+```bash
+nohup python -m signalpilot.main > logs/signalpilot.log 2>&1 &
+
+
+This keeps the process running after you close your terminal. Check it with ps aux | grep signalpilot.
 
 SignalPilot runs autonomously during market hours:
 
