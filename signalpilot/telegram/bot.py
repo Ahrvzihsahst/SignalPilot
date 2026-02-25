@@ -72,7 +72,7 @@ class SignalPilotBot:
 
         self._application.add_handler(
             MessageHandler(
-                chat_filter & filters.TEXT & filters.Regex(r"(?i)^/?taken$"),
+                chat_filter & filters.TEXT & filters.Regex(r"(?i)^/?taken(?:\s+\d+)?$"),
                 self._handle_taken,
             )
         )
@@ -138,9 +138,12 @@ class SignalPilotBot:
             await self._application.shutdown()
             logger.info("Telegram bot stopped")
 
-    async def send_signal(self, signal: FinalSignal, is_paper: bool = False) -> None:
+    async def send_signal(
+        self, signal: FinalSignal, is_paper: bool = False,
+        signal_id: int | None = None,
+    ) -> None:
         """Format and send a signal message to the user's chat."""
-        message = format_signal_message(signal, is_paper=is_paper)
+        message = format_signal_message(signal, is_paper=is_paper, signal_id=signal_id)
         await self._application.bot.send_message(
             chat_id=self._chat_id,
             text=message,
@@ -173,8 +176,10 @@ class SignalPilotBot:
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
         async with log_context(command="TAKEN"):
+            text = update.message.text.strip()
             response = await handle_taken(
                 self._signal_repo, self._trade_repo, self._exit_monitor,
+                text=text,
             )
             await update.message.reply_text(response)
 

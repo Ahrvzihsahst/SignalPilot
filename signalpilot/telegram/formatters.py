@@ -25,7 +25,13 @@ def star_rating(strength: int) -> str:
     return f"{filled}{empty} ({label})"
 
 
-def format_signal_message(signal: FinalSignal, active_count: int = 0, max_positions: int = 8, is_paper: bool = False) -> str:
+def format_signal_message(
+    signal: FinalSignal,
+    active_count: int = 0,
+    max_positions: int = 8,
+    is_paper: bool = False,
+    signal_id: int | None = None,
+) -> str:
     """Format a FinalSignal into the user-facing Telegram message (HTML)."""
     c = signal.ranked_signal.candidate
     risk_pct = abs((c.stop_loss - c.entry_price) / c.entry_price * 100)
@@ -49,6 +55,15 @@ def format_signal_message(signal: FinalSignal, active_count: int = 0, max_positi
     if c.setup_type == "vwap_reclaim":
         warnings = "\n⚠️ Higher Risk setup"
 
+    # Signal ID line (only when DB id is available)
+    id_line = f"Signal ID: #{signal_id}\n" if signal_id is not None else ""
+
+    # Footer: include signal ID in TAKEN hint when available
+    if signal_id is not None:
+        taken_hint = f"Reply TAKEN {signal_id} to log this trade"
+    else:
+        taken_hint = "Reply TAKEN to log this trade"
+
     return (
         f"{prefix}"
         f"<b>{direction} SIGNAL -- {c.symbol}</b>\n"
@@ -62,11 +77,12 @@ def format_signal_message(signal: FinalSignal, active_count: int = 0, max_positi
         f"Signal Strength: {stars}\n"
         f"Strategy: {strategy_display}\n"
         f"Positions open: {active_count}/{max_positions}\n"
+        f"{id_line}"
         f"Reason: {c.reason}{warnings}\n"
         f"\n"
         f"Valid Until: {signal.expires_at.strftime('%I:%M %p')} (auto-expires)\n"
         f"{'=' * 30}\n"
-        f"Reply TAKEN to log this trade"
+        f"{taken_hint}"
     )
 
 

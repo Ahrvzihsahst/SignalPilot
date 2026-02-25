@@ -137,6 +137,22 @@ def test_signal_message_contains_all_fields() -> None:
     assert "Reply TAKEN" in msg
 
 
+def test_signal_message_with_signal_id() -> None:
+    """format_signal_message with signal_id shows ID line and TAKEN <id> footer."""
+    signal = _make_final_signal()
+    msg = format_signal_message(signal, signal_id=42)
+    assert "Signal ID: #42" in msg
+    assert "Reply TAKEN 42 to log this trade" in msg
+
+
+def test_signal_message_without_signal_id() -> None:
+    """format_signal_message without signal_id keeps generic TAKEN footer."""
+    signal = _make_final_signal()
+    msg = format_signal_message(signal)
+    assert "Signal ID:" not in msg
+    assert "Reply TAKEN to log this trade" in msg
+
+
 def test_signal_message_risk_pct() -> None:
     """Risk percentage should be computed from entry and stop loss."""
     signal = _make_final_signal(entry_price=100.0, stop_loss=97.0)

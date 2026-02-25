@@ -254,7 +254,9 @@ class SignalPilotApp:
                                     record.status = "paper"
                                 signal_id = await self._signal_repo.insert_signal(record)
                                 record.id = signal_id
-                                await self._bot.send_signal(signal, is_paper=is_paper)
+                                await self._bot.send_signal(
+                                    signal, is_paper=is_paper, signal_id=signal_id,
+                                )
                                 logger.info(
                                     "Signal %s for %s (id=%d)",
                                     "paper-sent" if is_paper else "sent",

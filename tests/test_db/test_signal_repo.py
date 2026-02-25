@@ -144,6 +144,70 @@ class TestSignalRepository:
         )
         assert result is None
 
+    async def test_get_active_signal_by_id_valid(self, signal_repo):
+        """get_active_signal_by_id returns the signal when active and not expired."""
+        signal = _make_signal(
+            symbol="SBIN",
+            expires_at=datetime(2099, 12, 31, 23, 59, 59),
+        )
+        signal_id = await signal_repo.insert_signal(signal)
+
+        result = await signal_repo.get_active_signal_by_id(
+            signal_id, now=datetime(2026, 2, 16, 10, 0, 0)
+        )
+        assert result is not None
+        assert result.id == signal_id
+        assert result.symbol == "SBIN"
+
+    async def test_get_active_signal_by_id_expired(self, signal_repo):
+        """get_active_signal_by_id returns None for an expired signal."""
+        signal = _make_signal(
+            symbol="SBIN",
+            expires_at=datetime(2026, 2, 16, 9, 50, 0),
+        )
+        signal_id = await signal_repo.insert_signal(signal)
+
+        result = await signal_repo.get_active_signal_by_id(
+            signal_id, now=datetime(2026, 2, 16, 10, 0, 0)
+        )
+        assert result is None
+
+    async def test_get_active_signal_by_id_already_taken(self, signal_repo):
+        """get_active_signal_by_id returns None for a signal with status='taken'."""
+        signal = _make_signal(
+            symbol="SBIN",
+            status="taken",
+            expires_at=datetime(2099, 12, 31, 23, 59, 59),
+        )
+        signal_id = await signal_repo.insert_signal(signal)
+
+        result = await signal_repo.get_active_signal_by_id(
+            signal_id, now=datetime(2026, 2, 16, 10, 0, 0)
+        )
+        assert result is None
+
+    async def test_get_active_signal_by_id_nonexistent(self, signal_repo):
+        """get_active_signal_by_id returns None for a nonexistent ID."""
+        result = await signal_repo.get_active_signal_by_id(
+            99999, now=datetime(2026, 2, 16, 10, 0, 0)
+        )
+        assert result is None
+
+    async def test_get_active_signal_by_id_paper_status(self, signal_repo):
+        """get_active_signal_by_id returns paper-mode signals too."""
+        signal = _make_signal(
+            symbol="INFY",
+            status="paper",
+            expires_at=datetime(2099, 12, 31, 23, 59, 59),
+        )
+        signal_id = await signal_repo.insert_signal(signal)
+
+        result = await signal_repo.get_active_signal_by_id(
+            signal_id, now=datetime(2026, 2, 16, 10, 0, 0)
+        )
+        assert result is not None
+        assert result.symbol == "INFY"
+
     async def test_inserted_record_round_trips_all_fields(self, signal_repo):
         signal = _make_signal()
         signal_id = await signal_repo.insert_signal(signal)

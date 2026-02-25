@@ -86,6 +86,40 @@ async def test_send_signal_calls_bot() -> None:
 
 
 @pytest.mark.asyncio
+async def test_send_signal_with_signal_id() -> None:
+    """send_signal with signal_id should include ID in the formatted message."""
+    bot = _make_bot()
+    mock_send = AsyncMock()
+    bot._application = MagicMock()
+    bot._application.bot.send_message = mock_send
+
+    signal = _make_final_signal()
+    await bot.send_signal(signal, signal_id=42)
+
+    mock_send.assert_called_once()
+    text = mock_send.call_args.kwargs["text"]
+    assert "Signal ID: #42" in text
+    assert "Reply TAKEN 42 to log this trade" in text
+
+
+@pytest.mark.asyncio
+async def test_send_signal_without_signal_id() -> None:
+    """send_signal without signal_id should use generic TAKEN footer."""
+    bot = _make_bot()
+    mock_send = AsyncMock()
+    bot._application = MagicMock()
+    bot._application.bot.send_message = mock_send
+
+    signal = _make_final_signal()
+    await bot.send_signal(signal)
+
+    mock_send.assert_called_once()
+    text = mock_send.call_args.kwargs["text"]
+    assert "Signal ID:" not in text
+    assert "Reply TAKEN to log this trade" in text
+
+
+@pytest.mark.asyncio
 async def test_send_alert_calls_bot() -> None:
     """send_alert should send plain text to chat_id."""
     bot = _make_bot()

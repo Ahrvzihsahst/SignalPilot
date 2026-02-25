@@ -112,6 +112,21 @@ class SignalRepository:
         await self._conn.commit()
         return cursor.rowcount
 
+    async def get_active_signal_by_id(
+        self, signal_id: int, now: datetime | None = None,
+    ) -> SignalRecord | None:
+        """Return an active signal by its DB id, or None if expired/taken/missing."""
+        now = now or datetime.now(IST)
+        cursor = await self._conn.execute(
+            """
+            SELECT * FROM signals
+            WHERE id = ? AND status IN ('sent', 'paper') AND expires_at > ?
+            """,
+            (signal_id, now.isoformat()),
+        )
+        row = await cursor.fetchone()
+        return self._row_to_record(row) if row else None
+
     async def get_latest_active_signal(self, now: datetime | None = None) -> SignalRecord | None:
         """Return the most recent active signal (for TAKEN command).
 

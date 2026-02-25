@@ -103,6 +103,104 @@ async def test_taken_with_expired_signal() -> None:
     trade_repo.insert_trade.assert_not_called()
 
 
+@pytest.mark.asyncio
+async def test_taken_with_specific_id() -> None:
+    """TAKEN 42 -> looks up signal by ID, creates trade."""
+    signal = _make_signal_record(signal_id=42)
+    signal_repo = AsyncMock()
+    signal_repo.get_active_signal_by_id = AsyncMock(return_value=signal)
+    signal_repo.update_status = AsyncMock()
+
+    trade_repo = AsyncMock()
+    trade_repo.insert_trade.return_value = 10
+
+    exit_monitor = MagicMock()
+
+    now = datetime(2025, 1, 6, 9, 40, 0, tzinfo=IST)
+    result = await handle_taken(signal_repo, trade_repo, exit_monitor, now=now, text="TAKEN 42")
+
+    assert "Trade logged" in result
+    assert "SBIN" in result
+    signal_repo.get_active_signal_by_id.assert_called_once_with(42, now)
+    signal_repo.get_latest_active_signal.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_taken_with_invalid_id() -> None:
+    """TAKEN 999 with no matching signal -> error message with ID."""
+    signal_repo = AsyncMock()
+    signal_repo.get_active_signal_by_id = AsyncMock(return_value=None)
+
+    trade_repo = AsyncMock()
+    exit_monitor = MagicMock()
+
+    now = datetime(2025, 1, 6, 9, 40, 0, tzinfo=IST)
+    result = await handle_taken(signal_repo, trade_repo, exit_monitor, now=now, text="TAKEN 999")
+
+    assert "No active signal with ID 999" in result
+    trade_repo.insert_trade.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_taken_with_slash_prefix_and_id() -> None:
+    """/taken 42 -> same as TAKEN 42."""
+    signal = _make_signal_record(signal_id=42)
+    signal_repo = AsyncMock()
+    signal_repo.get_active_signal_by_id = AsyncMock(return_value=signal)
+    signal_repo.update_status = AsyncMock()
+
+    trade_repo = AsyncMock()
+    trade_repo.insert_trade.return_value = 10
+
+    exit_monitor = MagicMock()
+
+    now = datetime(2025, 1, 6, 9, 40, 0, tzinfo=IST)
+    result = await handle_taken(signal_repo, trade_repo, exit_monitor, now=now, text="/taken 42")
+
+    assert "Trade logged" in result
+    signal_repo.get_active_signal_by_id.assert_called_once_with(42, now)
+
+
+@pytest.mark.asyncio
+async def test_taken_plain_text_falls_through_to_latest() -> None:
+    """TAKEN (no ID) with text param -> falls through to get_latest_active_signal."""
+    signal = _make_signal_record()
+    signal_repo = AsyncMock()
+    signal_repo.get_latest_active_signal = AsyncMock(return_value=signal)
+    signal_repo.update_status = AsyncMock()
+
+    trade_repo = AsyncMock()
+    trade_repo.insert_trade.return_value = 5
+
+    exit_monitor = MagicMock()
+
+    now = datetime(2025, 1, 6, 9, 40, 0, tzinfo=IST)
+    result = await handle_taken(signal_repo, trade_repo, exit_monitor, now=now, text="TAKEN")
+
+    assert "Trade logged" in result
+    signal_repo.get_latest_active_signal.assert_called_once_with(now)
+
+
+@pytest.mark.asyncio
+async def test_taken_none_text_falls_through_to_latest() -> None:
+    """handle_taken with text=None -> falls through to get_latest_active_signal."""
+    signal = _make_signal_record()
+    signal_repo = AsyncMock()
+    signal_repo.get_latest_active_signal = AsyncMock(return_value=signal)
+    signal_repo.update_status = AsyncMock()
+
+    trade_repo = AsyncMock()
+    trade_repo.insert_trade.return_value = 5
+
+    exit_monitor = MagicMock()
+
+    now = datetime(2025, 1, 6, 9, 40, 0, tzinfo=IST)
+    result = await handle_taken(signal_repo, trade_repo, exit_monitor, now=now)
+
+    assert "Trade logged" in result
+    signal_repo.get_latest_active_signal.assert_called_once_with(now)
+
+
 # ── handle_status ──────────────────────────────────────────────
 
 
@@ -250,7 +348,7 @@ async def test_help_lists_commands() -> None:
     """HELP -> command list with all commands."""
     result = await handle_help()
 
-    assert "TAKEN" in result
+    assert "TAKEN [id]" in result
     assert "STATUS" in result
     assert "JOURNAL" in result
     assert "CAPITAL" in result

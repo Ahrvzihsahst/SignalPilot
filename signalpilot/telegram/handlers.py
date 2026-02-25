@@ -19,6 +19,7 @@ from signalpilot.utils.constants import IST
 logger = logging.getLogger(__name__)
 
 _CAPITAL_PATTERN = re.compile(r"(?i)^capital\s+(\d+(?:\.\d+)?)$")
+_TAKEN_PATTERN = re.compile(r"(?i)^/?taken(?:\s+(\d+))?$")
 
 
 async def handle_taken(
@@ -26,18 +27,32 @@ async def handle_taken(
     trade_repo,
     exit_monitor,
     now: datetime | None = None,
+    text: str | None = None,
 ) -> str:
     """Process the TAKEN command.
 
-    Finds the latest active signal, creates a trade record, starts exit
-    monitoring, and returns a confirmation message.
+    Finds the latest active signal (or a specific one by ID), creates a
+    trade record, starts exit monitoring, and returns a confirmation message.
     """
     now = now or datetime.now(IST)
-    signal: SignalRecord | None = await signal_repo.get_latest_active_signal(now)
 
-    if signal is None:
-        logger.warning("TAKEN command received but no active signal found")
-        return "No active signal to log."
+    # Parse optional signal ID from command text
+    requested_id: int | None = None
+    if text is not None:
+        match = _TAKEN_PATTERN.match(text.strip())
+        if match and match.group(1):
+            requested_id = int(match.group(1))
+
+    if requested_id is not None:
+        signal: SignalRecord | None = await signal_repo.get_active_signal_by_id(requested_id, now)
+        if signal is None:
+            logger.warning("TAKEN %d: no active signal with that ID", requested_id)
+            return f"No active signal with ID {requested_id}."
+    else:
+        signal = await signal_repo.get_latest_active_signal(now)
+        if signal is None:
+            logger.warning("TAKEN command received but no active signal found")
+            return "No active signal to log."
 
     if signal.expires_at is not None and signal.expires_at <= now:
         logger.warning("TAKEN command received but signal %d (%s) has expired", signal.id, signal.symbol)
@@ -254,7 +269,7 @@ async def handle_help() -> str:
     return (
         "<b>SignalPilot Commands</b>\n"
         "\n"
-        "<b>TAKEN</b> - Log the latest signal as a trade\n"
+        "<b>TAKEN [id]</b> - Log a signal as a trade (latest or by ID)\n"
         "<b>STATUS</b> - View active signals and open trades\n"
         "<b>JOURNAL</b> - View trading performance summary\n"
         "<b>CAPITAL &lt;amount&gt;</b> - Update trading capital\n"
