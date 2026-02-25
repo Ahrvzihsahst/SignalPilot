@@ -4,6 +4,8 @@ import asyncio
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from types import SimpleNamespace
+
 from signalpilot.db.models import (
     CandidateSignal,
     FinalSignal,
@@ -114,52 +116,49 @@ class TestIsPaperMode:
     def test_orb_signal_with_paper_mode_true(self):
         """ORB signal with orb_paper_mode=True should be paper."""
         signal = _make_final_signal(strategy_name="ORB")
-        config = UserConfig()
-        config.orb_paper_mode = True
+        config = SimpleNamespace(orb_paper_mode=True, vwap_paper_mode=False)
         assert SignalPilotApp._is_paper_mode(signal, config) is True
 
     def test_orb_signal_with_paper_mode_false(self):
         """ORB signal with orb_paper_mode=False should not be paper."""
         signal = _make_final_signal(strategy_name="ORB")
-        config = UserConfig()
-        # UserConfig does not have orb_paper_mode by default, getattr returns True
-        # But if we set it explicitly to False:
-        config.orb_paper_mode = False
+        config = SimpleNamespace(orb_paper_mode=False, vwap_paper_mode=False)
         assert SignalPilotApp._is_paper_mode(signal, config) is False
 
     def test_vwap_signal_with_paper_mode_true(self):
         """VWAP Reversal signal with vwap_paper_mode=True should be paper."""
         signal = _make_final_signal(strategy_name="VWAP Reversal")
-        config = UserConfig()
-        config.vwap_paper_mode = True
+        config = SimpleNamespace(orb_paper_mode=False, vwap_paper_mode=True)
         assert SignalPilotApp._is_paper_mode(signal, config) is True
 
     def test_vwap_signal_with_paper_mode_false(self):
         """VWAP Reversal signal with vwap_paper_mode=False should not be paper."""
         signal = _make_final_signal(strategy_name="VWAP Reversal")
-        config = UserConfig()
-        config.vwap_paper_mode = False
+        config = SimpleNamespace(orb_paper_mode=False, vwap_paper_mode=False)
         assert SignalPilotApp._is_paper_mode(signal, config) is False
 
     def test_gap_and_go_never_paper(self):
         """Gap & Go signals should never be in paper mode."""
         signal = _make_final_signal(strategy_name="Gap & Go")
-        config = UserConfig()
+        config = SimpleNamespace(orb_paper_mode=True, vwap_paper_mode=True)
         assert SignalPilotApp._is_paper_mode(signal, config) is False
 
     def test_gap_and_go_not_paper_even_with_extra_attrs(self):
         """Gap & Go should not be paper regardless of other paper mode flags."""
         signal = _make_final_signal(strategy_name="Gap & Go")
-        config = UserConfig()
-        config.orb_paper_mode = True
-        config.vwap_paper_mode = True
+        config = SimpleNamespace(orb_paper_mode=True, vwap_paper_mode=True)
         assert SignalPilotApp._is_paper_mode(signal, config) is False
 
     def test_unknown_strategy_not_paper(self):
         """Unknown strategy names should not be in paper mode."""
         signal = _make_final_signal(strategy_name="SomeNewStrategy")
-        config = UserConfig()
+        config = SimpleNamespace(orb_paper_mode=True, vwap_paper_mode=True)
         assert SignalPilotApp._is_paper_mode(signal, config) is False
+
+    def test_none_app_config_defaults_to_not_paper(self):
+        """When app_config is None, no strategy should be paper-traded."""
+        signal = _make_final_signal(strategy_name="ORB")
+        assert SignalPilotApp._is_paper_mode(signal, None) is False
 
 
 # ---------------------------------------------------------------------------
@@ -174,9 +173,8 @@ class TestScanLoopPaperMode:
         """ORB signal in paper mode should be saved with status='paper'."""
         signal = _make_final_signal(strategy_name="ORB")
         user_config = UserConfig(total_capital=50000.0, max_positions=8)
-        user_config.orb_paper_mode = True
 
-        app = _make_app()
+        app = _make_app(app_config=SimpleNamespace(orb_paper_mode=True, vwap_paper_mode=False))
         _run_single_scan_iteration(app, signal, user_config)
 
         call_count = 0
@@ -210,7 +208,7 @@ class TestScanLoopPaperMode:
         signal = _make_final_signal(strategy_name="Gap & Go")
         user_config = UserConfig(total_capital=50000.0, max_positions=8)
 
-        app = _make_app()
+        app = _make_app(app_config=SimpleNamespace(orb_paper_mode=True, vwap_paper_mode=True))
         _run_single_scan_iteration(app, signal, user_config)
 
         call_count = 0
@@ -243,9 +241,8 @@ class TestScanLoopPaperMode:
         """ORB signal with paper_mode=False should be saved with status='sent'."""
         signal = _make_final_signal(strategy_name="ORB")
         user_config = UserConfig(total_capital=50000.0, max_positions=8)
-        user_config.orb_paper_mode = False
 
-        app = _make_app()
+        app = _make_app(app_config=SimpleNamespace(orb_paper_mode=False, vwap_paper_mode=False))
         _run_single_scan_iteration(app, signal, user_config)
 
         call_count = 0
@@ -275,9 +272,8 @@ class TestScanLoopPaperMode:
         """VWAP Reversal signal in paper mode should be saved with status='paper'."""
         signal = _make_final_signal(strategy_name="VWAP Reversal")
         user_config = UserConfig(total_capital=50000.0, max_positions=8)
-        user_config.vwap_paper_mode = True
 
-        app = _make_app()
+        app = _make_app(app_config=SimpleNamespace(orb_paper_mode=False, vwap_paper_mode=True))
         _run_single_scan_iteration(app, signal, user_config)
 
         call_count = 0

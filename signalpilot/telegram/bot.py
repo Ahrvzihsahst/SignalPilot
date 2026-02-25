@@ -72,7 +72,7 @@ class SignalPilotBot:
 
         self._application.add_handler(
             MessageHandler(
-                chat_filter & filters.TEXT & filters.Regex(r"(?i)^taken$"),
+                chat_filter & filters.TEXT & filters.Regex(r"(?i)^/?taken$"),
                 self._handle_taken,
             )
         )
