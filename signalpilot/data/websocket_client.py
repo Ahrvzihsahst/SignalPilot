@@ -97,6 +97,13 @@ class WebSocketClient:
     def _on_open(self, ws) -> None:
         """Called when the WebSocket connection is established."""
         logger.info("WebSocket connection established")
+
+        # Guard: if disconnect() was called before this callback fired,
+        # self._ws will be None — skip subscription to avoid AttributeError.
+        if self._ws is None:
+            logger.warning("_on_open fired but WebSocket already torn down, skipping subscription")
+            return
+
         self._connected = True
 
         # Subscribe to all instrument tokens
@@ -147,8 +154,12 @@ class WebSocketClient:
         except Exception:
             logger.exception("Error parsing tick data from message: %s", message)
 
-    def _on_close(self, ws, code, reason) -> None:
-        """Handle connection close — schedule reconnection if retries remain."""
+    def _on_close(self, ws, code=None, reason=None) -> None:
+        """Handle connection close — schedule reconnection if retries remain.
+
+        Signature uses defaults because the upstream websocket-client library
+        may call on_close with (ws,) or (ws, code, reason) depending on version.
+        """
         self._connected = False
         logger.warning("WebSocket closed: code=%s reason=%s", code, reason)
 
@@ -237,13 +248,16 @@ class WebSocketClient:
 
     async def disconnect(self) -> None:
         """Gracefully close the WebSocket connection."""
+        # Mark as disconnected first to prevent callbacks from firing
+        self._connected = False
+        # Exhaust retries so no in-flight reconnection attempts proceed
+        self._reconnect_count = self._max_reconnect_attempts
         if self._ws is not None:
             try:
                 self._ws.close_connection()
             except Exception as e:
                 logger.warning("Error closing WebSocket: %s", e)
             self._ws = None
-            self._connected = False
             logger.info("WebSocket disconnected")
 
     def reset_volume_tracking(self) -> None:
