@@ -549,8 +549,8 @@ async def test_shutdown_continues_if_websocket_disconnect_fails() -> None:
 # -- recover phase check -------------------------------------------------------
 
 
-async def test_recover_disables_signals_after_entry_window() -> None:
-    """Recovery after entry window should disable new signal generation."""
+async def test_recover_keeps_signals_during_continuous() -> None:
+    """Recovery during CONTINUOUS phase should keep signals enabled (ORB/VWAP active)."""
     app = _make_app()
     app._trade_repo.get_active_trades = AsyncMock(return_value=[])
     app._websocket.connect = AsyncMock()
@@ -559,6 +559,22 @@ async def test_recover_disables_signals_after_entry_window() -> None:
          patch(
             "signalpilot.scheduler.lifecycle.get_current_phase",
             return_value=StrategyPhase.CONTINUOUS,
+         ):
+        await app.recover()
+
+    assert app._accepting_signals is True
+
+
+async def test_recover_disables_signals_during_wind_down() -> None:
+    """Recovery during WIND_DOWN phase should disable new signal generation."""
+    app = _make_app()
+    app._trade_repo.get_active_trades = AsyncMock(return_value=[])
+    app._websocket.connect = AsyncMock()
+
+    with patch.object(app, "_scan_loop", new_callable=AsyncMock), \
+         patch(
+            "signalpilot.scheduler.lifecycle.get_current_phase",
+            return_value=StrategyPhase.WIND_DOWN,
          ):
         await app.recover()
 

@@ -109,15 +109,63 @@ async def create_app(config: AppConfig) -> SignalPilotApp:
         if bot_ref[0] is not None:
             await bot_ref[0].send_exit_alert(alert)
 
+    # Build per-strategy trailing stop configs from AppConfig
+    from signalpilot.monitor.exit_monitor import TrailingStopConfig
+
+    trailing_configs = {
+        "Gap & Go": TrailingStopConfig(
+            breakeven_trigger_pct=config.trailing_sl_breakeven_trigger_pct,
+            trail_trigger_pct=config.trailing_sl_trail_trigger_pct,
+            trail_distance_pct=config.trailing_sl_trail_distance_pct,
+        ),
+        "gap_go": TrailingStopConfig(
+            breakeven_trigger_pct=config.trailing_sl_breakeven_trigger_pct,
+            trail_trigger_pct=config.trailing_sl_trail_trigger_pct,
+            trail_distance_pct=config.trailing_sl_trail_distance_pct,
+        ),
+        "ORB": TrailingStopConfig(
+            breakeven_trigger_pct=config.orb_breakeven_trigger_pct,
+            trail_trigger_pct=config.orb_trail_trigger_pct,
+            trail_distance_pct=config.orb_trail_distance_pct,
+        ),
+        "VWAP Reversal": TrailingStopConfig(
+            breakeven_trigger_pct=config.vwap_setup1_breakeven_trigger_pct,
+            trail_trigger_pct=None,
+            trail_distance_pct=None,
+        ),
+        "VWAP Reversal:uptrend_pullback": TrailingStopConfig(
+            breakeven_trigger_pct=config.vwap_setup1_breakeven_trigger_pct,
+            trail_trigger_pct=None,
+            trail_distance_pct=None,
+        ),
+        "VWAP Reversal:vwap_reclaim": TrailingStopConfig(
+            breakeven_trigger_pct=config.vwap_setup2_breakeven_trigger_pct,
+            trail_trigger_pct=None,
+            trail_distance_pct=None,
+        ),
+    }
+
     exit_monitor = ExitMonitor(
         get_tick=market_data.get_tick,
         alert_callback=_exit_alert_callback,
         breakeven_trigger_pct=config.trailing_sl_breakeven_trigger_pct,
         trail_trigger_pct=config.trailing_sl_trail_trigger_pct,
         trail_distance_pct=config.trailing_sl_trail_distance_pct,
+        trailing_configs=trailing_configs,
+        close_trade=trade_repo.close_trade,
     )
 
     # --- Telegram bot ---
+    # Wrapper: handle_status expects list[str] -> dict[str, float], but
+    # market_data.get_tick takes a single str -> TickData | None.
+    async def _get_current_prices(symbols: list[str]) -> dict[str, float]:
+        prices: dict[str, float] = {}
+        for sym in symbols:
+            tick = await market_data.get_tick(sym)
+            if tick is not None:
+                prices[sym] = tick.ltp
+        return prices
+
     bot = SignalPilotBot(
         bot_token=config.telegram_bot_token,
         chat_id=config.telegram_chat_id,
@@ -126,7 +174,7 @@ async def create_app(config: AppConfig) -> SignalPilotApp:
         config_repo=config_repo,
         metrics_calculator=metrics_calculator,
         exit_monitor=exit_monitor,
-        get_current_prices=market_data.get_tick,
+        get_current_prices=_get_current_prices,
     )
     bot_ref[0] = bot  # complete the circular reference
 
@@ -162,6 +210,7 @@ async def create_app(config: AppConfig) -> SignalPilotApp:
         duplicate_checker=duplicate_checker,
         capital_allocator=capital_allocator,
         strategy_performance_repo=strategy_performance_repo,
+        app_config=config,
     )
 
 

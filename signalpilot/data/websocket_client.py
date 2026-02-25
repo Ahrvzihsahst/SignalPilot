@@ -43,6 +43,7 @@ class WebSocketClient:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._connected = False
         self._connected_event: asyncio.Event | None = None
+        self._reconnecting = False  # guard against double reconnection
         # Track cumulative volume per symbol so we can derive per-tick deltas
         # for VWAP and candle aggregation.
         self._prev_volume: dict[str, int] = {}
@@ -106,8 +107,9 @@ class WebSocketClient:
         except Exception:
             logger.exception("Failed to subscribe to instrument tokens")
 
-        # Reset reconnect counter after successful subscription.
+        # Reset reconnect counter and reconnecting guard after successful subscription.
         self._reconnect_count = 0
+        self._reconnecting = False
         logger.info("Subscribed to %d token groups", len(token_list))
 
         # Signal the asyncio side that connection + subscription is ready.
@@ -150,7 +152,12 @@ class WebSocketClient:
         self._connected = False
         logger.warning("WebSocket closed: code=%s reason=%s", code, reason)
 
+        # Guard: if _on_error already triggered a reconnection, skip here.
+        if self._reconnecting:
+            return
+
         if self._reconnect_count < self._max_reconnect_attempts:
+            self._reconnecting = True
             self._reconnect_count += 1
             logger.info(
                 "Reconnection attempt %d/%d",
@@ -175,14 +182,15 @@ class WebSocketClient:
     def _on_error(self, ws, error) -> None:
         """Handle WebSocket errors — log and schedule reconnection."""
         logger.error("WebSocket error: %s", error)
-        # Errors often precede an _on_close callback, but if they don't we
-        # still want to trigger reconnection.
-        if self._connected:
+        # Errors often precede an _on_close callback. Use _reconnecting guard
+        # so only one of _on_error / _on_close triggers a reconnect attempt.
+        if self._connected and not self._reconnecting:
             self._connected = False
             if (
                 self._reconnect_count < self._max_reconnect_attempts
                 and self._loop is not None
             ):
+                self._reconnecting = True
                 self._reconnect_count += 1
                 self._loop.call_soon_threadsafe(
                     asyncio.ensure_future,

@@ -173,7 +173,7 @@ async def test_journal_with_trades() -> None:
         worst_trade_pnl=-200.0,
     )
     metrics_calc = AsyncMock()
-    metrics_calc.calculate.return_value = metrics
+    metrics_calc.calculate_performance_metrics.return_value = metrics
 
     result = await handle_journal(metrics_calc)
 
@@ -186,7 +186,7 @@ async def test_journal_with_trades() -> None:
 async def test_journal_no_trades() -> None:
     """JOURNAL with no trades -> empty message."""
     metrics_calc = AsyncMock()
-    metrics_calc.calculate.return_value = None
+    metrics_calc.calculate_performance_metrics.return_value = None
 
     result = await handle_journal(metrics_calc)
 
@@ -198,14 +198,15 @@ async def test_journal_no_trades() -> None:
 
 @pytest.mark.asyncio
 async def test_capital_valid_amount() -> None:
-    """CAPITAL 50000 -> updated and confirmed."""
+    """CAPITAL 50000 -> updated and confirmed using actual max_positions from config."""
     config_repo = AsyncMock()
+    config_repo.get_user_config.return_value = MagicMock(max_positions=8)
 
     result = await handle_capital(config_repo, "CAPITAL 50000")
 
     assert "Capital updated to 50,000" in result
     assert "Per-trade allocation" in result
-    assert "10,000" in result
+    assert "6,250" in result  # 50000 / 8 positions
     config_repo.update_capital.assert_called_once_with(50000.0)
 
 
@@ -213,6 +214,7 @@ async def test_capital_valid_amount() -> None:
 async def test_capital_case_insensitive() -> None:
     """CAPITAL command should be case insensitive."""
     config_repo = AsyncMock()
+    config_repo.get_user_config.return_value = MagicMock(max_positions=8)
 
     result = await handle_capital(config_repo, "capital 75000")
 

@@ -1,8 +1,10 @@
 """Metrics calculator for performance reporting."""
 
-from datetime import date
+from datetime import date, datetime
 
 import aiosqlite
+
+from signalpilot.utils.constants import IST
 
 from signalpilot.db.models import DailySummary, PerformanceMetrics, StrategyDaySummary
 from signalpilot.db.trade_repo import TradeRepository
@@ -102,8 +104,8 @@ class MetricsCalculator:
             if worst_row:
                 worst_symbol = worst_row["symbol"]
 
-        effective_start = date_start or date.today()
-        effective_end = date_end or date.today()
+        effective_start = date_start or datetime.now(IST).date()
+        effective_end = date_end or datetime.now(IST).date()
 
         # Count total signals in the date range
         if date_start and date_end:
@@ -188,14 +190,14 @@ class MetricsCalculator:
         sig_rows = await sig_cursor.fetchall()
         signal_counts: dict[str, int] = {row["strategy"]: row["cnt"] for row in sig_rows}
 
-        # Count trades per strategy
+        # Count closed trades per strategy (exclude open trades with NULL pnl)
         trade_cursor = await self._conn.execute(
             """
             SELECT strategy,
                    COUNT(*) as taken,
                    COALESCE(SUM(CASE WHEN pnl_amount > 0 THEN pnl_amount ELSE 0 END), 0)
                    + COALESCE(SUM(CASE WHEN pnl_amount <= 0 THEN pnl_amount ELSE 0 END), 0) as pnl
-            FROM trades WHERE date = ?
+            FROM trades WHERE date = ? AND exited_at IS NOT NULL
             GROUP BY strategy
             """,
             (d.isoformat(),),

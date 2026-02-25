@@ -1,13 +1,33 @@
 """Market day scheduler using APScheduler 3.x."""
 
 import logging
+from datetime import datetime
+from functools import wraps
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from signalpilot.utils.constants import IST
+from signalpilot.utils.market_calendar import is_trading_day
 
 logger = logging.getLogger(__name__)
+
+
+def _trading_day_guard(func):
+    """Decorator that skips execution on non-trading days (weekends + NSE holidays)."""
+
+    @wraps(func)
+    async def wrapper(*args, **kwargs):
+        today = datetime.now(IST).date()
+        try:
+            if not is_trading_day(today):
+                logger.info("Skipping job %s: %s is not a trading day", func.__name__, today)
+                return
+        except ValueError:
+            logger.warning("No holiday data for %s; running job %s anyway", today.year, func.__name__)
+        return await func(*args, **kwargs)
+
+    return wrapper
 
 
 class MarketScheduler:
@@ -40,13 +60,16 @@ class MarketScheduler:
             ("shutdown", 15, 35, app.shutdown),
         ]
         for job_id, hour, minute, callback in jobs:
+            guarded = _trading_day_guard(callback)
             self._scheduler.add_job(
-                callback,
-                CronTrigger(hour=hour, minute=minute, timezone=IST),
+                guarded,
+                CronTrigger(
+                    day_of_week="mon-fri", hour=hour, minute=minute, timezone=IST,
+                ),
                 id=job_id,
                 replace_existing=True,
             )
-            logger.info("Registered job %s at %02d:%02d IST", job_id, hour, minute)
+            logger.info("Registered job %s at %02d:%02d IST (mon-fri)", job_id, hour, minute)
 
         # Weekly capital rebalancing — Sunday 18:00 IST (before next trading week)
         if hasattr(app, "run_weekly_rebalance"):

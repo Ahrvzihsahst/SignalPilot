@@ -36,15 +36,18 @@ async def handle_taken(
     signal: SignalRecord | None = await signal_repo.get_latest_active_signal(now)
 
     if signal is None:
+        logger.warning("TAKEN command received but no active signal found")
         return "No active signal to log."
 
     if signal.expires_at is not None and signal.expires_at <= now:
+        logger.warning("TAKEN command received but signal %d (%s) has expired", signal.id, signal.symbol)
         return "Signal has expired and is no longer valid."
 
     trade = TradeRecord(
         signal_id=signal.id,
         date=signal.date,
         symbol=signal.symbol,
+        strategy=signal.strategy,
         entry_price=signal.entry_price,
         stop_loss=signal.stop_loss,
         target_1=signal.target_1,
@@ -91,11 +94,11 @@ async def handle_journal(metrics_calculator) -> str:
 
     Returns formatted performance metrics or an empty-state message.
     """
-    metrics = await metrics_calculator.calculate()
+    metrics = await metrics_calculator.calculate_performance_metrics()
     return format_journal_message(metrics)
 
 
-async def handle_capital(config_repo, text: str, max_positions: int = 5) -> str:
+async def handle_capital(config_repo, text: str) -> str:
     """Process the CAPITAL command.
 
     Parses the amount from the message text, updates the config, and returns
@@ -114,6 +117,8 @@ async def handle_capital(config_repo, text: str, max_positions: int = 5) -> str:
         return "Capital must be a positive number."
 
     await config_repo.update_capital(amount)
+    user_config = await config_repo.get_user_config()
+    max_positions = user_config.max_positions if user_config else 8
     per_trade = amount / max_positions
     logger.info("Capital updated to %.0f (per-trade: %.0f)", amount, per_trade)
     return f"Capital updated to {amount:,.0f}. Per-trade allocation is now {per_trade:,.0f}."

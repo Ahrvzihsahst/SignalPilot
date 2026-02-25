@@ -45,6 +45,7 @@ class SignalPilotApp:
         duplicate_checker=None,
         capital_allocator=None,
         strategy_performance_repo=None,
+        app_config=None,
     ) -> None:
         self._db = db
         self._signal_repo = signal_repo
@@ -72,6 +73,7 @@ class SignalPilotApp:
         self._duplicate_checker = duplicate_checker
         self._capital_allocator = capital_allocator
         self._strategy_performance_repo = strategy_performance_repo
+        self._app_config = app_config
         self._scanning = False
         self._accepting_signals = True
         self._scan_task: asyncio.Task | None = None
@@ -247,7 +249,7 @@ class SignalPilotApp:
                             )
                             for signal in final_signals:
                                 record = self._signal_to_record(signal, now)
-                                is_paper = self._is_paper_mode(signal, user_config)
+                                is_paper = self._is_paper_mode(signal, self._app_config)
                                 if is_paper:
                                     record.status = "paper"
                                 signal_id = await self._signal_repo.insert_signal(record)
@@ -429,12 +431,16 @@ class SignalPilotApp:
             if self._websocket:
                 await self.start_scanning()
 
-            # Respect signal cutoff if recovering after entry window
+            # Respect signal cutoff if recovering after CONTINUOUS phase
             now = datetime.now(IST)
             phase = get_current_phase(now)
-            if phase not in (StrategyPhase.OPENING, StrategyPhase.ENTRY_WINDOW):
+            if phase not in (
+                StrategyPhase.OPENING,
+                StrategyPhase.ENTRY_WINDOW,
+                StrategyPhase.CONTINUOUS,
+            ):
                 self._accepting_signals = False
-                logger.info("Recovery after entry window; new signals disabled")
+                logger.info("Recovery after signal cutoff; new signals disabled")
 
             logger.info(
                 "Crash recovery complete, %d active trades restored", len(active_trades)
@@ -511,17 +517,17 @@ class SignalPilotApp:
         return enabled
 
     @staticmethod
-    def _is_paper_mode(signal: FinalSignal, user_config) -> bool:
+    def _is_paper_mode(signal: FinalSignal, app_config) -> bool:
         """Check if the signal's strategy is in paper trading mode.
 
         Paper mode is determined by the per-strategy paper_mode flags on the
-        user config (sourced from AppConfig defaults).  Gap & Go is never
-        paper-traded because it was validated in Phase 1.
+        AppConfig (loaded from .env).  Gap & Go is never paper-traded because
+        it was validated in Phase 1.
         """
         strategy_name = signal.ranked_signal.candidate.strategy_name
-        if strategy_name == "ORB" and getattr(user_config, "orb_paper_mode", True):
+        if strategy_name == "ORB" and getattr(app_config, "orb_paper_mode", False):
             return True
-        if strategy_name == "VWAP Reversal" and getattr(user_config, "vwap_paper_mode", True):
+        if strategy_name == "VWAP Reversal" and getattr(app_config, "vwap_paper_mode", False):
             return True
         return False
 

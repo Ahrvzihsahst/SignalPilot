@@ -5,6 +5,7 @@ from datetime import date, datetime
 import aiosqlite
 
 from signalpilot.db.models import SignalRecord
+from signalpilot.utils.constants import IST
 
 _VALID_STATUSES = frozenset({"sent", "taken", "expired", "paper", "position_full"})
 
@@ -40,8 +41,8 @@ class SignalRepository:
                 signal.gap_pct,
                 signal.volume_ratio,
                 signal.reason,
-                signal.created_at.isoformat() if signal.created_at else datetime.now().isoformat(),
-                signal.expires_at.isoformat() if signal.expires_at else datetime.now().isoformat(),
+                signal.created_at.isoformat() if signal.created_at else datetime.now(IST).isoformat(),
+                signal.expires_at.isoformat() if signal.expires_at else datetime.now(IST).isoformat(),
                 signal.status,
                 signal.setup_type,
                 signal.strategy_specific_score,
@@ -75,11 +76,11 @@ class SignalRepository:
 
     async def get_active_signals(self, d: date, now: datetime | None = None) -> list[SignalRecord]:
         """Return non-expired, active signals for the given date."""
-        now = now or datetime.now()
+        now = now or datetime.now(IST)
         cursor = await self._conn.execute(
             """
             SELECT * FROM signals
-            WHERE date = ? AND status = 'sent'
+            WHERE date = ? AND status IN ('sent', 'paper')
               AND expires_at > ?
             ORDER BY created_at DESC
             """,
@@ -99,12 +100,12 @@ class SignalRepository:
 
     async def expire_stale_signals(self, now: datetime | None = None) -> int:
         """Bulk-update stale signals to 'expired'. Return count of updated rows."""
-        now = now or datetime.now()
+        now = now or datetime.now(IST)
         cursor = await self._conn.execute(
             """
             UPDATE signals
             SET status = 'expired'
-            WHERE status = 'sent' AND expires_at <= ?
+            WHERE status IN ('sent', 'paper') AND expires_at <= ?
             """,
             (now.isoformat(),),
         )
@@ -112,12 +113,16 @@ class SignalRepository:
         return cursor.rowcount
 
     async def get_latest_active_signal(self, now: datetime | None = None) -> SignalRecord | None:
-        """Return the most recent active signal (for TAKEN command)."""
-        now = now or datetime.now()
+        """Return the most recent active signal (for TAKEN command).
+
+        Matches both 'sent' and 'paper' status signals so that paper-mode
+        trades can also be logged via the TAKEN command.
+        """
+        now = now or datetime.now(IST)
         cursor = await self._conn.execute(
             """
             SELECT * FROM signals
-            WHERE status = 'sent' AND expires_at > ?
+            WHERE status IN ('sent', 'paper') AND expires_at > ?
             ORDER BY created_at DESC
             LIMIT 1
             """,

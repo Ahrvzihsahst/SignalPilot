@@ -96,8 +96,8 @@ async def test_recovery_reloads_active_trades(db, repos):
     # Verify start_scanning was called (which connects websocket)
     mock_start_scanning.assert_awaited_once()
 
-    # Since phase is CONTINUOUS, new signals should be disabled
-    assert app._accepting_signals is False
+    # During CONTINUOUS phase, ORB/VWAP signals should still be accepted
+    assert app._accepting_signals is True
 
 
 async def test_recovery_during_entry_window_accepts_signals(db, repos):
@@ -132,3 +132,35 @@ async def test_recovery_during_entry_window_accepts_signals(db, repos):
     # During ENTRY_WINDOW, accepting_signals should remain True
     # (start_scanning sets it to True, and recovery does NOT disable it)
     assert app._accepting_signals is True
+
+
+async def test_recovery_during_wind_down_disables_signals(db, repos):
+    """Recovery during WIND_DOWN should disable signal generation."""
+    mock_bot = AsyncMock()
+    mock_exit_monitor = MagicMock(
+        check_trade=AsyncMock(),
+        trigger_time_exit=AsyncMock(return_value=[]),
+        start_monitoring=MagicMock(),
+    )
+    mock_scheduler = MagicMock()
+
+    app = SignalPilotApp(
+        db=db, signal_repo=repos["signal_repo"], trade_repo=repos["trade_repo"],
+        config_repo=repos["config_repo"], metrics_calculator=repos["metrics"],
+        authenticator=AsyncMock(), instruments=AsyncMock(),
+        market_data=_make_mock_market_data(), historical=_make_mock_historical(),
+        websocket=AsyncMock(),
+        strategy=AsyncMock(), ranker=MagicMock(), risk_manager=MagicMock(),
+        exit_monitor=mock_exit_monitor, bot=mock_bot, scheduler=mock_scheduler,
+    )
+
+    with patch.object(db, "initialize", new_callable=AsyncMock), \
+         patch.object(app, "start_scanning", new_callable=AsyncMock), \
+         patch(
+             "signalpilot.scheduler.lifecycle.get_current_phase",
+             return_value=StrategyPhase.WIND_DOWN,
+         ):
+        await app.recover()
+
+    # During WIND_DOWN (after 14:30), new signals should be disabled
+    assert app._accepting_signals is False

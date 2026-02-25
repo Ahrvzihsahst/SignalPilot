@@ -5,6 +5,7 @@ from datetime import date, datetime
 import aiosqlite
 
 from signalpilot.db.models import ExitType, TradeRecord
+from signalpilot.utils.constants import IST
 
 _VALID_EXIT_REASONS = frozenset(e.value for e in ExitType)
 
@@ -39,7 +40,7 @@ class TradeRepository:
                 trade.pnl_amount,
                 trade.pnl_pct,
                 trade.exit_reason,
-                trade.taken_at.isoformat() if trade.taken_at else datetime.now().isoformat(),
+                trade.taken_at.isoformat() if trade.taken_at else datetime.now(IST).isoformat(),
                 trade.exited_at.isoformat() if trade.exited_at else None,
             ),
         )
@@ -68,7 +69,7 @@ class TradeRepository:
                 exit_reason = ?, exited_at = ?
             WHERE id = ?
             """,
-            (exit_price, pnl_amount, pnl_pct, exit_reason, datetime.now().isoformat(), trade_id),
+            (exit_price, pnl_amount, pnl_pct, exit_reason, datetime.now(IST).isoformat(), trade_id),
         )
         await self._conn.commit()
         if cursor.rowcount == 0:

@@ -9,6 +9,9 @@ from signalpilot.utils.log_context import log_context
 
 logger = logging.getLogger(__name__)
 
+# Type alias for trade closer (async callable: trade_id, exit_price, pnl_amount, pnl_pct, exit_reason -> None)
+TradeCloser = Callable[[int, float, float, float, str], Awaitable[None]]
+
 # Type alias for the market data getter (async callable: symbol -> TickData | None)
 MarketDataGetter = Callable[[str], Awaitable[TickData | None]]
 
@@ -79,9 +82,11 @@ class ExitMonitor:
         trail_trigger_pct: float = 4.0,
         trail_distance_pct: float = 2.0,
         trailing_configs: dict[str, TrailingStopConfig] | None = None,
+        close_trade: TradeCloser | None = None,
     ) -> None:
         self._get_tick = get_tick
         self._alert_callback = alert_callback
+        self._close_trade = close_trade
         self._breakeven_trigger_pct = breakeven_trigger_pct
         self._trail_trigger_pct = trail_trigger_pct
         self._trail_factor = 1.0 - trail_distance_pct / 100.0
@@ -94,6 +99,22 @@ class ExitMonitor:
             trail_distance_pct=trail_distance_pct,
         )
         self._active_states: dict[int, TrailingStopState] = {}
+
+    async def _persist_exit(
+        self, trade: TradeRecord, exit_price: float, pnl_pct: float, exit_reason: str,
+    ) -> None:
+        """Persist the trade closure in the database."""
+        if self._close_trade is None:
+            return
+        pnl_amount = (exit_price - trade.entry_price) * trade.quantity
+        try:
+            await self._close_trade(trade.id, exit_price, pnl_amount, pnl_pct, exit_reason)
+            logger.info(
+                "Trade %d (%s) closed in DB: exit=%.2f pnl=%.2f",
+                trade.id, trade.symbol, exit_price, pnl_amount,
+            )
+        except Exception:
+            logger.exception("Failed to persist trade %d closure", trade.id)
 
     def start_monitoring(self, trade: TradeRecord) -> None:
         """Begin monitoring a trade by initializing its trailing stop state."""
@@ -166,6 +187,7 @@ class ExitMonitor:
                     exit_type.value, trade.id, trade.symbol, current_price, state.current_sl,
                 )
                 self.stop_monitoring(trade.id)
+                await self._persist_exit(trade, current_price, alert.pnl_pct, exit_type.value)
                 await self._alert_callback(alert)
                 return alert
 
@@ -176,6 +198,7 @@ class ExitMonitor:
                     "T2 exit for trade %d (%s): price=%.2f", trade.id, trade.symbol, current_price,
                 )
                 self.stop_monitoring(trade.id)
+                await self._persist_exit(trade, current_price, alert.pnl_pct, ExitType.T2_HIT.value)
                 await self._alert_callback(alert)
                 return alert
 
@@ -290,6 +313,7 @@ class ExitMonitor:
                         trade.id, trade.symbol, current_price,
                     )
                     self.stop_monitoring(trade.id)
+                    await self._persist_exit(trade, current_price, pnl_pct, ExitType.TIME_EXIT.value)
                 else:
                     alert = ExitAlert(
                         trade=trade,
