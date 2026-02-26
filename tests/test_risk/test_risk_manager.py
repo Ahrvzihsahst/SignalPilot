@@ -263,3 +263,91 @@ def test_mixed_affordable_and_expensive(
     assert len(result) == 2
     symbols = [r.ranked_signal.candidate.symbol for r in result]
     assert symbols == ["CHEAP1", "CHEAP2"]
+
+
+# ===========================================================================
+# Phase 3: Confirmation map tests
+# ===========================================================================
+
+from signalpilot.ranking.confidence import ConfirmationResult
+
+
+class TestRiskManagerConfirmationMap:
+    """Tests for Phase 3 confirmation_map in filter_and_size."""
+
+    def test_confirmation_map_none_is_backward_compatible(self) -> None:
+        """No confirmation_map means multiplier=1.0 (legacy behavior)."""
+        rm = RiskManager(PositionSizer())
+        config = UserConfig(total_capital=50000.0, max_positions=5)
+        ranked = [_make_ranked("SBIN", entry_price=500.0)]
+
+        result = rm.filter_and_size(ranked, config, active_trade_count=0)
+
+        assert len(result) == 1
+        assert result[0].quantity == 20  # floor(10000/500)
+
+    def test_double_confirmation_increases_quantity(self) -> None:
+        """Double confirmation (1.5x) should increase position size."""
+        rm = RiskManager(PositionSizer())
+        config = UserConfig(total_capital=100000.0, max_positions=8)
+        ranked = [_make_ranked("SBIN", entry_price=500.0)]
+        conf_map = {
+            "SBIN": ConfirmationResult(
+                confirmation_level="double",
+                confirmed_by=["Gap & Go", "ORB"],
+                star_boost=1,
+                position_size_multiplier=1.5,
+            )
+        }
+
+        result = rm.filter_and_size(
+            ranked, config, active_trade_count=0, confirmation_map=conf_map,
+        )
+
+        # base: 100000/8 = 12500. multiplied: 18750. cap at 20%: 20000. min(18750, 20000) = 18750
+        assert len(result) == 1
+        assert result[0].quantity == 37  # floor(18750/500)
+
+    def test_triple_confirmation_capped_at_25_pct(self) -> None:
+        """Triple confirmation (2.0x) is capped at 25% of total capital."""
+        rm = RiskManager(PositionSizer())
+        config = UserConfig(total_capital=100000.0, max_positions=4)
+        ranked = [_make_ranked("SBIN", entry_price=500.0)]
+        conf_map = {
+            "SBIN": ConfirmationResult(
+                confirmation_level="triple",
+                confirmed_by=["Gap & Go", "ORB", "VWAP Reversal"],
+                star_boost=2,
+                position_size_multiplier=2.0,
+            )
+        }
+
+        result = rm.filter_and_size(
+            ranked, config, active_trade_count=0, confirmation_map=conf_map,
+        )
+
+        # base: 100000/4 = 25000. multiplied: 50000. cap at 25%: 25000
+        assert len(result) == 1
+        assert result[0].quantity == 50  # floor(25000/500)
+
+    def test_symbol_not_in_confirmation_map_gets_default(self) -> None:
+        """Symbols not in confirmation_map get multiplier=1.0."""
+        rm = RiskManager(PositionSizer())
+        config = UserConfig(total_capital=50000.0, max_positions=5)
+        ranked = [_make_ranked("TCS", entry_price=500.0)]
+        conf_map = {
+            "SBIN": ConfirmationResult(
+                confirmation_level="double",
+                confirmed_by=["Gap & Go", "ORB"],
+                star_boost=1,
+                position_size_multiplier=1.5,
+            )
+        }
+
+        result = rm.filter_and_size(
+            ranked, config, active_trade_count=0, confirmation_map=conf_map,
+        )
+
+        # TCS not in map -> multiplier=1.0 -> 10000/500 = 20
+        assert len(result) == 1
+        assert result[0].quantity == 20

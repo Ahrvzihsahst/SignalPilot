@@ -25,19 +25,54 @@ def star_rating(strength: int) -> str:
     return f"{filled}{empty} ({label})"
 
 
+def _confirmation_badge(confirmation_level: str | None, confirmed_by: str | None = None) -> str:
+    """Build a confirmation badge string for confirmed signals.
+
+    Returns an empty string for single/None confirmation.
+    """
+    if not confirmation_level or confirmation_level == "single":
+        return ""
+
+    if confirmation_level == "triple":
+        badge = "TRIPLE CONFIRMED"
+        multiplier = "2.0x"
+    elif confirmation_level == "double":
+        badge = "DOUBLE CONFIRMED"
+        multiplier = "1.5x"
+    else:
+        return ""
+
+    lines = [f"<b>[{badge}]</b>"]
+    if confirmed_by:
+        lines.append(f"Confirmed by: {confirmed_by}")
+    lines.append(f"Position size: {multiplier}")
+    return "\n".join(lines)
+
+
 def format_signal_message(
     signal: FinalSignal,
     active_count: int = 0,
     max_positions: int = 8,
     is_paper: bool = False,
     signal_id: int | None = None,
+    confirmation_level: str | None = None,
+    confirmed_by: str | None = None,
+    boosted_stars: int | None = None,
 ) -> str:
-    """Format a FinalSignal into the user-facing Telegram message (HTML)."""
+    """Format a FinalSignal into the user-facing Telegram message (HTML).
+
+    When ``confirmation_level`` is "double" or "triple", a badge is prepended
+    showing the confirmation details, strategy list, and position multiplier.
+    ``boosted_stars`` overrides the default star rating when provided.
+    """
     c = signal.ranked_signal.candidate
     risk_pct = abs((c.stop_loss - c.entry_price) / c.entry_price * 100)
     t1_pct = abs((c.target_1 - c.entry_price) / c.entry_price * 100)
     t2_pct = abs((c.target_2 - c.entry_price) / c.entry_price * 100)
-    stars = star_rating(signal.ranked_signal.signal_strength)
+
+    # Use boosted stars if provided, else default
+    effective_strength = boosted_stars if boosted_stars is not None else signal.ranked_signal.signal_strength
+    stars = star_rating(effective_strength)
 
     direction = c.direction.value
 
@@ -51,9 +86,15 @@ def format_signal_message(
     prefix = ""
     if is_paper:
         prefix = "<b>PAPER TRADE</b>\n"
+
+    # Confirmation badge
+    badge = _confirmation_badge(confirmation_level, confirmed_by)
+    if badge:
+        prefix = prefix + badge + "\n"
+
     warnings = ""
     if c.setup_type == "vwap_reclaim":
-        warnings = "\n⚠️ Higher Risk setup"
+        warnings = "\n\u26a0\ufe0f Higher Risk setup"
 
     # Signal ID line (only when DB id is available)
     id_line = f"Signal ID: #{signal_id}\n" if signal_id is not None else ""
@@ -149,8 +190,15 @@ def format_status_message(
     signals: list[SignalRecord],
     trades: list[TradeRecord],
     current_prices: dict[str, float],
+    score_map: dict[str, float] | None = None,
+    confirmation_map: dict[str, str] | None = None,
 ) -> str:
-    """Format the STATUS command response."""
+    """Format the STATUS command response.
+
+    When ``score_map`` is provided, signals are sorted by composite score
+    descending and rank numbers are shown. Confirmation badges are added
+    for symbols in ``confirmation_map``.
+    """
     if not signals and not trades:
         return "No active signals or open trades."
 
@@ -158,11 +206,30 @@ def format_status_message(
 
     if signals:
         parts.append("<b>Active Signals</b>")
-        for s in signals:
+
+        # Sort by composite score if available
+        if score_map:
+            signals = sorted(
+                signals,
+                key=lambda s: score_map.get(s.symbol, 0.0),
+                reverse=True,
+            )
+
+        for i, s in enumerate(signals):
+            rank_prefix = f"#{i + 1} " if score_map else ""
+            score_suffix = ""
+            if score_map and s.symbol in score_map:
+                score_suffix = f" [Score: {score_map[s.symbol]:.0f}]"
+
+            badge = ""
+            if confirmation_map and s.symbol in confirmation_map:
+                level = confirmation_map[s.symbol]
+                badge = f" [{level.upper()} CONFIRMED]"
+
             parts.append(
-                f"  {s.symbol}: Entry {s.entry_price:,.2f}, "
+                f"  {rank_prefix}{s.symbol}{badge}: Entry {s.entry_price:,.2f}, "
                 f"SL {s.stop_loss:,.2f}, "
-                f"T1 {s.target_1:,.2f}, T2 {s.target_2:,.2f}"
+                f"T1 {s.target_1:,.2f}, T2 {s.target_2:,.2f}{score_suffix}"
             )
 
     if trades:
@@ -189,26 +256,38 @@ def format_status_message(
     return "\n".join(parts)
 
 
-def format_journal_message(metrics: PerformanceMetrics | None) -> str:
-    """Format the JOURNAL command response."""
+def format_journal_message(
+    metrics: PerformanceMetrics | None,
+    confirmed_count: int = 0,
+) -> str:
+    """Format the JOURNAL command response.
+
+    When ``confirmed_count`` > 0, appends a confirmed signals section.
+    """
     if metrics is None:
         return "No trades logged yet. Reply TAKEN to a signal to start tracking."
 
-    return (
-        f"<b>Trade Journal</b>\n"
-        f"Period: {metrics.date_range_start} to {metrics.date_range_end}\n"
-        f"\n"
-        f"Signals Sent: {metrics.total_signals}\n"
-        f"Trades Taken: {metrics.trades_taken}\n"
-        f"Win Rate: {metrics.win_rate:.1f}%\n"
-        f"Total P&L: {metrics.total_pnl:+,.0f}\n"
-        f"Avg Win: {metrics.avg_win:+,.0f}\n"
-        f"Avg Loss: {metrics.avg_loss:+,.0f}\n"
-        f"Risk-Reward: {metrics.risk_reward_ratio:.2f}\n"
-        f"\n"
-        f"Best Trade: {metrics.best_trade_symbol} ({metrics.best_trade_pnl:+,.0f})\n"
-        f"Worst Trade: {metrics.worst_trade_symbol} ({metrics.worst_trade_pnl:+,.0f})"
-    )
+    parts = [
+        "<b>Trade Journal</b>",
+        f"Period: {metrics.date_range_start} to {metrics.date_range_end}",
+        "",
+        f"Signals Sent: {metrics.total_signals}",
+        f"Trades Taken: {metrics.trades_taken}",
+        f"Win Rate: {metrics.win_rate:.1f}%",
+        f"Total P&L: {metrics.total_pnl:+,.0f}",
+        f"Avg Win: {metrics.avg_win:+,.0f}",
+        f"Avg Loss: {metrics.avg_loss:+,.0f}",
+        f"Risk-Reward: {metrics.risk_reward_ratio:.2f}",
+        "",
+        f"Best Trade: {metrics.best_trade_symbol} ({metrics.best_trade_pnl:+,.0f})",
+        f"Worst Trade: {metrics.worst_trade_symbol} ({metrics.worst_trade_pnl:+,.0f})",
+    ]
+
+    if confirmed_count > 0:
+        parts.append("")
+        parts.append(f"<b>Confirmed Signals Today: {confirmed_count}</b>")
+
+    return "\n".join(parts)
 
 
 def format_daily_summary(summary: DailySummary) -> str:
@@ -230,9 +309,9 @@ def format_daily_summary(summary: DailySummary) -> str:
     if summary.strategy_breakdown:
         parts.append("")
         parts.append("<b>BY STRATEGY</b>")
-        strategy_icons = {"Gap & Go": "📈", "ORB": "📊", "VWAP Reversal": "📉"}
+        strategy_icons = {"Gap & Go": "\U0001f4c8", "ORB": "\U0001f4ca", "VWAP Reversal": "\U0001f4c9"}
         for name, breakdown in summary.strategy_breakdown.items():
-            icon = strategy_icons.get(name, "📋")
+            icon = strategy_icons.get(name, "\U0001f4cb")
             parts.append(
                 f"  {icon} {name}: "
                 f"{breakdown.signals_generated} signals, "

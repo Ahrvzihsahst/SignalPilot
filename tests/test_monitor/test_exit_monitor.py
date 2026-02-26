@@ -960,3 +960,172 @@ def test_default_trailing_configs_vwap_no_trail() -> None:
     cfg_reclaim = DEFAULT_TRAILING_CONFIGS["VWAP Reversal:vwap_reclaim"]
     assert cfg_reclaim.breakeven_trigger_pct == 1.5
     assert cfg_reclaim.trail_trigger_pct is None
+
+
+# =========================================================================
+# Phase 3: on_sl_hit_callback and on_trade_exit_callback tests
+# =========================================================================
+
+from unittest.mock import AsyncMock
+
+
+def _build_monitor_with_callbacks(
+    tick: TickData | None = None,
+    on_sl_hit_callback=None,
+    on_trade_exit_callback=None,
+    close_trade=None,
+) -> tuple[ExitMonitor, MockAlertSink]:
+    """Create an ExitMonitor with Phase 3 callbacks."""
+    alert_sink = MockAlertSink()
+
+    async def get_tick(symbol: str) -> TickData | None:
+        if tick is not None and tick.symbol == symbol:
+            return tick
+        return None
+
+    monitor = ExitMonitor(
+        get_tick=get_tick,
+        alert_callback=alert_sink,
+        close_trade=close_trade,
+        on_sl_hit_callback=on_sl_hit_callback,
+        on_trade_exit_callback=on_trade_exit_callback,
+    )
+    return monitor, alert_sink
+
+
+class TestExitMonitorPhase3Callbacks:
+    """Tests for Phase 3 on_sl_hit_callback and on_trade_exit_callback."""
+
+    @pytest.mark.asyncio
+    async def test_sl_hit_fires_on_sl_hit_callback(self) -> None:
+        """SL hit should call on_sl_hit_callback with symbol, strategy, pnl."""
+        on_sl_hit = AsyncMock()
+        on_trade_exit = AsyncMock()
+        trade = _make_trade(entry_price=100.0, stop_loss=97.0, quantity=10)
+        tick = _make_tick(ltp=96.0)
+        monitor, alerts = _build_monitor_with_callbacks(
+            tick=tick,
+            on_sl_hit_callback=on_sl_hit,
+            on_trade_exit_callback=on_trade_exit,
+        )
+        monitor.start_monitoring(trade)
+
+        await monitor.check_trade(trade)
+
+        on_sl_hit.assert_called_once()
+        args = on_sl_hit.call_args[0]
+        assert args[0] == "SBIN"  # symbol
+        assert args[2] < 0  # pnl_amount is negative
+
+    @pytest.mark.asyncio
+    async def test_sl_hit_fires_on_trade_exit_callback(self) -> None:
+        """SL hit should also call on_trade_exit_callback."""
+        on_trade_exit = AsyncMock()
+        trade = _make_trade(entry_price=100.0, stop_loss=97.0, quantity=10)
+        tick = _make_tick(ltp=96.0)
+        monitor, alerts = _build_monitor_with_callbacks(
+            tick=tick,
+            on_trade_exit_callback=on_trade_exit,
+        )
+        monitor.start_monitoring(trade)
+
+        await monitor.check_trade(trade)
+
+        on_trade_exit.assert_called_once()
+        args = on_trade_exit.call_args[0]
+        assert args[1] is True  # is_loss = True
+
+    @pytest.mark.asyncio
+    async def test_t2_hit_fires_on_trade_exit_but_not_on_sl_hit(self) -> None:
+        """T2 hit should call on_trade_exit but NOT on_sl_hit."""
+        on_sl_hit = AsyncMock()
+        on_trade_exit = AsyncMock()
+        trade = _make_trade(entry_price=100.0, target_2=107.0, quantity=10)
+        tick = _make_tick(ltp=107.0)
+        monitor, alerts = _build_monitor_with_callbacks(
+            tick=tick,
+            on_sl_hit_callback=on_sl_hit,
+            on_trade_exit_callback=on_trade_exit,
+        )
+        monitor.start_monitoring(trade)
+
+        await monitor.check_trade(trade)
+
+        on_sl_hit.assert_not_called()
+        on_trade_exit.assert_called_once()
+        args = on_trade_exit.call_args[0]
+        assert args[1] is False  # is_loss = False (profit)
+
+    @pytest.mark.asyncio
+    async def test_no_callbacks_backward_compatible(self) -> None:
+        """Without callbacks, SL hit should work as before."""
+        trade = _make_trade(entry_price=100.0, stop_loss=97.0)
+        tick = _make_tick(ltp=96.0)
+        monitor, alerts = _build_monitor_with_callbacks(tick=tick)
+        monitor.start_monitoring(trade)
+
+        result = await monitor.check_trade(trade)
+
+        assert result is not None
+        assert result.exit_type == ExitType.SL_HIT
+
+    @pytest.mark.asyncio
+    async def test_time_exit_fires_on_trade_exit(self) -> None:
+        """Mandatory time exit should call on_trade_exit_callback."""
+        on_trade_exit = AsyncMock()
+        trade = _make_trade(trade_id=1, entry_price=100.0, quantity=10)
+
+        alert_sink = MockAlertSink()
+        tick_data = _make_tick("SBIN", 98.0)
+
+        async def get_tick(symbol: str) -> TickData | None:
+            if symbol == "SBIN":
+                return tick_data
+            return None
+
+        monitor = ExitMonitor(
+            get_tick=get_tick,
+            alert_callback=alert_sink,
+            on_trade_exit_callback=on_trade_exit,
+        )
+        monitor.start_monitoring(trade)
+
+        await monitor.trigger_time_exit([trade], is_mandatory=True)
+
+        on_trade_exit.assert_called_once()
+        args = on_trade_exit.call_args[0]
+        assert args[1] is True  # pnl negative, is_loss = True
+
+    @pytest.mark.asyncio
+    async def test_trailing_sl_hit_fires_on_sl_hit(self) -> None:
+        """Trailing SL hit should fire on_sl_hit_callback."""
+        on_sl_hit = AsyncMock()
+        trade = _make_trade(entry_price=100.0, stop_loss=97.0, quantity=10)
+
+        alert_sink = MockAlertSink()
+        prices = iter([106.0, 103.88])  # First sets trail, then hits it
+
+        async def get_tick(sym: str) -> TickData | None:
+            if sym != "SBIN":
+                return None
+            try:
+                price = next(prices)
+            except StopIteration:
+                return None
+            return _make_tick(sym, price)
+
+        monitor = ExitMonitor(
+            get_tick=get_tick,
+            alert_callback=alert_sink,
+            on_sl_hit_callback=on_sl_hit,
+        )
+        monitor.start_monitoring(trade)
+
+        # Set up trailing SL
+        await monitor.check_trade(trade)
+        # Hit trailing SL
+        await monitor.check_trade(trade)
+
+        on_sl_hit.assert_called_once()
+        args = on_sl_hit.call_args[0]
+        assert args[0] == "SBIN"

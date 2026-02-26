@@ -8,6 +8,7 @@ from datetime import datetime
 from signalpilot.db.models import (
     FinalSignal,
     HistoricalReference,
+    HybridScoreRecord,
     SignalRecord,
     UserConfig,
 )
@@ -46,6 +47,15 @@ class SignalPilotApp:
         capital_allocator=None,
         strategy_performance_repo=None,
         app_config=None,
+        # Phase 3 components (all default to None for backward compatibility)
+        confidence_detector=None,
+        composite_scorer=None,
+        adaptive_manager=None,
+        circuit_breaker=None,
+        hybrid_score_repo=None,
+        circuit_breaker_repo=None,
+        adaptation_log_repo=None,
+        dashboard_app=None,
     ) -> None:
         self._db = db
         self._signal_repo = signal_repo
@@ -74,6 +84,16 @@ class SignalPilotApp:
         self._capital_allocator = capital_allocator
         self._strategy_performance_repo = strategy_performance_repo
         self._app_config = app_config
+        # Phase 3
+        self._confidence_detector = confidence_detector
+        self._composite_scorer = composite_scorer
+        self._adaptive_manager = adaptive_manager
+        self._circuit_breaker = circuit_breaker
+        self._hybrid_score_repo = hybrid_score_repo
+        self._circuit_breaker_repo = circuit_breaker_repo
+        self._adaptation_log_repo = adaptation_log_repo
+        self._dashboard_app = dashboard_app
+        # Internal state
         self._scanning = False
         self._accepting_signals = True
         self._scan_task: asyncio.Task | None = None
@@ -148,6 +168,14 @@ class SignalPilotApp:
             # Reset per-session state so yesterday's data doesn't bleed over.
             await self._reset_session()
 
+            # Phase 3: Daily resets for circuit breaker and adaptive manager
+            if self._circuit_breaker is not None:
+                self._circuit_breaker.reset_daily()
+                logger.info("Circuit breaker daily reset")
+            if self._adaptive_manager is not None:
+                self._adaptive_manager.reset_daily()
+                logger.info("Adaptive manager daily reset")
+
             logger.info("Starting market scanning")
             await self._websocket.connect()
             self._scanning = True
@@ -195,7 +223,17 @@ class SignalPilotApp:
             self._websocket.reset_volume_tracking()
 
     async def _scan_loop(self) -> None:
-        """Main scanning loop. Runs every second while active."""
+        """Main scanning loop. Runs every second while active.
+
+        Phase 3 integration points (all guarded by None checks):
+        1. Circuit breaker check at start of each iteration
+        2. Confidence detection on candidates
+        3. Composite scoring
+        4. Adaptive filtering
+        5. Composite scores passed to ranker
+        6. Confirmation map passed to risk manager
+        7. Phase 3 fields persisted on signal records
+        """
         consecutive_errors = 0
         _diag_cycle_count = 0
         while self._scanning:
@@ -204,6 +242,12 @@ class SignalPilotApp:
                 now = datetime.now(IST)
                 phase = get_current_phase(now)
                 set_context(cycle_id=cycle_id, phase=phase.value)
+
+                # Phase 3: Check circuit breaker at start of each cycle
+                if self._circuit_breaker is not None and self._circuit_breaker.is_active:
+                    # Circuit breaker active -- skip signal generation but
+                    # continue exit monitoring
+                    self._accepting_signals = False
 
                 if self._accepting_signals and phase in (
                     StrategyPhase.OPENING,
@@ -240,32 +284,178 @@ class SignalPilotApp:
                             )
 
                         if all_candidates:
-                            ranked = self._ranker.rank(all_candidates)
-                            active_count = await self._trade_repo.get_active_trade_count()
-                            final_signals = self._risk_manager.filter_and_size(
-                                ranked,
-                                user_config,
-                                active_count,
-                            )
-                            for signal in final_signals:
-                                record = self._signal_to_record(signal, now)
-                                is_paper = self._is_paper_mode(signal, self._app_config)
-                                if is_paper:
-                                    record.status = "paper"
-                                signal_id = await self._signal_repo.insert_signal(record)
-                                record.id = signal_id
-                                await self._bot.send_signal(
-                                    signal, is_paper=is_paper, signal_id=signal_id,
+                            # Phase 3: Run confidence detection
+                            confirmation_map = None
+                            composite_scores = None
+
+                            if self._confidence_detector is not None:
+                                confirmation_results = (
+                                    await self._confidence_detector.detect_confirmations(
+                                        all_candidates, now
+                                    )
                                 )
-                                logger.info(
-                                    "Signal %s for %s (id=%d)",
-                                    "paper-sent" if is_paper else "sent",
-                                    record.symbol,
-                                    signal_id,
+                                # Build symbol -> ConfirmationResult map
+                                confirmation_map = {}
+                                for candidate, conf_result in confirmation_results:
+                                    confirmation_map[candidate.symbol] = conf_result
+
+                            # Phase 3: Run composite scoring
+                            if self._composite_scorer is not None:
+                                composite_scores = {}
+                                for candidate in all_candidates:
+                                    # Get confirmation for this candidate
+                                    conf = None
+                                    if confirmation_map is not None:
+                                        conf = confirmation_map.get(candidate.symbol)
+                                    if conf is None:
+                                        from signalpilot.ranking.confidence import (
+                                            ConfirmationResult,
+                                        )
+                                        conf = ConfirmationResult(
+                                            confirmation_level="single",
+                                            confirmed_by=[candidate.strategy_name],
+                                        )
+                                    score_result = await self._composite_scorer.score(
+                                        candidate, conf, now.date()
+                                    )
+                                    composite_scores[candidate.symbol] = score_result
+
+                            # Phase 3: Adaptive filtering
+                            if self._adaptive_manager is not None:
+                                filtered = []
+                                for candidate in all_candidates:
+                                    # Need to estimate signal strength for filtering
+                                    strength = 3  # default
+                                    if composite_scores and candidate.symbol in composite_scores:
+                                        cs = composite_scores[candidate.symbol].composite_score
+                                        if cs >= 80:
+                                            strength = 5
+                                        elif cs >= 65:
+                                            strength = 4
+                                        elif cs >= 50:
+                                            strength = 3
+                                        elif cs >= 35:
+                                            strength = 2
+                                        else:
+                                            strength = 1
+                                    if self._adaptive_manager.should_allow_signal(
+                                        candidate.strategy_name, strength
+                                    ):
+                                        filtered.append(candidate)
+                                    else:
+                                        logger.info(
+                                            "Adaptive filter blocked %s (%s)",
+                                            candidate.symbol, candidate.strategy_name,
+                                        )
+                                all_candidates = filtered
+
+                            if all_candidates:
+                                # Pass composite scores and confirmations to ranker
+                                ranked = self._ranker.rank(
+                                    all_candidates,
+                                    composite_scores=composite_scores,
+                                    confirmations=confirmation_map,
                                 )
+                                active_count = await self._trade_repo.get_active_trade_count()
+                                final_signals = self._risk_manager.filter_and_size(
+                                    ranked,
+                                    user_config,
+                                    active_count,
+                                    confirmation_map=confirmation_map,
+                                )
+                                for signal in final_signals:
+                                    record = self._signal_to_record(signal, now)
+                                    is_paper = self._is_paper_mode(signal, self._app_config)
+                                    if is_paper:
+                                        record.status = "paper"
+
+                                    # Phase 3: Persist composite score and confirmation fields
+                                    conf_level = None
+                                    conf_by = None
+                                    boosted_stars = None
+                                    sym = signal.ranked_signal.candidate.symbol
+
+                                    if composite_scores and sym in composite_scores:
+                                        cs = composite_scores[sym]
+                                        record.composite_score = cs.composite_score
+                                        set_context(
+                                            cycle_id=cycle_id,
+                                            phase=phase.value,
+                                            symbol=sym,
+                                        )
+
+                                    if confirmation_map and sym in confirmation_map:
+                                        conf = confirmation_map[sym]
+                                        record.confirmation_level = conf.confirmation_level
+                                        record.confirmed_by = ",".join(conf.confirmed_by)
+                                        record.position_size_multiplier = conf.position_size_multiplier
+                                        conf_level = conf.confirmation_level
+                                        conf_by = ",".join(conf.confirmed_by)
+                                        if conf.star_boost > 0:
+                                            boosted_stars = min(
+                                                signal.ranked_signal.signal_strength + conf.star_boost, 5
+                                            )
+
+                                    if self._adaptive_manager is not None:
+                                        state = self._adaptive_manager.get_all_states().get(
+                                            signal.ranked_signal.candidate.strategy_name
+                                        )
+                                        if state is not None:
+                                            record.adaptation_status = state.level.value
+
+                                    signal_id = await self._signal_repo.insert_signal(record)
+                                    record.id = signal_id
+
+                                    # Phase 3: Persist hybrid score record
+                                    if (
+                                        self._hybrid_score_repo is not None
+                                        and composite_scores
+                                        and sym in composite_scores
+                                    ):
+                                        cs = composite_scores[sym]
+                                        hs_record = HybridScoreRecord(
+                                            signal_id=signal_id,
+                                            composite_score=cs.composite_score,
+                                            strategy_strength_score=cs.strategy_strength_score,
+                                            win_rate_score=cs.win_rate_score,
+                                            risk_reward_score=cs.risk_reward_score,
+                                            confirmation_bonus=cs.confirmation_bonus,
+                                            confirmed_by=conf_by,
+                                            confirmation_level=conf_level or "single",
+                                            position_size_multiplier=(
+                                                confirmation_map[sym].position_size_multiplier
+                                                if confirmation_map and sym in confirmation_map
+                                                else 1.0
+                                            ),
+                                            created_at=now,
+                                        )
+                                        try:
+                                            await self._hybrid_score_repo.insert_score(hs_record)
+                                        except Exception:
+                                            logger.warning(
+                                                "Failed to persist hybrid score for signal %d",
+                                                signal_id,
+                                            )
+
+                                    await self._bot.send_signal(
+                                        signal,
+                                        is_paper=is_paper,
+                                        signal_id=signal_id,
+                                        confirmation_level=conf_level,
+                                        confirmed_by=conf_by,
+                                        boosted_stars=boosted_stars,
+                                    )
+                                    logger.info(
+                                        "Signal %s for %s (id=%d, composite_score=%s, confirmation=%s)",
+                                        "paper-sent" if is_paper else "sent",
+                                        record.symbol,
+                                        signal_id,
+                                        record.composite_score,
+                                        record.confirmation_level or "single",
+                                    )
 
                     # Periodic diagnostic: log when scanning is active but
-                    # producing no candidates (every 60 cycles ≈ 1 minute).
+                    # producing no candidates (every 60 cycles ~ 1 minute).
                     _diag_cycle_count += 1
                     if _diag_cycle_count % 60 == 0:
                         ws_ok = (

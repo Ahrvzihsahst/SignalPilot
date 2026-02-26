@@ -79,7 +79,10 @@ async def test_valid_signal_stored_and_sent(db, repos):
     assert signals[0].status == "sent"
 
     # Verify bot was called
-    mock_bot.send_signal.assert_awaited_once_with(signal, is_paper=False, signal_id=signals[0].id)
+    mock_bot.send_signal.assert_awaited_once_with(
+        signal, is_paper=False, signal_id=signals[0].id,
+        confirmation_level=None, confirmed_by=None, boosted_stars=None,
+    )
 
 
 async def test_no_candidates_no_signal(db, repos):

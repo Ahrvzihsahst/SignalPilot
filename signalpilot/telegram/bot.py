@@ -1,4 +1,4 @@
-"""SignalPilot Telegram bot — signal delivery and command handling."""
+"""SignalPilot Telegram bot -- signal delivery and command handling."""
 
 import logging
 import time
@@ -15,12 +15,17 @@ from telegram.ext import (
 from signalpilot.db.models import ExitAlert, FinalSignal
 from signalpilot.telegram.formatters import format_exit_alert, format_signal_message
 from signalpilot.telegram.handlers import (
+    handle_adapt,
     handle_allocate,
     handle_capital,
     handle_help,
     handle_journal,
+    handle_override_circuit,
+    handle_override_confirm,
     handle_pause,
+    handle_rebalance,
     handle_resume,
+    handle_score,
     handle_status,
     handle_strategy,
     handle_taken,
@@ -50,6 +55,12 @@ class SignalPilotBot:
         get_current_prices,
         capital_allocator=None,
         strategy_performance_repo=None,
+        # Phase 3 components
+        circuit_breaker=None,
+        adaptive_manager=None,
+        hybrid_score_repo=None,
+        adaptation_log_repo=None,
+        app=None,
     ) -> None:
         self._bot_token = bot_token
         self._chat_id = chat_id
@@ -61,7 +72,18 @@ class SignalPilotBot:
         self._get_current_prices = get_current_prices
         self._capital_allocator = capital_allocator
         self._strategy_performance_repo = strategy_performance_repo
+        # Phase 3
+        self._circuit_breaker = circuit_breaker
+        self._adaptive_manager = adaptive_manager
+        self._hybrid_score_repo = hybrid_score_repo
+        self._adaptation_log_repo = adaptation_log_repo
+        self._app = app
         self._application: Application | None = None
+        self._awaiting_override_confirm = False
+
+    def set_app(self, app) -> None:
+        """Set the app reference after construction (breaks circular dep)."""
+        self._app = app
 
     async def start(self) -> None:
         """Initialize the bot, register handlers, and start polling."""
@@ -118,6 +140,37 @@ class SignalPilotBot:
                 self._handle_strategy,
             )
         )
+        # Phase 3 handlers
+        self._application.add_handler(
+            MessageHandler(
+                chat_filter & filters.TEXT & filters.Regex(r"(?i)^override\s+circuit$"),
+                self._handle_override_circuit,
+            )
+        )
+        self._application.add_handler(
+            MessageHandler(
+                chat_filter & filters.TEXT & filters.Regex(r"(?i)^yes$"),
+                self._handle_override_confirm,
+            )
+        )
+        self._application.add_handler(
+            MessageHandler(
+                chat_filter & filters.TEXT & filters.Regex(r"(?i)^score\s+\S+$"),
+                self._handle_score,
+            )
+        )
+        self._application.add_handler(
+            MessageHandler(
+                chat_filter & filters.TEXT & filters.Regex(r"(?i)^adapt$"),
+                self._handle_adapt,
+            )
+        )
+        self._application.add_handler(
+            MessageHandler(
+                chat_filter & filters.TEXT & filters.Regex(r"(?i)^rebalance$"),
+                self._handle_rebalance,
+            )
+        )
         self._application.add_handler(
             MessageHandler(
                 chat_filter & filters.TEXT & filters.Regex(r"(?i)^help$"),
@@ -141,9 +194,17 @@ class SignalPilotBot:
     async def send_signal(
         self, signal: FinalSignal, is_paper: bool = False,
         signal_id: int | None = None,
+        confirmation_level: str | None = None,
+        confirmed_by: str | None = None,
+        boosted_stars: int | None = None,
     ) -> None:
         """Format and send a signal message to the user's chat."""
-        message = format_signal_message(signal, is_paper=is_paper, signal_id=signal_id)
+        message = format_signal_message(
+            signal, is_paper=is_paper, signal_id=signal_id,
+            confirmation_level=confirmation_level,
+            confirmed_by=confirmed_by,
+            boosted_stars=boosted_stars,
+        )
         await self._application.bot.send_message(
             chat_id=self._chat_id,
             text=message,
@@ -189,6 +250,7 @@ class SignalPilotBot:
         async with log_context(command="STATUS"):
             response = await handle_status(
                 self._signal_repo, self._trade_repo, self._get_current_prices,
+                hybrid_score_repo=self._hybrid_score_repo,
             )
             await update.message.reply_text(response, parse_mode="HTML")
 
@@ -196,7 +258,10 @@ class SignalPilotBot:
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
         async with log_context(command="JOURNAL"):
-            response = await handle_journal(self._metrics_calculator)
+            response = await handle_journal(
+                self._metrics_calculator,
+                hybrid_score_repo=self._hybrid_score_repo,
+            )
             await update.message.reply_text(response, parse_mode="HTML")
 
     async def _handle_capital(
@@ -233,7 +298,60 @@ class SignalPilotBot:
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
         async with log_context(command="STRATEGY"):
-            response = await handle_strategy(self._strategy_performance_repo)
+            response = await handle_strategy(
+                self._strategy_performance_repo,
+                adaptive_manager=self._adaptive_manager,
+            )
+            await update.message.reply_text(response, parse_mode="HTML")
+
+    async def _handle_override_circuit(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        async with log_context(command="OVERRIDE_CIRCUIT"):
+            response = await handle_override_circuit(
+                self._circuit_breaker, app=self._app,
+            )
+            if "Reply YES" in response:
+                self._awaiting_override_confirm = True
+            await update.message.reply_text(response)
+
+    async def _handle_override_confirm(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        async with log_context(command="OVERRIDE_CONFIRM"):
+            if not self._awaiting_override_confirm:
+                return  # Ignore stray YES messages
+            self._awaiting_override_confirm = False
+            response = await handle_override_confirm(
+                self._circuit_breaker, app=self._app,
+            )
+            await update.message.reply_text(response)
+
+    async def _handle_score(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        async with log_context(command="SCORE"):
+            response = await handle_score(
+                self._hybrid_score_repo, update.message.text,
+            )
+            await update.message.reply_text(response, parse_mode="HTML")
+
+    async def _handle_adapt(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        async with log_context(command="ADAPT"):
+            response = await handle_adapt(self._adaptive_manager)
+            await update.message.reply_text(response, parse_mode="HTML")
+
+    async def _handle_rebalance(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        async with log_context(command="REBALANCE"):
+            response = await handle_rebalance(
+                self._capital_allocator,
+                self._config_repo,
+                adaptation_log_repo=self._adaptation_log_repo,
+            )
             await update.message.reply_text(response, parse_mode="HTML")
 
     async def _handle_help(

@@ -83,10 +83,14 @@ class ExitMonitor:
         trail_distance_pct: float = 2.0,
         trailing_configs: dict[str, TrailingStopConfig] | None = None,
         close_trade: TradeCloser | None = None,
+        on_sl_hit_callback: Callable[..., Awaitable[None]] | None = None,
+        on_trade_exit_callback: Callable[..., Awaitable[None]] | None = None,
     ) -> None:
         self._get_tick = get_tick
         self._alert_callback = alert_callback
         self._close_trade = close_trade
+        self._on_sl_hit_callback = on_sl_hit_callback
+        self._on_trade_exit_callback = on_trade_exit_callback
         self._breakeven_trigger_pct = breakeven_trigger_pct
         self._trail_trigger_pct = trail_trigger_pct
         self._trail_factor = 1.0 - trail_distance_pct / 100.0
@@ -103,18 +107,37 @@ class ExitMonitor:
     async def _persist_exit(
         self, trade: TradeRecord, exit_price: float, pnl_pct: float, exit_reason: str,
     ) -> None:
-        """Persist the trade closure in the database."""
-        if self._close_trade is None:
-            return
+        """Persist the trade closure in the database and fire Phase 3 callbacks."""
         pnl_amount = (exit_price - trade.entry_price) * trade.quantity
-        try:
-            await self._close_trade(trade.id, exit_price, pnl_amount, pnl_pct, exit_reason)
-            logger.info(
-                "Trade %d (%s) closed in DB: exit=%.2f pnl=%.2f",
-                trade.id, trade.symbol, exit_price, pnl_amount,
-            )
-        except Exception:
-            logger.exception("Failed to persist trade %d closure", trade.id)
+        is_loss = pnl_amount < 0
+
+        if self._close_trade is not None:
+            try:
+                await self._close_trade(trade.id, exit_price, pnl_amount, pnl_pct, exit_reason)
+                logger.info(
+                    "Trade %d (%s) closed in DB: exit=%.2f pnl=%.2f",
+                    trade.id, trade.symbol, exit_price, pnl_amount,
+                )
+            except Exception:
+                logger.exception("Failed to persist trade %d closure", trade.id)
+
+        # Phase 3: notify circuit breaker on stop-loss exits
+        if exit_reason in ("sl_hit", "trailing_sl") and self._on_sl_hit_callback is not None:
+            try:
+                await self._on_sl_hit_callback(
+                    trade.symbol, getattr(trade, "strategy", "gap_go"), pnl_amount,
+                )
+            except Exception:
+                logger.exception("on_sl_hit_callback failed for trade %d", trade.id)
+
+        # Phase 3: notify adaptive manager on any exit
+        if self._on_trade_exit_callback is not None:
+            try:
+                await self._on_trade_exit_callback(
+                    getattr(trade, "strategy", "gap_go"), is_loss,
+                )
+            except Exception:
+                logger.exception("on_trade_exit_callback failed for trade %d", trade.id)
 
     def start_monitoring(self, trade: TradeRecord) -> None:
         """Begin monitoring a trade by initializing its trailing stop state."""

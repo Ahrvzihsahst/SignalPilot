@@ -110,6 +110,7 @@ class DatabaseManager:
         await self.connection.executescript(SCHEMA_SQL)
         await self.connection.commit()
         await self._run_phase2_migration()
+        await self._run_phase3_migration()
 
     async def _run_phase2_migration(self) -> None:
         """Phase 2 idempotent migration: add new columns and tables.
@@ -179,3 +180,125 @@ class DatabaseManager:
 
         await conn.commit()
         logger.info("Phase 2 migration complete")
+
+    async def _run_phase3_migration(self) -> None:
+        """Phase 3 idempotent migration: hybrid scoring, circuit breaker, adaptation.
+
+        Creates three new tables, adds indexes, and extends the signals and
+        user_config tables with Phase 3 columns.  Uses PRAGMA table_info()
+        to check column existence before ALTER TABLE since SQLite lacks
+        ADD COLUMN IF NOT EXISTS.
+        """
+        conn = self.connection
+
+        async def _has_column(table: str, column: str) -> bool:
+            cursor = await conn.execute(f"PRAGMA table_info({table})")
+            rows = await cursor.fetchall()
+            return any(row["name"] == column for row in rows)
+
+        # -- New tables -------------------------------------------------------
+        await conn.executescript("""
+            CREATE TABLE IF NOT EXISTS hybrid_scores (
+                id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+                signal_id               INTEGER NOT NULL,
+                composite_score         REAL    NOT NULL DEFAULT 0.0,
+                strategy_strength_score REAL    NOT NULL DEFAULT 0.0,
+                win_rate_score          REAL    NOT NULL DEFAULT 0.0,
+                risk_reward_score       REAL    NOT NULL DEFAULT 0.0,
+                confirmation_bonus      REAL    NOT NULL DEFAULT 0.0,
+                confirmed_by            TEXT,
+                confirmation_level      TEXT    NOT NULL DEFAULT 'single',
+                position_size_multiplier REAL   NOT NULL DEFAULT 1.0,
+                created_at              TEXT    NOT NULL,
+                FOREIGN KEY (signal_id) REFERENCES signals(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS circuit_breaker_log (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                date            TEXT    NOT NULL,
+                sl_count        INTEGER NOT NULL DEFAULT 0,
+                triggered_at    TEXT,
+                resumed_at      TEXT,
+                manual_override INTEGER NOT NULL DEFAULT 0,
+                override_at     TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS adaptation_log (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                date        TEXT    NOT NULL,
+                strategy    TEXT    NOT NULL,
+                event_type  TEXT    NOT NULL,
+                details     TEXT    NOT NULL DEFAULT '',
+                old_weight  REAL,
+                new_weight  REAL,
+                created_at  TEXT    NOT NULL
+            );
+
+            -- Indexes for hybrid_scores
+            CREATE INDEX IF NOT EXISTS idx_hybrid_scores_signal_id
+                ON hybrid_scores(signal_id);
+            CREATE INDEX IF NOT EXISTS idx_hybrid_scores_created_at
+                ON hybrid_scores(created_at);
+
+            -- Indexes for circuit_breaker_log
+            CREATE INDEX IF NOT EXISTS idx_circuit_breaker_date
+                ON circuit_breaker_log(date);
+
+            -- Indexes for adaptation_log
+            CREATE INDEX IF NOT EXISTS idx_adaptation_log_date
+                ON adaptation_log(date);
+            CREATE INDEX IF NOT EXISTS idx_adaptation_log_strategy
+                ON adaptation_log(strategy);
+        """)
+
+        # -- Extend signals table ---------------------------------------------
+        if not await _has_column("signals", "composite_score"):
+            await conn.execute(
+                "ALTER TABLE signals ADD COLUMN composite_score REAL"
+            )
+        if not await _has_column("signals", "confirmation_level"):
+            await conn.execute(
+                "ALTER TABLE signals ADD COLUMN confirmation_level TEXT"
+            )
+        if not await _has_column("signals", "confirmed_by"):
+            await conn.execute(
+                "ALTER TABLE signals ADD COLUMN confirmed_by TEXT"
+            )
+        if not await _has_column("signals", "position_size_multiplier"):
+            await conn.execute(
+                "ALTER TABLE signals ADD COLUMN position_size_multiplier REAL DEFAULT 1.0"
+            )
+        if not await _has_column("signals", "adaptation_status"):
+            await conn.execute(
+                "ALTER TABLE signals ADD COLUMN adaptation_status TEXT DEFAULT 'normal'"
+            )
+
+        # -- Extend user_config table -----------------------------------------
+        if not await _has_column("user_config", "circuit_breaker_limit"):
+            await conn.execute(
+                "ALTER TABLE user_config ADD COLUMN "
+                "circuit_breaker_limit INTEGER NOT NULL DEFAULT 3"
+            )
+        if not await _has_column("user_config", "confidence_boost_enabled"):
+            await conn.execute(
+                "ALTER TABLE user_config ADD COLUMN "
+                "confidence_boost_enabled INTEGER NOT NULL DEFAULT 1"
+            )
+        if not await _has_column("user_config", "adaptive_learning_enabled"):
+            await conn.execute(
+                "ALTER TABLE user_config ADD COLUMN "
+                "adaptive_learning_enabled INTEGER NOT NULL DEFAULT 1"
+            )
+        if not await _has_column("user_config", "auto_rebalance_enabled"):
+            await conn.execute(
+                "ALTER TABLE user_config ADD COLUMN "
+                "auto_rebalance_enabled INTEGER NOT NULL DEFAULT 1"
+            )
+        if not await _has_column("user_config", "adaptation_mode"):
+            await conn.execute(
+                "ALTER TABLE user_config ADD COLUMN "
+                "adaptation_mode TEXT NOT NULL DEFAULT 'aggressive'"
+            )
+
+        await conn.commit()
+        logger.info("Phase 3 migration complete")

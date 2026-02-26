@@ -229,3 +229,104 @@ class TestSignalRepository:
         assert retrieved.volume_ratio == signal.volume_ratio
         assert retrieved.reason == signal.reason
         assert retrieved.status == signal.status
+
+
+class TestSignalRepositoryPhase3:
+    async def test_insert_signal_with_phase3_fields(self, signal_repo):
+        """Phase 3 fields (composite_score, confirmation, etc.) round-trip correctly."""
+        signal = SignalRecord(
+            date=date(2026, 2, 16),
+            symbol="SBIN",
+            strategy="gap_and_go",
+            entry_price=770.0,
+            stop_loss=745.0,
+            target_1=808.5,
+            target_2=823.9,
+            quantity=13,
+            capital_required=10010.0,
+            signal_strength=4,
+            gap_pct=4.05,
+            volume_ratio=1.8,
+            reason="Gap up 4.05%",
+            created_at=datetime(2026, 2, 16, 9, 35, 0),
+            expires_at=datetime(2026, 2, 16, 10, 5, 0),
+            status="sent",
+            composite_score=0.85,
+            confirmation_level="dual",
+            confirmed_by="gap_and_go,orb",
+            position_size_multiplier=1.2,
+            adaptation_status="boosted",
+        )
+        signal_id = await signal_repo.insert_signal(signal)
+
+        signals = await signal_repo.get_signals_by_date(date(2026, 2, 16))
+        retrieved = signals[0]
+        assert retrieved.id == signal_id
+        assert retrieved.composite_score == 0.85
+        assert retrieved.confirmation_level == "dual"
+        assert retrieved.confirmed_by == "gap_and_go,orb"
+        assert retrieved.position_size_multiplier == 1.2
+        assert retrieved.adaptation_status == "boosted"
+
+    async def test_existing_signals_read_with_defaults(self, signal_repo):
+        """Signals inserted without Phase 3 fields get correct defaults."""
+        signal = _make_signal()
+        signal_id = await signal_repo.insert_signal(signal)
+
+        signals = await signal_repo.get_signals_by_date(date(2026, 2, 16))
+        retrieved = signals[0]
+        # Phase 3 fields should have safe defaults
+        assert retrieved.composite_score is None
+        assert retrieved.confirmation_level is None
+        assert retrieved.confirmed_by is None
+        assert retrieved.position_size_multiplier == 1.0
+        assert retrieved.adaptation_status == "normal"
+
+    async def test_get_recent_signals_by_symbol_within_window(self, signal_repo):
+        """get_recent_signals_by_symbol returns signals within the time window."""
+        # Insert two signals for SBIN at different times
+        signal1 = _make_signal(
+            symbol="SBIN",
+            strategy="gap_and_go",
+            created_at=datetime(2026, 2, 16, 9, 35, 0),
+        )
+        await signal_repo.insert_signal(signal1)
+
+        signal2 = _make_signal(
+            symbol="SBIN",
+            strategy="orb",
+            created_at=datetime(2026, 2, 16, 9, 40, 0),
+        )
+        await signal_repo.insert_signal(signal2)
+
+        # Also insert a signal for a different symbol
+        signal3 = _make_signal(
+            symbol="TCS",
+            strategy="gap_and_go",
+            created_at=datetime(2026, 2, 16, 9, 37, 0),
+        )
+        await signal_repo.insert_signal(signal3)
+
+        # Query with a window starting at 9:30
+        since = datetime(2026, 2, 16, 9, 30, 0)
+        results = await signal_repo.get_recent_signals_by_symbol("SBIN", since)
+        assert len(results) == 2
+        strategies = [r[0] for r in results]
+        assert "gap_and_go" in strategies
+        assert "orb" in strategies
+        # Results should be ordered by created_at DESC
+        assert results[0][0] == "orb"  # 9:40 is more recent
+
+    async def test_get_recent_signals_by_symbol_outside_window(self, signal_repo):
+        """get_recent_signals_by_symbol excludes signals before the window."""
+        signal = _make_signal(
+            symbol="SBIN",
+            strategy="gap_and_go",
+            created_at=datetime(2026, 2, 16, 9, 20, 0),
+        )
+        await signal_repo.insert_signal(signal)
+
+        # Window starts at 9:30, signal was at 9:20 -- should not be returned
+        since = datetime(2026, 2, 16, 9, 30, 0)
+        results = await signal_repo.get_recent_signals_by_symbol("SBIN", since)
+        assert len(results) == 0

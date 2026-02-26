@@ -104,6 +104,33 @@ class AppConfig(BaseSettings):
     historical_api_rate_limit: int = Field(default=3, description="Requests per second")
     max_crashes_per_session: int = Field(default=3)
 
+    # Phase 3: Composite scoring weights
+    composite_weight_strategy: float = Field(default=0.4, description="Composite scoring: strategy strength weight")
+    composite_weight_win_rate: float = Field(default=0.3, description="Composite scoring: win rate weight")
+    composite_weight_risk_reward: float = Field(default=0.2, description="Composite scoring: risk-reward weight")
+    composite_weight_confirmation: float = Field(default=0.1, description="Composite scoring: confirmation bonus weight")
+
+    # Phase 3: Confirmation
+    confirmation_window_minutes: int = Field(default=15, description="Multi-strategy confirmation window (minutes)")
+
+    # Phase 3: Circuit breaker
+    circuit_breaker_sl_limit: int = Field(default=3, description="Daily SL hits before circuit breaker activates")
+
+    # Phase 3: Adaptive learning
+    adaptive_consecutive_loss_throttle: int = Field(default=3, description="Consecutive losses before throttling")
+    adaptive_consecutive_loss_pause: int = Field(default=5, description="Consecutive losses before pausing")
+    adaptive_5d_warn_threshold: float = Field(default=35.0, description="5-day win rate warning threshold %")
+    adaptive_10d_pause_threshold: float = Field(default=30.0, description="10-day win rate auto-pause threshold %")
+
+    # Phase 3: Confirmed signal caps
+    confirmed_double_cap_pct: float = Field(default=20.0, description="Max position % for double-confirmed signals")
+    confirmed_triple_cap_pct: float = Field(default=25.0, description="Max position % for triple-confirmed signals")
+
+    # Phase 3: Dashboard
+    dashboard_enabled: bool = Field(default=True, description="Enable FastAPI dashboard")
+    dashboard_port: int = Field(default=8000, description="Dashboard port")
+    dashboard_host: str = Field(default="127.0.0.1", description="Dashboard host")
+
     model_config = {
         "env_file": ".env",
         "env_file_encoding": "utf-8",
@@ -127,5 +154,13 @@ class AppConfig(BaseSettings):
         if abs(vwap_sum - 1.0) > tolerance:
             raise ValueError(
                 f"VWAP scoring weights must sum to 1.0, got {vwap_sum:.3f}"
+            )
+        composite_sum = (
+            self.composite_weight_strategy + self.composite_weight_win_rate
+            + self.composite_weight_risk_reward + self.composite_weight_confirmation
+        )
+        if abs(composite_sum - 1.0) > tolerance:
+            raise ValueError(
+                f"Composite scoring weights must sum to 1.0, got {composite_sum:.3f}"
             )
         return self

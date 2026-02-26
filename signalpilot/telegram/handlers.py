@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 
 _CAPITAL_PATTERN = re.compile(r"(?i)^capital\s+(\d+(?:\.\d+)?)$")
 _TAKEN_PATTERN = re.compile(r"(?i)^/?taken(?:\s+(\d+))?$")
+_SCORE_PATTERN = re.compile(r"(?i)^score\s+(\S+)$")
 
 
 async def handle_taken(
@@ -86,11 +87,15 @@ async def handle_status(
     trade_repo,
     get_current_prices,
     now: datetime | None = None,
+    hybrid_score_repo=None,
 ) -> str:
     """Process the STATUS command.
 
     Returns formatted status of active signals and open trades with live P&L.
     ``get_current_prices`` is an async callable: list[str] -> dict[str, float].
+
+    When ``hybrid_score_repo`` is provided, signals are sorted by composite_score
+    and rank numbers and confirmation badges are added.
     """
     now = now or datetime.now(IST)
     today = now.date()
@@ -101,16 +106,53 @@ async def handle_status(
     symbols = [t.symbol for t in trades]
     current_prices = await get_current_prices(symbols) if symbols else {}
 
-    return format_status_message(signals, trades, current_prices)
+    # Fetch composite scores for active signals if hybrid_score_repo available
+    score_map: dict[str, float] = {}
+    confirmation_map: dict[str, str] = {}
+    if hybrid_score_repo is not None:
+        for s in signals:
+            if s.id is not None:
+                try:
+                    hs = await hybrid_score_repo.get_by_signal_id(s.id)
+                    if hs is not None:
+                        score_map[s.symbol] = hs.composite_score
+                        if hs.confirmation_level and hs.confirmation_level != "single":
+                            confirmation_map[s.symbol] = hs.confirmation_level
+                except Exception:
+                    logger.debug("Could not fetch hybrid score for signal %d", s.id)
+
+    return format_status_message(
+        signals, trades, current_prices,
+        score_map=score_map,
+        confirmation_map=confirmation_map,
+    )
 
 
-async def handle_journal(metrics_calculator) -> str:
+async def handle_journal(
+    metrics_calculator,
+    hybrid_score_repo=None,
+) -> str:
     """Process the JOURNAL command.
 
-    Returns formatted performance metrics or an empty-state message.
+    Returns formatted performance metrics. When hybrid_score_repo is provided,
+    includes a confirmed signals section.
     """
     metrics = await metrics_calculator.calculate_performance_metrics()
-    return format_journal_message(metrics)
+
+    # Build confirmed signals section
+    confirmed_count = 0
+    if hybrid_score_repo is not None:
+        try:
+            today = datetime.now(IST).date()
+            scores = await hybrid_score_repo.get_by_date(today)
+            confirmed_count = sum(
+                1 for s in scores
+                if s.confirmation_level and s.confirmation_level != "single"
+            )
+        except Exception:
+            logger.debug("Could not fetch hybrid scores for journal")
+
+    return format_journal_message(metrics, confirmed_count=confirmed_count)
 
 
 async def handle_capital(config_repo, text: str) -> str:
@@ -247,8 +289,12 @@ async def handle_allocate(capital_allocator, config_repo, text: str) -> str:
     return "Usage: ALLOCATE | ALLOCATE AUTO | ALLOCATE GAP 40 ORB 20 VWAP 20"
 
 
-async def handle_strategy(strategy_performance_repo) -> str:
-    """Process the STRATEGY command — show per-strategy performance."""
+async def handle_strategy(strategy_performance_repo, adaptive_manager=None) -> str:
+    """Process the STRATEGY command -- show per-strategy performance.
+
+    When ``adaptive_manager`` is provided, appends adaptation status
+    (normal/reduced/paused) for each strategy.
+    """
     if strategy_performance_repo is None:
         return "Strategy performance tracking not configured."
 
@@ -258,7 +304,216 @@ async def handle_strategy(strategy_performance_repo) -> str:
 
     from signalpilot.telegram.formatters import format_strategy_report
     records = await strategy_performance_repo.get_by_date_range(start, today)
-    return format_strategy_report(records)
+    base_report = format_strategy_report(records)
+
+    # Append adaptation status if available
+    if adaptive_manager is not None:
+        states = adaptive_manager.get_all_states()
+        if states:
+            lines = [base_report, "", "<b>Adaptation Status</b>"]
+            for strategy_name, state in states.items():
+                level_display = state.level.value.upper()
+                lines.append(
+                    f"  {strategy_name}: {level_display} "
+                    f"(W:{state.daily_wins} L:{state.daily_losses} "
+                    f"streak:{state.consecutive_losses}L/{state.consecutive_wins}W)"
+                )
+            return "\n".join(lines)
+
+    return base_report
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 command handlers
+# ---------------------------------------------------------------------------
+
+
+async def handle_override_circuit(circuit_breaker, app=None) -> str:
+    """Process the OVERRIDE CIRCUIT command.
+
+    If the circuit breaker is active, return a confirmation prompt.
+    Actual override happens when the user replies YES.
+    """
+    logger.info("Entering handle_override_circuit")
+
+    if circuit_breaker is None:
+        logger.info("Exiting handle_override_circuit: not configured")
+        return "Circuit breaker not configured."
+
+    if not circuit_breaker.is_active:
+        logger.info("Exiting handle_override_circuit: not active")
+        return "Circuit breaker is not active."
+
+    logger.info("Exiting handle_override_circuit: prompting for confirmation")
+    return (
+        "Circuit breaker is currently active "
+        f"({circuit_breaker.daily_sl_count}/{circuit_breaker.sl_limit} SL hits).\n"
+        "Reply YES to override and resume signal generation."
+    )
+
+
+async def handle_override_confirm(circuit_breaker, app=None) -> str:
+    """Process the YES confirmation for OVERRIDE CIRCUIT.
+
+    Calls circuit_breaker.override() and re-enables signal generation.
+    """
+    logger.info("Entering handle_override_confirm")
+
+    if circuit_breaker is None:
+        logger.info("Exiting handle_override_confirm: not configured")
+        return "Circuit breaker not configured."
+
+    if not circuit_breaker.is_active:
+        logger.info("Exiting handle_override_confirm: not active")
+        return "Circuit breaker is not active. No override needed."
+
+    result = await circuit_breaker.override()
+    if result:
+        # Re-enable signal acceptance on the app
+        if app is not None and hasattr(app, "_accepting_signals"):
+            app._accepting_signals = True
+        logger.info("Exiting handle_override_confirm: override successful")
+        return (
+            "Circuit breaker overridden. Signal generation resumed.\n"
+            "Use caution -- stop losses may continue."
+        )
+
+    logger.info("Exiting handle_override_confirm: override failed")
+    return "Failed to override circuit breaker."
+
+
+async def handle_score(hybrid_score_repo, text: str) -> str:
+    """Process the SCORE [STOCK] command.
+
+    Looks up the latest hybrid score for the given symbol and displays
+    the composite score breakdown.
+    """
+    logger.info("Entering handle_score", extra={"text": text})
+
+    if hybrid_score_repo is None:
+        logger.info("Exiting handle_score: not configured")
+        return "Hybrid scoring not configured."
+
+    match = _SCORE_PATTERN.match(text.strip())
+    if not match:
+        return "Usage: SCORE <SYMBOL>\nExample: SCORE SBIN"
+
+    symbol = match.group(1).upper()
+
+    record = await hybrid_score_repo.get_latest_for_symbol(symbol)
+    if record is None:
+        logger.info("Exiting handle_score: no score found for %s", symbol)
+        return f"No signal found for {symbol} today."
+
+    lines = [
+        f"<b>Composite Score -- {symbol}</b>",
+        "",
+        f"Composite Score: {record.composite_score:.1f}/100",
+        f"  Strategy Strength: {record.strategy_strength_score:.1f}",
+        f"  Win Rate Score: {record.win_rate_score:.1f}",
+        f"  Risk-Reward Score: {record.risk_reward_score:.1f}",
+        f"  Confirmation Bonus: {record.confirmation_bonus:.0f}",
+        "",
+        f"Confirmation: {record.confirmation_level}",
+    ]
+    if record.confirmed_by:
+        lines.append(f"Confirmed By: {record.confirmed_by}")
+    lines.append(f"Position Multiplier: {record.position_size_multiplier:.1f}x")
+
+    logger.info("Exiting handle_score", extra={"symbol": symbol, "score": record.composite_score})
+    return "\n".join(lines)
+
+
+async def handle_adapt(adaptive_manager) -> str:
+    """Process the ADAPT command.
+
+    Shows per-strategy adaptation status.
+    """
+    logger.info("Entering handle_adapt")
+
+    if adaptive_manager is None:
+        logger.info("Exiting handle_adapt: not configured")
+        return "Adaptive learning not configured."
+
+    states = adaptive_manager.get_all_states()
+    if not states:
+        logger.info("Exiting handle_adapt: no states")
+        return "No adaptation data yet. Strategies start in NORMAL mode."
+
+    lines = ["<b>Adaptive Strategy Status</b>"]
+    for strategy_name, state in states.items():
+        level_display = state.level.value.upper()
+        status_icon = {
+            "NORMAL": "OK",
+            "REDUCED": "THROTTLED",
+            "PAUSED": "STOPPED",
+        }.get(level_display, level_display)
+
+        lines.append(f"\n<b>{strategy_name}</b>")
+        lines.append(f"  Status: {status_icon}")
+        lines.append(f"  Today: {state.daily_wins}W / {state.daily_losses}L")
+        lines.append(
+            f"  Streak: {state.consecutive_losses} consecutive losses / "
+            f"{state.consecutive_wins} consecutive wins"
+        )
+
+    logger.info("Exiting handle_adapt", extra={"strategy_count": len(states)})
+    return "\n".join(lines)
+
+
+async def handle_rebalance(
+    capital_allocator,
+    config_repo,
+    adaptation_log_repo=None,
+    bot=None,
+) -> str:
+    """Process the REBALANCE command.
+
+    Triggers a manual capital rebalance and logs the event.
+    """
+    logger.info("Entering handle_rebalance")
+
+    if capital_allocator is None:
+        logger.info("Exiting handle_rebalance: not configured")
+        return "Capital allocator not configured."
+
+    if config_repo is None:
+        logger.info("Exiting handle_rebalance: no config repo")
+        return "Configuration not available."
+
+    user_config = await config_repo.get_user_config()
+    if user_config is None:
+        logger.info("Exiting handle_rebalance: no user config")
+        return "No user config found."
+
+    today = datetime.now(IST).date()
+    allocations = await capital_allocator.calculate_allocations(
+        user_config.total_capital, user_config.max_positions, today
+    )
+
+    # Log the manual rebalance event
+    if adaptation_log_repo is not None:
+        for strategy_name, alloc in allocations.items():
+            await adaptation_log_repo.insert_log(
+                today=today,
+                strategy=strategy_name,
+                event_type="manual_rebalance",
+                details=f"Manual rebalance: {alloc.weight_pct:.0f}% / {alloc.allocated_capital:,.0f}",
+                old_weight=None,
+                new_weight=alloc.weight_pct,
+            )
+
+    # Format response
+    lines = ["<b>Manual Rebalance Complete</b>"]
+    for name, alloc in allocations.items():
+        lines.append(
+            f"  {alloc.strategy_name}: {alloc.weight_pct:.0f}% | "
+            f"{alloc.allocated_capital:,.0f} | {alloc.max_positions} positions"
+        )
+    lines.append("  Reserve: 20%")
+
+    logger.info("Exiting handle_rebalance", extra={"strategies": len(allocations)})
+    return "\n".join(lines)
 
 
 async def handle_help() -> str:
@@ -277,5 +532,9 @@ async def handle_help() -> str:
         "<b>RESUME &lt;strategy&gt;</b> - Resume a strategy\n"
         "<b>ALLOCATE</b> - View/set capital allocation\n"
         "<b>STRATEGY</b> - View per-strategy performance\n"
+        "<b>SCORE &lt;SYMBOL&gt;</b> - View composite score breakdown\n"
+        "<b>ADAPT</b> - View adaptive strategy status\n"
+        "<b>REBALANCE</b> - Trigger manual capital rebalance\n"
+        "<b>OVERRIDE CIRCUIT</b> - Override circuit breaker\n"
         "<b>HELP</b> - Show this help message"
     )

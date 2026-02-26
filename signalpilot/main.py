@@ -22,16 +22,23 @@ async def create_app(config: AppConfig) -> SignalPilotApp:
     from signalpilot.data.instruments import InstrumentManager
     from signalpilot.data.market_data_store import MarketDataStore
     from signalpilot.data.websocket_client import WebSocketClient
+    from signalpilot.db.adaptation_log_repo import AdaptationLogRepository
+    from signalpilot.db.circuit_breaker_repo import CircuitBreakerRepository
     from signalpilot.db.config_repo import ConfigRepository
     from signalpilot.db.database import DatabaseManager
+    from signalpilot.db.hybrid_score_repo import HybridScoreRepository
     from signalpilot.db.metrics import MetricsCalculator
     from signalpilot.db.models import ScoringWeights
     from signalpilot.db.signal_repo import SignalRepository
     from signalpilot.db.strategy_performance_repo import StrategyPerformanceRepository
     from signalpilot.db.trade_repo import TradeRepository
+    from signalpilot.monitor.adaptive_manager import AdaptiveManager
+    from signalpilot.monitor.circuit_breaker import CircuitBreaker
     from signalpilot.monitor.duplicate_checker import DuplicateChecker
     from signalpilot.monitor.exit_monitor import ExitMonitor
     from signalpilot.monitor.vwap_cooldown import VWAPCooldownTracker
+    from signalpilot.ranking.composite_scorer import CompositeScorer
+    from signalpilot.ranking.confidence import ConfidenceDetector
     from signalpilot.ranking.orb_scorer import ORBScorer
     from signalpilot.ranking.ranker import SignalRanker
     from signalpilot.ranking.scorer import SignalScorer
@@ -54,6 +61,11 @@ async def create_app(config: AppConfig) -> SignalPilotApp:
     trade_repo = TradeRepository(connection)
     config_repo = ConfigRepository(connection)
     metrics_calculator = MetricsCalculator(connection)
+
+    # --- Phase 3 Repositories ---
+    hybrid_score_repo = HybridScoreRepository(connection)
+    circuit_breaker_repo = CircuitBreakerRepository(connection)
+    adaptation_log_repo = AdaptationLogRepository(connection)
 
     # --- Data layer (no DB deps) ---
     authenticator = SmartAPIAuthenticator(config)
@@ -94,15 +106,25 @@ async def create_app(config: AppConfig) -> SignalPilotApp:
     scorer = SignalScorer(weights, orb_scorer=orb_scorer, vwap_scorer=vwap_scorer)
     ranker = SignalRanker(scorer, max_signals=config.default_max_positions)
 
-    # --- Strategy performance tracking & capital allocation ---
+    # --- Phase 3: Confidence detection & composite scoring ---
+    confidence_detector = ConfidenceDetector(signal_repo=signal_repo)
     strategy_performance_repo = StrategyPerformanceRepository(connection)
-    capital_allocator = CapitalAllocator(strategy_performance_repo, config_repo)
+    composite_scorer = CompositeScorer(
+        signal_scorer=scorer,
+        strategy_performance_repo=strategy_performance_repo,
+    )
+
+    # --- Strategy performance tracking & capital allocation ---
+    capital_allocator = CapitalAllocator(
+        strategy_performance_repo, config_repo,
+        adaptation_log_repo=adaptation_log_repo,
+    )
 
     # --- Risk ---
     position_sizer = PositionSizer()
     risk_manager = RiskManager(position_sizer)
 
-    # --- Exit monitor (needs bot callback — use closure to break cycle) ---
+    # --- Exit monitor (needs bot callback -- use closure to break cycle) ---
     bot_ref: list[SignalPilotBot | None] = [None]
 
     async def _exit_alert_callback(alert):
@@ -145,6 +167,20 @@ async def create_app(config: AppConfig) -> SignalPilotApp:
         ),
     }
 
+    # Forward-declare circuit_breaker / adaptive_manager for exit monitor callbacks.
+    # These closures capture the objects created below.
+    circuit_breaker_ref: list[CircuitBreaker | None] = [None]
+    adaptive_manager_ref: list[AdaptiveManager | None] = [None]
+
+    async def _on_sl_hit(symbol: str, strategy: str, pnl_amount: float) -> None:
+        if circuit_breaker_ref[0] is not None:
+            await circuit_breaker_ref[0].on_sl_hit(symbol, strategy, pnl_amount)
+
+    async def _on_trade_exit(strategy_name: str, is_loss: bool) -> None:
+        if adaptive_manager_ref[0] is not None:
+            today = datetime.now(IST).date()
+            await adaptive_manager_ref[0].on_trade_exit(strategy_name, is_loss, today)
+
     exit_monitor = ExitMonitor(
         get_tick=market_data.get_tick,
         alert_callback=_exit_alert_callback,
@@ -153,7 +189,38 @@ async def create_app(config: AppConfig) -> SignalPilotApp:
         trail_distance_pct=config.trailing_sl_trail_distance_pct,
         trailing_configs=trailing_configs,
         close_trade=trade_repo.close_trade,
+        on_sl_hit_callback=_on_sl_hit,
+        on_trade_exit_callback=_on_trade_exit,
     )
+
+    # --- Phase 3: Circuit breaker ---
+    # Forward-declare app_ref for circuit breaker callback
+    app_ref: list[SignalPilotApp | None] = [None]
+
+    async def _circuit_break_callback(message: str):
+        if bot_ref[0] is not None:
+            await bot_ref[0].send_alert(message)
+
+    circuit_breaker = CircuitBreaker(
+        circuit_breaker_repo=circuit_breaker_repo,
+        config_repo=config_repo,
+        on_circuit_break=_circuit_break_callback,
+        sl_limit=config.circuit_breaker_sl_limit,
+    )
+    circuit_breaker_ref[0] = circuit_breaker
+
+    # --- Phase 3: Adaptive manager ---
+    async def _adaptive_alert_callback(message: str):
+        if bot_ref[0] is not None:
+            await bot_ref[0].send_alert(message)
+
+    adaptive_manager = AdaptiveManager(
+        adaptation_log_repo=adaptation_log_repo,
+        config_repo=config_repo,
+        strategy_performance_repo=strategy_performance_repo,
+        alert_callback=_adaptive_alert_callback,
+    )
+    adaptive_manager_ref[0] = adaptive_manager
 
     # --- Telegram bot ---
     # Wrapper: handle_status expects list[str] -> dict[str, float], but
@@ -175,6 +242,13 @@ async def create_app(config: AppConfig) -> SignalPilotApp:
         metrics_calculator=metrics_calculator,
         exit_monitor=exit_monitor,
         get_current_prices=_get_current_prices,
+        capital_allocator=capital_allocator,
+        strategy_performance_repo=strategy_performance_repo,
+        # Phase 3
+        circuit_breaker=circuit_breaker,
+        adaptive_manager=adaptive_manager,
+        hybrid_score_repo=hybrid_score_repo,
+        adaptation_log_repo=adaptation_log_repo,
     )
     bot_ref[0] = bot  # complete the circular reference
 
@@ -190,7 +264,19 @@ async def create_app(config: AppConfig) -> SignalPilotApp:
     # --- Scheduler ---
     scheduler = MarketScheduler()
 
-    return SignalPilotApp(
+    # --- Dashboard (optional) ---
+    dashboard_app = None
+    if config.dashboard_enabled:
+        try:
+            from signalpilot.dashboard.app import create_dashboard_app
+            dashboard_app = create_dashboard_app(
+                db_path=config.db_path,
+                write_connection=connection,
+            )
+        except ImportError:
+            logger.info("Dashboard module not available, skipping")
+
+    app = SignalPilotApp(
         db=db,
         signal_repo=signal_repo,
         trade_repo=trade_repo,
@@ -211,7 +297,21 @@ async def create_app(config: AppConfig) -> SignalPilotApp:
         capital_allocator=capital_allocator,
         strategy_performance_repo=strategy_performance_repo,
         app_config=config,
+        # Phase 3
+        confidence_detector=confidence_detector,
+        composite_scorer=composite_scorer,
+        adaptive_manager=adaptive_manager,
+        circuit_breaker=circuit_breaker,
+        hybrid_score_repo=hybrid_score_repo,
+        circuit_breaker_repo=circuit_breaker_repo,
+        adaptation_log_repo=adaptation_log_repo,
+        dashboard_app=dashboard_app,
     )
+
+    # Wire app reference back to bot for OVERRIDE CIRCUIT command
+    bot.set_app(app)
+
+    return app
 
 
 async def main() -> None:

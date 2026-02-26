@@ -24,8 +24,11 @@ class SignalRepository:
                 (date, symbol, strategy, entry_price, stop_loss, target_1,
                  target_2, quantity, capital_required, signal_strength,
                  gap_pct, volume_ratio, reason, created_at, expires_at, status,
-                 setup_type, strategy_specific_score)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 setup_type, strategy_specific_score,
+                 composite_score, confirmation_level, confirmed_by,
+                 position_size_multiplier, adaptation_status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?)
             """,
             (
                 signal.date.isoformat(),
@@ -46,6 +49,11 @@ class SignalRepository:
                 signal.status,
                 signal.setup_type,
                 signal.strategy_specific_score,
+                signal.composite_score,
+                signal.confirmation_level,
+                signal.confirmed_by,
+                signal.position_size_multiplier,
+                signal.adaptation_status,
             ),
         )
         await self._conn.commit()
@@ -146,9 +154,30 @@ class SignalRepository:
         row = await cursor.fetchone()
         return self._row_to_record(row) if row else None
 
+    async def get_recent_signals_by_symbol(
+        self, symbol: str, since: datetime,
+    ) -> list[tuple[str, datetime]]:
+        """Return (strategy_name, created_at) tuples for signals within the time window.
+
+        Useful for multi-strategy confirmation: checks whether other strategies
+        have recently generated signals for the same symbol.
+        """
+        cursor = await self._conn.execute(
+            """
+            SELECT strategy, created_at
+            FROM signals
+            WHERE symbol = ? AND created_at >= ?
+            ORDER BY created_at DESC
+            """,
+            (symbol, since.isoformat()),
+        )
+        rows = await cursor.fetchall()
+        return [(row["strategy"], datetime.fromisoformat(row["created_at"])) for row in rows]
+
     @staticmethod
     def _row_to_record(row: aiosqlite.Row) -> SignalRecord:
         """Convert a database row to a SignalRecord."""
+        keys = row.keys()
         return SignalRecord(
             id=row["id"],
             date=date.fromisoformat(row["date"]),
@@ -169,4 +198,18 @@ class SignalRepository:
             status=row["status"],
             setup_type=row["setup_type"],
             strategy_specific_score=row["strategy_specific_score"],
+            # Phase 3 fields with safe defaults for pre-existing rows
+            composite_score=row["composite_score"] if "composite_score" in keys else None,
+            confirmation_level=row["confirmation_level"] if "confirmation_level" in keys else None,
+            confirmed_by=row["confirmed_by"] if "confirmed_by" in keys else None,
+            position_size_multiplier=(
+                row["position_size_multiplier"]
+                if "position_size_multiplier" in keys and row["position_size_multiplier"] is not None
+                else 1.0
+            ),
+            adaptation_status=(
+                row["adaptation_status"]
+                if "adaptation_status" in keys and row["adaptation_status"] is not None
+                else "normal"
+            ),
         )

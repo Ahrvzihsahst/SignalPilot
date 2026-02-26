@@ -108,3 +108,72 @@ def test_zero_entry_price_raises(sizer: PositionSizer) -> None:
 def test_negative_entry_price_raises(sizer: PositionSizer) -> None:
     with pytest.raises(ValueError, match="entry_price must be positive"):
         sizer.calculate(entry_price=-100.0, total_capital=50000.0, max_positions=5)
+
+
+# ===========================================================================
+# Phase 3: Multiplier tests
+# ===========================================================================
+
+
+class TestPositionSizerMultiplier:
+    """Tests for Phase 3 position size multiplier feature."""
+
+    def test_multiplier_1_0_unchanged(self, sizer: PositionSizer) -> None:
+        """multiplier=1.0 should not change the result."""
+        base = sizer.calculate(entry_price=500.0, total_capital=50000.0, max_positions=5)
+        with_mult = sizer.calculate(
+            entry_price=500.0, total_capital=50000.0, max_positions=5, multiplier=1.0
+        )
+        assert base.quantity == with_mult.quantity
+        assert base.per_trade_capital == with_mult.per_trade_capital
+
+    def test_multiplier_1_5_increases_capital(self, sizer: PositionSizer) -> None:
+        """multiplier=1.5 should increase per-trade capital by 1.5x."""
+        # base: 50000/5 = 10000. multiplied: 15000. cap at 20%: 10000. min(15000, 10000) = 10000
+        result = sizer.calculate(
+            entry_price=500.0, total_capital=50000.0, max_positions=5, multiplier=1.5
+        )
+        assert result.per_trade_capital == pytest.approx(10000.0)  # capped at 20%
+        assert result.quantity == 20  # floor(10000/500)
+
+    def test_multiplier_1_5_cap_at_20_pct(self, sizer: PositionSizer) -> None:
+        """multiplier=1.5 caps at 20% of total capital."""
+        # base: 100000/4 = 25000. multiplied: 37500. cap at 20%: 20000
+        result = sizer.calculate(
+            entry_price=500.0, total_capital=100000.0, max_positions=4, multiplier=1.5
+        )
+        assert result.per_trade_capital == pytest.approx(20000.0)
+        assert result.quantity == 40  # floor(20000/500)
+
+    def test_multiplier_2_0_cap_at_25_pct(self, sizer: PositionSizer) -> None:
+        """multiplier=2.0 caps at 25% of total capital."""
+        # base: 100000/8 = 12500. multiplied: 25000. cap at 25%: 25000
+        result = sizer.calculate(
+            entry_price=500.0, total_capital=100000.0, max_positions=8, multiplier=2.0
+        )
+        assert result.per_trade_capital == pytest.approx(25000.0)
+        assert result.quantity == 50  # floor(25000/500)
+
+    def test_multiplier_2_0_capped_when_exceeds(self, sizer: PositionSizer) -> None:
+        """multiplier=2.0 with large base should cap at 25%."""
+        # base: 100000/2 = 50000. multiplied: 100000. cap at 25%: 25000
+        result = sizer.calculate(
+            entry_price=500.0, total_capital=100000.0, max_positions=2, multiplier=2.0
+        )
+        assert result.per_trade_capital == pytest.approx(25000.0)
+
+    def test_multiplier_below_1_no_effect(self, sizer: PositionSizer) -> None:
+        """multiplier < 1.0 should not trigger the multiplier branch."""
+        result = sizer.calculate(
+            entry_price=500.0, total_capital=50000.0, max_positions=5, multiplier=0.5
+        )
+        # Should use base per_trade_capital without any modification
+        assert result.per_trade_capital == pytest.approx(10000.0)
+
+    def test_multiplier_exactly_1_0_no_effect(self, sizer: PositionSizer) -> None:
+        """multiplier=1.0 (boundary) should not change anything."""
+        result = sizer.calculate(
+            entry_price=645.0, total_capital=50000.0, max_positions=5, multiplier=1.0
+        )
+        assert result.per_trade_capital == pytest.approx(10000.0)
+        assert result.quantity == 15

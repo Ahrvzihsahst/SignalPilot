@@ -288,24 +288,32 @@ async def test_reserve_enforcement(allocator, perf_repo) -> None:
 
 
 async def test_zero_expectancy_falls_back_to_equal(allocator, perf_repo) -> None:
-    """If all strategies have zero expectancy, fall back to equal allocation."""
+    """If all strategies have zero expectancy but win rate >= 40%, fall back to equal allocation.
+
+    Note: Phase 3 auto-pauses strategies with win rate < 40%, so we use
+    win rates at exactly the boundary (40%) to test the equal-allocation
+    fallback path without triggering auto-pause.
+    """
     records = [
-        # Losses equal wins in expectancy (net zero or negative, clamped to 0)
-        _make_perf_record(strategy="gap_go", signals_taken=10, wins=2, losses=8,
-                          avg_win=100.0, avg_loss=100.0),
-        _make_perf_record(strategy="ORB", signals_taken=10, wins=2, losses=8,
-                          avg_win=100.0, avg_loss=100.0),
-        _make_perf_record(strategy="VWAP Reversal", signals_taken=10, wins=2, losses=8,
-                          avg_win=100.0, avg_loss=100.0),
+        # Win rate = 40% (boundary), zero net expectancy
+        _make_perf_record(strategy="gap_go", signals_taken=10, wins=4, losses=6,
+                          avg_win=60.0, avg_loss=40.0),
+        _make_perf_record(strategy="ORB", signals_taken=10, wins=4, losses=6,
+                          avg_win=60.0, avg_loss=40.0),
+        _make_perf_record(strategy="VWAP Reversal", signals_taken=10, wins=4, losses=6,
+                          avg_win=60.0, avg_loss=40.0),
     ]
     perf_repo.get_by_date_range.return_value = records
 
     result = await allocator.calculate_allocations(TOTAL_CAPITAL, MAX_POSITIONS, TODAY)
 
-    # All should get equal allocation since all have zero (clamped) expectancy
-    expected_weight = (1.0 - RESERVE_PCT) / len(STRATEGY_NAMES)
-    for name in STRATEGY_NAMES:
-        assert result[name].weight_pct == pytest.approx(expected_weight * 100)
+    # All should get equal allocation since all have equal expectancy
+    total_weight = sum(a.weight_pct for a in result.values())
+    assert total_weight == pytest.approx(80.0)
+    # All strategies should have the same allocation
+    weights = [a.weight_pct for a in result.values()]
+    assert weights[0] == pytest.approx(weights[1])
+    assert weights[1] == pytest.approx(weights[2])
 
 
 async def test_positions_at_least_one(allocator, perf_repo) -> None:

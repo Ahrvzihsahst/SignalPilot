@@ -39,6 +39,10 @@ __all__ = [
     "DailySummary",
     "StrategyDaySummary",
     "StrategyPerformanceRecord",
+    # Phase 3
+    "HybridScoreRecord",
+    "CircuitBreakerRecord",
+    "AdaptationLogRecord",
 ]
 
 
@@ -218,6 +222,12 @@ class SignalRecord:
     status: str = "sent"        # "sent" | "taken" | "expired" | "paper" | "position_full"
     setup_type: str | None = None
     strategy_specific_score: float | None = None
+    # Phase 3 fields
+    composite_score: float | None = None
+    confirmation_level: str | None = None
+    confirmed_by: str | None = None
+    position_size_multiplier: float = 1.0
+    adaptation_status: str = "normal"
 
 
 @dataclass
@@ -255,6 +265,12 @@ class UserConfig:
     vwap_enabled: bool = True
     created_at: datetime | None = None
     updated_at: datetime | None = None
+    # Phase 3 fields
+    circuit_breaker_limit: int = 3
+    confidence_boost_enabled: bool = True
+    adaptive_learning_enabled: bool = True
+    auto_rebalance_enabled: bool = True
+    adaptation_mode: str = "aggressive"
 
 
 # ---------------------------------------------------------------------------
@@ -342,3 +358,52 @@ class StrategyPerformanceRecord:
     avg_loss: float = 0.0
     expectancy: float = 0.0
     capital_weight_pct: float = 0.0
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: Hybrid Scoring, Circuit Breaker, Adaptation
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class HybridScoreRecord:
+    """Persistent record for the hybrid_scores table."""
+
+    id: int | None = None
+    signal_id: int = 0
+    composite_score: float = 0.0
+    strategy_strength_score: float = 0.0
+    win_rate_score: float = 0.0
+    risk_reward_score: float = 0.0
+    confirmation_bonus: float = 0.0
+    confirmed_by: str | None = None
+    confirmation_level: str = "single"
+    position_size_multiplier: float = 1.0
+    created_at: datetime | None = None
+
+
+@dataclass
+class CircuitBreakerRecord:
+    """Persistent record for the circuit_breaker_log table."""
+
+    id: int | None = None
+    date: date = field(default_factory=date.today)
+    sl_count: int = 0
+    triggered_at: datetime | None = None
+    resumed_at: datetime | None = None
+    manual_override: bool = False
+    override_at: datetime | None = None
+
+
+@dataclass
+class AdaptationLogRecord:
+    """Persistent record for the adaptation_log table."""
+
+    id: int | None = None
+    date: date = field(default_factory=date.today)
+    strategy: str = ""
+    event_type: str = ""
+    details: str = ""
+    old_weight: float | None = None
+    new_weight: float | None = None
+    created_at: datetime | None = None

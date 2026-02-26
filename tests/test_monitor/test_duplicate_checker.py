@@ -208,3 +208,131 @@ async def test_single_candidate_all_blocked(
     filtered = await checker.filter_duplicates(candidates, today)
 
     assert filtered == []
+
+
+# ===========================================================================
+# Phase 3: Confidence-aware dedup tests
+# ===========================================================================
+
+
+def _make_candidate_with_strategy(symbol: str, strategy: str) -> CandidateSignal:
+    """Build a CandidateSignal with a specific strategy name."""
+    return CandidateSignal(
+        symbol=symbol,
+        direction=SignalDirection.BUY,
+        strategy_name=strategy,
+        entry_price=100.0,
+        stop_loss=97.0,
+        target_1=103.0,
+        target_2=105.0,
+        reason=f"Test {strategy} for {symbol}",
+        generated_at=datetime(2026, 2, 20, 10, 0, 0, tzinfo=IST),
+    )
+
+
+class TestConfidenceAwareDedup:
+    """Tests for Phase 3 multi-strategy confirmation bypass in DuplicateChecker."""
+
+    @pytest.fixture
+    def signal_repo(self) -> AsyncMock:
+        mock = AsyncMock()
+        mock.has_signal_for_stock_today = AsyncMock(return_value=True)
+        return mock
+
+    @pytest.fixture
+    def trade_repo(self) -> AsyncMock:
+        mock = AsyncMock()
+        mock.get_active_trades = AsyncMock(return_value=[])
+        return mock
+
+    @pytest.fixture
+    def confidence_detector(self) -> object:
+        """A non-None sentinel to enable confidence-aware mode."""
+        return object()
+
+    @pytest.mark.asyncio
+    async def test_multi_strategy_bypasses_dedup(
+        self, signal_repo, trade_repo, confidence_detector,
+    ) -> None:
+        """Multi-strategy candidates for same symbol bypass existing-signal check."""
+        checker = DuplicateChecker(signal_repo, trade_repo, confidence_detector)
+        candidates = [
+            _make_candidate_with_strategy("SBIN", "Gap & Go"),
+            _make_candidate_with_strategy("SBIN", "ORB"),
+        ]
+
+        today = date(2026, 2, 20)
+        filtered = await checker.filter_duplicates(candidates, today)
+
+        # Both should pass -- multi-strategy confirmation bypasses dedup
+        assert len(filtered) == 2
+
+    @pytest.mark.asyncio
+    async def test_single_strategy_still_blocked_with_confidence(
+        self, signal_repo, trade_repo, confidence_detector,
+    ) -> None:
+        """Single-strategy candidates still blocked by existing-signal check."""
+        checker = DuplicateChecker(signal_repo, trade_repo, confidence_detector)
+        candidates = [_make_candidate_with_strategy("TCS", "Gap & Go")]
+
+        today = date(2026, 2, 20)
+        filtered = await checker.filter_duplicates(candidates, today)
+
+        # TCS has existing signal and is single-strategy, blocked
+        assert len(filtered) == 0
+
+    @pytest.mark.asyncio
+    async def test_active_trade_still_blocks_multi_strategy(
+        self, signal_repo, trade_repo, confidence_detector,
+    ) -> None:
+        """Active trade blocks even multi-strategy symbols."""
+        trade_repo.get_active_trades = AsyncMock(
+            return_value=[_make_active_trade("SBIN")]
+        )
+        checker = DuplicateChecker(signal_repo, trade_repo, confidence_detector)
+        candidates = [
+            _make_candidate_with_strategy("SBIN", "Gap & Go"),
+            _make_candidate_with_strategy("SBIN", "ORB"),
+        ]
+
+        today = date(2026, 2, 20)
+        filtered = await checker.filter_duplicates(candidates, today)
+
+        assert len(filtered) == 0
+
+    @pytest.mark.asyncio
+    async def test_without_confidence_detector_legacy_behavior(
+        self, signal_repo, trade_repo,
+    ) -> None:
+        """Without confidence_detector, all duplicates are blocked (legacy)."""
+        checker = DuplicateChecker(signal_repo, trade_repo)
+        candidates = [
+            _make_candidate_with_strategy("SBIN", "Gap & Go"),
+            _make_candidate_with_strategy("SBIN", "ORB"),
+        ]
+
+        today = date(2026, 2, 20)
+        filtered = await checker.filter_duplicates(candidates, today)
+
+        # Legacy mode: both blocked by has_signal_for_stock_today returning True
+        assert len(filtered) == 0
+
+    @pytest.mark.asyncio
+    async def test_mixed_multi_and_single_strategy(
+        self, signal_repo, trade_repo, confidence_detector,
+    ) -> None:
+        """Mixed batch: multi-strategy passes, single-strategy blocked."""
+        checker = DuplicateChecker(signal_repo, trade_repo, confidence_detector)
+        candidates = [
+            _make_candidate_with_strategy("SBIN", "Gap & Go"),
+            _make_candidate_with_strategy("SBIN", "ORB"),
+            _make_candidate_with_strategy("TCS", "Gap & Go"),  # single-strategy
+        ]
+
+        today = date(2026, 2, 20)
+        filtered = await checker.filter_duplicates(candidates, today)
+
+        # SBIN (multi-strategy) both pass, TCS blocked
+        assert len(filtered) == 2
+        symbols = {c.symbol for c in filtered}
+        assert symbols == {"SBIN"}

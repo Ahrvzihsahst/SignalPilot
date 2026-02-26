@@ -5,6 +5,8 @@ from datetime import datetime
 import pytest
 
 from signalpilot.db.models import CandidateSignal, ScoringWeights, SignalDirection
+from signalpilot.ranking.composite_scorer import CompositeScoreResult
+from signalpilot.ranking.confidence import ConfirmationResult
 from signalpilot.ranking.ranker import SignalRanker
 from signalpilot.ranking.scorer import SignalScorer
 
@@ -208,3 +210,120 @@ def test_ranking_with_tied_scores(ranker: SignalRanker) -> None:
     assert ranked[0].candidate.symbol == "A"
     assert ranked[1].candidate.symbol == "B"
     assert ranked[2].candidate.symbol == "C"
+
+
+# =========================================================================
+# Phase 3: Composite ranking tests
+# =========================================================================
+
+
+def _make_composite_score(
+    composite: float = 70.0,
+    win_rate: float = 50.0,
+    risk_reward: float = 60.0,
+    strategy_strength: float = 80.0,
+    confirmation_bonus: float = 0.0,
+) -> CompositeScoreResult:
+    return CompositeScoreResult(
+        composite_score=composite,
+        strategy_strength_score=strategy_strength,
+        win_rate_score=win_rate,
+        risk_reward_score=risk_reward,
+        confirmation_bonus=confirmation_bonus,
+    )
+
+
+class TestCompositeRanking:
+    """Tests for the Phase 3 composite ranking path."""
+
+    def test_composite_ranking_sorts_by_composite_score(self, scorer: SignalScorer) -> None:
+        """Candidates should be sorted by composite_score descending."""
+        ranker = SignalRanker(scorer, max_signals=5)
+        candidates = [
+            _make_candidate("LOW"),
+            _make_candidate("HIGH"),
+            _make_candidate("MID"),
+        ]
+        scores = {
+            "LOW": _make_composite_score(composite=40.0),
+            "HIGH": _make_composite_score(composite=90.0),
+            "MID": _make_composite_score(composite=65.0),
+        }
+
+        ranked = ranker.rank(candidates, composite_scores=scores)
+
+        assert len(ranked) == 3
+        assert ranked[0].candidate.symbol == "HIGH"
+        assert ranked[1].candidate.symbol == "MID"
+        assert ranked[2].candidate.symbol == "LOW"
+        assert ranked[0].composite_score == 90.0
+        assert ranked[1].composite_score == 65.0
+        assert ranked[2].composite_score == 40.0
+
+    def test_tiebreaker_win_rate(self, scorer: SignalScorer) -> None:
+        """On tied composite scores, win_rate_score breaks the tie."""
+        ranker = SignalRanker(scorer, max_signals=5)
+        candidates = [
+            _make_candidate("A"),
+            _make_candidate("B"),
+        ]
+        scores = {
+            "A": _make_composite_score(composite=70.0, win_rate=40.0),
+            "B": _make_composite_score(composite=70.0, win_rate=60.0),
+        }
+
+        ranked = ranker.rank(candidates, composite_scores=scores)
+
+        # B should rank higher due to higher win_rate_score
+        assert ranked[0].candidate.symbol == "B"
+        assert ranked[1].candidate.symbol == "A"
+
+    def test_star_boost_from_double_confirmation(self, scorer: SignalScorer) -> None:
+        """Double confirmation should boost stars by +1 (capped at 5)."""
+        ranker = SignalRanker(scorer, max_signals=5)
+        candidates = [_make_candidate("SBIN")]
+        # composite=65 -> base 4 stars; +1 boost -> 5 stars
+        scores = {"SBIN": _make_composite_score(composite=65.0)}
+        confirmations = {
+            "SBIN": ConfirmationResult(
+                confirmation_level="double",
+                confirmed_by=["Gap & Go", "ORB"],
+                star_boost=1,
+                position_size_multiplier=1.5,
+            )
+        }
+
+        ranked = ranker.rank(
+            candidates, composite_scores=scores, confirmations=confirmations
+        )
+
+        assert len(ranked) == 1
+        assert ranked[0].signal_strength == 5  # 4 + 1 = 5
+
+    def test_composite_to_stars_thresholds(self) -> None:
+        """Verify all composite-to-stars threshold boundaries."""
+        assert SignalRanker._composite_to_stars(100.0) == 5
+        assert SignalRanker._composite_to_stars(80.0) == 5
+        assert SignalRanker._composite_to_stars(79.9) == 4
+        assert SignalRanker._composite_to_stars(65.0) == 4
+        assert SignalRanker._composite_to_stars(64.9) == 3
+        assert SignalRanker._composite_to_stars(50.0) == 3
+        assert SignalRanker._composite_to_stars(49.9) == 2
+        assert SignalRanker._composite_to_stars(35.0) == 2
+        assert SignalRanker._composite_to_stars(34.9) == 1
+        assert SignalRanker._composite_to_stars(0.0) == 1
+
+    def test_legacy_fallback_when_no_composite_scores(self, ranker: SignalRanker) -> None:
+        """When composite_scores is None, legacy ranking path is used."""
+        candidates = [
+            _make_candidate("HIGH", gap_pct=5.0, volume_ratio=3.0, price_distance_pct=3.0),
+            _make_candidate("LOW", gap_pct=3.0, volume_ratio=0.5, price_distance_pct=0.0),
+        ]
+
+        ranked = ranker.rank(candidates)
+
+        assert len(ranked) == 2
+        assert ranked[0].candidate.symbol == "HIGH"
+        assert ranked[1].candidate.symbol == "LOW"
+        # Legacy scores are 0.0-1.0 range
+        assert 0.0 <= ranked[0].composite_score <= 1.0

@@ -4,10 +4,9 @@ from datetime import date, datetime
 
 import aiosqlite
 
-from signalpilot.utils.constants import IST
-
 from signalpilot.db.models import DailySummary, PerformanceMetrics, StrategyDaySummary
 from signalpilot.db.trade_repo import TradeRepository
+from signalpilot.utils.constants import IST
 
 
 class MetricsCalculator:

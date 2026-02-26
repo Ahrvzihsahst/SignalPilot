@@ -5,12 +5,15 @@ from datetime import date, datetime
 import pytest
 
 from signalpilot.db.models import (
+    AdaptationLogRecord,
     CandidateSignal,
+    CircuitBreakerRecord,
     DailySummary,
     ExitAlert,
     ExitType,
     FinalSignal,
     HistoricalReference,
+    HybridScoreRecord,
     Instrument,
     PerformanceMetrics,
     PositionSize,
@@ -24,6 +27,7 @@ from signalpilot.db.models import (
     TradeRecord,
     UserConfig,
 )
+from signalpilot.utils.constants import IST
 
 
 class TestSignalDirection:
@@ -498,3 +502,145 @@ class TestDailySummary:
         assert s1.trades is not s2.trades
         s1.trades.append(TradeRecord(symbol="SBIN"))
         assert len(s2.trades) == 0
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 Model Tests
+# ---------------------------------------------------------------------------
+
+
+class TestHybridScoreRecord:
+    def test_defaults(self):
+        rec = HybridScoreRecord()
+        assert rec.id is None
+        assert rec.signal_id == 0
+        assert rec.composite_score == 0.0
+        assert rec.strategy_strength_score == 0.0
+        assert rec.win_rate_score == 0.0
+        assert rec.risk_reward_score == 0.0
+        assert rec.confirmation_bonus == 0.0
+        assert rec.confirmed_by is None
+        assert rec.confirmation_level == "single"
+        assert rec.position_size_multiplier == 1.0
+        assert rec.created_at is None
+
+    def test_custom_values(self):
+        now = datetime(2025, 1, 15, 10, 0, tzinfo=IST)
+        rec = HybridScoreRecord(
+            id=1,
+            signal_id=42,
+            composite_score=85.5,
+            strategy_strength_score=90.0,
+            win_rate_score=75.0,
+            risk_reward_score=80.0,
+            confirmation_bonus=100.0,
+            confirmed_by="Gap & Go,ORB",
+            confirmation_level="double",
+            position_size_multiplier=1.5,
+            created_at=now,
+        )
+        assert rec.id == 1
+        assert rec.signal_id == 42
+        assert rec.composite_score == 85.5
+        assert rec.confirmed_by == "Gap & Go,ORB"
+        assert rec.confirmation_level == "double"
+        assert rec.position_size_multiplier == 1.5
+
+
+class TestCircuitBreakerRecord:
+    def test_defaults(self):
+        rec = CircuitBreakerRecord()
+        assert rec.id is None
+        assert rec.sl_count == 0
+        assert rec.triggered_at is None
+        assert rec.resumed_at is None
+        assert rec.manual_override is False
+        assert rec.override_at is None
+
+    def test_custom_values(self):
+        now = datetime(2025, 1, 15, 12, 0, tzinfo=IST)
+        rec = CircuitBreakerRecord(
+            id=1,
+            date=date(2025, 1, 15),
+            sl_count=3,
+            triggered_at=now,
+            manual_override=True,
+            override_at=now,
+        )
+        assert rec.sl_count == 3
+        assert rec.manual_override is True
+
+
+class TestAdaptationLogRecord:
+    def test_defaults(self):
+        rec = AdaptationLogRecord()
+        assert rec.id is None
+        assert rec.strategy == ""
+        assert rec.event_type == ""
+        assert rec.details == ""
+        assert rec.old_weight is None
+        assert rec.new_weight is None
+        assert rec.created_at is None
+
+    def test_custom_values(self):
+        rec = AdaptationLogRecord(
+            id=1,
+            date=date(2025, 1, 15),
+            strategy="ORB",
+            event_type="throttle",
+            details="3 consecutive losses",
+            old_weight=0.33,
+            new_weight=0.20,
+        )
+        assert rec.strategy == "ORB"
+        assert rec.event_type == "throttle"
+
+
+class TestSignalRecordPhase3:
+    def test_backward_compatible(self):
+        """Phase 1/2 construction still works with Phase 3 defaults."""
+        rec = SignalRecord(
+            id=1, symbol="SBIN", strategy="gap_go",
+            entry_price=500.0, stop_loss=485.0,
+        )
+        assert rec.composite_score is None
+        assert rec.confirmation_level is None
+        assert rec.confirmed_by is None
+        assert rec.position_size_multiplier == 1.0
+        assert rec.adaptation_status == "normal"
+
+    def test_phase3_fields(self):
+        rec = SignalRecord(
+            composite_score=85.0,
+            confirmation_level="double",
+            confirmed_by="Gap & Go,ORB",
+            position_size_multiplier=1.5,
+            adaptation_status="reduced",
+        )
+        assert rec.composite_score == 85.0
+        assert rec.confirmation_level == "double"
+        assert rec.position_size_multiplier == 1.5
+        assert rec.adaptation_status == "reduced"
+
+
+class TestUserConfigPhase3:
+    def test_backward_compatible(self):
+        """Phase 1/2 construction still works with Phase 3 defaults."""
+        cfg = UserConfig(telegram_chat_id="123", total_capital=50000.0)
+        assert cfg.circuit_breaker_limit == 3
+        assert cfg.confidence_boost_enabled is True
+        assert cfg.adaptive_learning_enabled is True
+        assert cfg.auto_rebalance_enabled is True
+        assert cfg.adaptation_mode == "aggressive"
+
+    def test_phase3_fields(self):
+        cfg = UserConfig(
+            circuit_breaker_limit=5,
+            confidence_boost_enabled=False,
+            adaptive_learning_enabled=False,
+            auto_rebalance_enabled=False,
+            adaptation_mode="conservative",
+        )
+        assert cfg.circuit_breaker_limit == 5
+        assert cfg.confidence_boost_enabled is False
+        assert cfg.adaptation_mode == "conservative"
