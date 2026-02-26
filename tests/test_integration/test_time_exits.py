@@ -19,7 +19,8 @@ async def test_exit_reminder_sends_advisory_alert(db, repos):
         await repos["signal_repo"].insert_signal(signal)
         mock_monitor = MagicMock(start_monitoring=MagicMock())
         await handle_taken(
-            repos["signal_repo"], repos["trade_repo"], mock_monitor, now=now,
+            repos["signal_repo"], repos["trade_repo"], repos["config_repo"],
+            mock_monitor, now=now,
         )
 
     # Create app with mock bot and exit monitor
@@ -63,7 +64,8 @@ async def test_mandatory_exit_triggers_exit_monitor(db, repos):
         await repos["signal_repo"].insert_signal(signal)
         mock_monitor = MagicMock(start_monitoring=MagicMock())
         await handle_taken(
-            repos["signal_repo"], repos["trade_repo"], mock_monitor, now=now,
+            repos["signal_repo"], repos["trade_repo"], repos["config_repo"],
+            mock_monitor, now=now,
         )
 
     mock_exit_monitor = MagicMock(

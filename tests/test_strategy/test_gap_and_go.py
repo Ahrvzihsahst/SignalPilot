@@ -244,6 +244,97 @@ async def test_volume_validation_on_second_evaluation(
     assert "SBIN" in strategy._volume_validated
 
 
+# ── Volume validation in ENTRY_WINDOW (extended window) ──────────
+
+
+@pytest.mark.asyncio
+async def test_volume_validated_during_entry_window_generates_signal(
+    strategy: GapAndGoStrategy, store: MarketDataStore
+) -> None:
+    """Candidate not volume-validated in OPENING, reaches 50% during ENTRY_WINDOW -> signal."""
+    prev_close = 100.0
+    open_price = 104.0
+    prev_high = 103.0
+    adv = 10000.0
+
+    await store.update_tick("SBIN", _make_tick("SBIN", ltp=104.5, open_price=open_price))
+    await store.set_historical("SBIN", _make_historical(prev_close, prev_high, adv))
+    await store.accumulate_volume("SBIN", 4000)  # 40% — below threshold
+
+    # OPENING phase — detects gap but volume too low
+    await strategy.evaluate(store, StrategyPhase.OPENING)
+    assert "SBIN" in strategy._gap_candidates
+    assert "SBIN" not in strategy._volume_validated
+
+    # Volume increases between phases
+    await store.accumulate_volume("SBIN", 6000)  # 60% — now above threshold
+
+    # ENTRY_WINDOW phase — should validate volume AND generate signal
+    signals = await strategy.evaluate(store, StrategyPhase.ENTRY_WINDOW)
+
+    assert "SBIN" in strategy._volume_validated
+    assert len(signals) == 1
+    assert signals[0].symbol == "SBIN"
+
+
+@pytest.mark.asyncio
+async def test_volume_still_below_threshold_in_entry_window_no_signal(
+    strategy: GapAndGoStrategy, store: MarketDataStore
+) -> None:
+    """Candidate still below 50% ADV during ENTRY_WINDOW -> no signal."""
+    prev_close = 100.0
+    open_price = 104.0
+    prev_high = 103.0
+    adv = 10000.0
+
+    await store.update_tick("SBIN", _make_tick("SBIN", ltp=104.5, open_price=open_price))
+    await store.set_historical("SBIN", _make_historical(prev_close, prev_high, adv))
+    await store.accumulate_volume("SBIN", 4000)  # 40% — below threshold
+
+    # OPENING phase — detects gap but volume too low
+    await strategy.evaluate(store, StrategyPhase.OPENING)
+    assert "SBIN" in strategy._gap_candidates
+    assert "SBIN" not in strategy._volume_validated
+
+    # Volume stays below threshold (no change)
+    # ENTRY_WINDOW phase — volume check fails, no signal
+    signals = await strategy.evaluate(store, StrategyPhase.ENTRY_WINDOW)
+
+    assert "SBIN" not in strategy._volume_validated
+    assert len(signals) == 0
+
+
+@pytest.mark.asyncio
+async def test_disqualified_candidate_not_rechecked_in_entry_window(
+    strategy: GapAndGoStrategy, store: MarketDataStore
+) -> None:
+    """A disqualified candidate should not be volume-rechecked in ENTRY_WINDOW."""
+    prev_close = 100.0
+    open_price = 104.0
+    prev_high = 103.0
+    adv = 10000.0
+
+    await store.update_tick("SBIN", _make_tick("SBIN", ltp=104.5, open_price=open_price))
+    await store.set_historical("SBIN", _make_historical(prev_close, prev_high, adv))
+    await store.accumulate_volume("SBIN", 6000)  # 60% — above threshold
+
+    # OPENING phase — detect and validate
+    await strategy.evaluate(store, StrategyPhase.OPENING)
+    assert "SBIN" in strategy._volume_validated
+
+    # Price drops below open — disqualifies in ENTRY_WINDOW
+    await store.update_tick("SBIN", _make_tick("SBIN", ltp=103.0, open_price=open_price))
+    signals = await strategy.evaluate(store, StrategyPhase.ENTRY_WINDOW)
+
+    assert "SBIN" in strategy._disqualified
+    assert len(signals) == 0
+
+    # Even with more volume, disqualified candidate should not be re-validated
+    await store.accumulate_volume("SBIN", 8000)
+    signals = await strategy.evaluate(store, StrategyPhase.ENTRY_WINDOW)
+    assert len(signals) == 0
+
+
 # ── Price hold validation and signal generation ──────────────────
 
 

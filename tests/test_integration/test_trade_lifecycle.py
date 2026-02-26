@@ -20,7 +20,8 @@ async def test_taken_creates_trade_in_db(db, repos):
 
     mock_exit_monitor = MagicMock(start_monitoring=MagicMock())
     response = await handle_taken(
-        repos["signal_repo"], repos["trade_repo"], mock_exit_monitor, now=now,
+        repos["signal_repo"], repos["trade_repo"], repos["config_repo"],
+        mock_exit_monitor, now=now,
     )
 
     assert "Trade logged" in response
@@ -55,7 +56,8 @@ async def test_sl_hit_closes_trade(db, repos):
 
     mock_exit_monitor = MagicMock(start_monitoring=MagicMock())
     await handle_taken(
-        repos["signal_repo"], repos["trade_repo"], mock_exit_monitor, now=now,
+        repos["signal_repo"], repos["trade_repo"], repos["config_repo"],
+        mock_exit_monitor, now=now,
     )
 
     # Get the trade
@@ -92,7 +94,8 @@ async def test_t1_advisory_then_t2_exit(db, repos):
 
     mock_exit_monitor = MagicMock(start_monitoring=MagicMock())
     await handle_taken(
-        repos["signal_repo"], repos["trade_repo"], mock_exit_monitor, now=now,
+        repos["signal_repo"], repos["trade_repo"], repos["config_repo"],
+        mock_exit_monitor, now=now,
     )
 
     trades = await repos["trade_repo"].get_active_trades()
@@ -124,6 +127,7 @@ async def test_taken_with_no_signal(db, repos):
     now = datetime.now(IST)
     mock_exit_monitor = MagicMock()
     response = await handle_taken(
-        repos["signal_repo"], repos["trade_repo"], mock_exit_monitor, now=now,
+        repos["signal_repo"], repos["trade_repo"], repos["config_repo"],
+        mock_exit_monitor, now=now,
     )
     assert "No active signal" in response

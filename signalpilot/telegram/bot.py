@@ -72,7 +72,7 @@ class SignalPilotBot:
 
         self._application.add_handler(
             MessageHandler(
-                chat_filter & filters.TEXT & filters.Regex(r"(?i)^/?taken(?:\s+\d+)?$"),
+                chat_filter & filters.TEXT & filters.Regex(r"(?i)^/?taken(?:\s+force)?(?:\s+\d+)?$"),
                 self._handle_taken,
             )
         )
@@ -178,8 +178,8 @@ class SignalPilotBot:
         async with log_context(command="TAKEN"):
             text = update.message.text.strip()
             response = await handle_taken(
-                self._signal_repo, self._trade_repo, self._exit_monitor,
-                text=text,
+                self._signal_repo, self._trade_repo, self._config_repo,
+                self._exit_monitor, text=text,
             )
             await update.message.reply_text(response)
 

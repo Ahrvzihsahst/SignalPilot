@@ -19,12 +19,13 @@ from signalpilot.utils.constants import IST
 logger = logging.getLogger(__name__)
 
 _CAPITAL_PATTERN = re.compile(r"(?i)^capital\s+(\d+(?:\.\d+)?)$")
-_TAKEN_PATTERN = re.compile(r"(?i)^/?taken(?:\s+(\d+))?$")
+_TAKEN_PATTERN = re.compile(r"(?i)^/?taken(?:\s+force)?(?:\s+(\d+))?$")
 
 
 async def handle_taken(
     signal_repo,
     trade_repo,
+    config_repo,
     exit_monitor,
     now: datetime | None = None,
     text: str | None = None,
@@ -33,6 +34,7 @@ async def handle_taken(
 
     Finds the latest active signal (or a specific one by ID), creates a
     trade record, starts exit monitoring, and returns a confirmation message.
+    Enforces position limits unless FORCE keyword is used.
     """
     now = now or datetime.now(IST)
 
@@ -57,6 +59,17 @@ async def handle_taken(
     if signal.expires_at is not None and signal.expires_at <= now:
         logger.warning("TAKEN command received but signal %d (%s) has expired", signal.id, signal.symbol)
         return "Signal has expired and is no longer valid."
+
+    # Check position limit (soft block unless FORCE)
+    force = text is not None and re.search(r"(?i)\bforce\b", text)
+    if not force:
+        user_config = await config_repo.get_user_config()
+        active_count = await trade_repo.get_active_trade_count()
+        if user_config and active_count >= user_config.max_positions:
+            return (
+                f"Position limit reached ({active_count}/{user_config.max_positions}). "
+                f"Use TAKEN FORCE to override."
+            )
 
     trade = TradeRecord(
         signal_id=signal.id,
@@ -269,7 +282,7 @@ async def handle_help() -> str:
     return (
         "<b>SignalPilot Commands</b>\n"
         "\n"
-        "<b>TAKEN [id]</b> - Log a signal as a trade (latest or by ID)\n"
+        "<b>TAKEN [FORCE] [id]</b> - Log a signal as a trade (latest or by ID)\n"
         "<b>STATUS</b> - View active signals and open trades\n"
         "<b>JOURNAL</b> - View trading performance summary\n"
         "<b>CAPITAL &lt;amount&gt;</b> - Update trading capital\n"

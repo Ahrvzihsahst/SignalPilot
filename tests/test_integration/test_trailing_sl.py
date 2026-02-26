@@ -23,7 +23,8 @@ async def test_full_trailing_sl_lifecycle(db, repos):
 
     mock_exit_monitor = MagicMock(start_monitoring=MagicMock())
     await handle_taken(
-        repos["signal_repo"], repos["trade_repo"], mock_exit_monitor, now=now,
+        repos["signal_repo"], repos["trade_repo"], repos["config_repo"],
+        mock_exit_monitor, now=now,
     )
 
     trades = await repos["trade_repo"].get_active_trades()

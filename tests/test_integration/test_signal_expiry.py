@@ -44,7 +44,8 @@ async def test_taken_after_expiry_returns_error(db, repos):
     # Try TAKEN - signal is expired
     mock_exit_monitor = MagicMock()
     response = await handle_taken(
-        repos["signal_repo"], repos["trade_repo"], mock_exit_monitor, now=now,
+        repos["signal_repo"], repos["trade_repo"], repos["config_repo"],
+        mock_exit_monitor, now=now,
     )
 
     # get_latest_active_signal filters by expires_at > now, so returns None

@@ -159,10 +159,28 @@ class GapAndGoStrategy(BaseStrategy):
     ) -> list[CandidateSignal]:
         """Validate price hold above open and generate signals.
 
-        For each volume-validated gap candidate:
+        First, continue volume validation for candidates that didn't reach
+        the threshold during OPENING phase (extends the window to 30 min).
+        Then, for each volume-validated gap candidate:
         - If current price > opening price → generate CandidateSignal.
         - If price drops below open → disqualify.
         """
+        # Continue volume validation for candidates not yet validated
+        for symbol in list(self._gap_candidates):
+            if symbol in self._volume_validated or symbol in self._disqualified:
+                continue
+            volume = await market_data.get_accumulated_volume(symbol)
+            hist = await market_data.get_historical(symbol)
+            if hist is not None and hist.average_daily_volume > 0:
+                volume_ratio = (volume / hist.average_daily_volume) * 100
+                if volume_ratio >= self._volume_threshold_pct:
+                    self._volume_validated.add(symbol)
+                    logger.info(
+                        "%s volume validated (entry_window): ratio=%.1f%%",
+                        symbol,
+                        volume_ratio,
+                    )
+
         signals: list[CandidateSignal] = []
         now = datetime.now(IST)
 

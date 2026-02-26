@@ -149,7 +149,7 @@ using **pydantic-settings**. There is no hardcoded configuration.
 | Field | Default | Description |
 |-------|---------|-------------|
 | `default_capital` | `50000.0` | Starting trading capital (INR) |
-| `default_max_positions` | `8` | Max simultaneous positions |
+| `default_max_positions` | `8` | Max signals per cycle (used by ranker); DB `user_config.max_positions` defaults to `5` for actual position limits |
 
 **Gap & Go Strategy:**
 
@@ -1040,13 +1040,20 @@ quantity = int(per_trade_capital // entry_price)    # floor division, whole shar
 capital_required = quantity * entry_price
 ```
 
-**Example** with 50,000 capital, 8 max positions, stock at 1,200:
+**Example** with 50,000 capital, 5 max positions (from `user_config`), stock at 1,200:
 
 ```
-per_trade_capital = 50,000 / 8 = 6,250
-quantity          = floor(6,250 / 1,200) = 5 shares
-capital_required  = 5 x 1,200 = 6,000
+per_trade_capital = 50,000 / 5 = 10,000
+quantity          = floor(10,000 / 1,200) = 8 shares
+capital_required  = 8 x 1,200 = 9,600
 ```
+
+> **Note on `default_max_positions` vs `user_config.max_positions`:**
+> `AppConfig.default_max_positions` (8) controls how many signals the *ranker*
+> evaluates per cycle. The database `user_config.max_positions` (default 5)
+> controls the actual *position limit* enforced by the risk manager. These are
+> independent: the ranker can score up to 8 candidates, but the risk manager
+> only passes signals through if open trades are below the DB limit.
 
 **4. Price Affordability Filter:**
 
@@ -1504,7 +1511,7 @@ handler functions. All commands are case-insensitive.
 
 | Command | Regex Pattern | Action |
 |---------|--------------|--------|
-| `TAKEN` | `(?i)^/?taken$` | Mark latest active signal as a trade |
+| `TAKEN [FORCE] [id]` | `(?i)^/?taken(?:\s+force)?(?:\s+(\d+))?$` | Mark a signal as a trade (optionally by signal ID); FORCE overrides position limit |
 | `STATUS` | `(?i)^status$` | Show active signals and open trades with live P&L |
 | `JOURNAL` | `(?i)^journal$` | Display performance metrics (win rate, P&L, risk-reward) |
 | `CAPITAL <amt>` | `(?i)^capital\s+\d+(?:\.\d+)?$` | Update total trading capital |
@@ -1516,22 +1523,40 @@ handler functions. All commands are case-insensitive.
 
 #### TAKEN Flow
 
+The `TAKEN` command accepts an optional `FORCE` keyword and signal ID. If an ID
+is provided, it takes that specific signal; otherwise it takes the most recent
+active signal.
+
+**Position limit enforcement:** Before creating a trade, the handler checks
+`active_trade_count >= max_positions`. If the limit is reached, it returns a
+soft warning: `"Position limit reached (5/5). Use TAKEN FORCE to override."`
+The `FORCE` keyword bypasses this check, allowing users to intentionally exceed
+the limit.
+
 ```python
-async def handle_taken(signal_repo, trade_repo, exit_monitor, now=None):
-    signal = await signal_repo.get_latest_active_signal(now)
-    if not signal or signal.expires_at <= now:
+_TAKEN_PATTERN = re.compile(r"(?i)^/?taken(?:\s+force)?(?:\s+(\d+))?$")
+
+async def handle_taken(signal_repo, trade_repo, config_repo, exit_monitor, text, now=None):
+    match = _TAKEN_PATTERN.match(text)
+    requested_id = int(match.group(1)) if match.group(1) else None
+
+    if requested_id:
+        signal = await signal_repo.get_active_signal_by_id(requested_id, now)
+    else:
+        signal = await signal_repo.get_latest_active_signal(now)
+
+    if not signal:
         return "No active signal to take."
 
-    trade = TradeRecord(
-        signal_id=signal.id,
-        symbol=signal.symbol,
-        entry_price=signal.entry_price,
-        stop_loss=signal.stop_loss,
-        target_1=signal.target_1,
-        target_2=signal.target_2,
-        quantity=signal.quantity,
-        taken_at=datetime.now(IST),
-    )
+    # Position limit check (soft block unless FORCE)
+    force = text and re.search(r"(?i)\bforce\b", text)
+    if not force:
+        user_config = await config_repo.get_user_config()
+        active_count = await trade_repo.get_active_trade_count()
+        if user_config and active_count >= user_config.max_positions:
+            return f"Position limit reached ({active_count}/{user_config.max_positions}). Use TAKEN FORCE to override."
+
+    trade = TradeRecord(...)
     trade_id = await trade_repo.insert_trade(trade)
     await signal_repo.update_status(signal.id, "taken")
     exit_monitor.start_monitoring(trade)        # begin tick-by-tick monitoring
@@ -1540,6 +1565,11 @@ async def handle_taken(signal_repo, trade_repo, exit_monitor, now=None):
 
 Once `start_monitoring()` is called, `TrailingStopState` is initialised for
 the trade and it enters the exit-monitoring loop on every subsequent tick.
+
+> **Note:** Position limits are now enforced as a soft warning in the TAKEN handler.
+> Users can override with `TAKEN FORCE` when they intentionally want to exceed
+> `max_positions`. The risk manager also independently gates *new signal generation*
+> at the same limit.
 
 #### CAPITAL Flow
 
