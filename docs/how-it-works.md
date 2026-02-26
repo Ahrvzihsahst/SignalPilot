@@ -322,7 +322,7 @@ A `@model_validator` enforces that each of the three scoring weight groups
 async def main() -> None:
     config = AppConfig()                     # load .env
     configure_logging(level=config.log_level, log_file=config.log_file)
-    app = await create_app(config)           # wire 20+ components
+    app = await create_app(config)           # wire 30+ components
 
     # Setup SIGINT/SIGTERM handlers (once via shutting_down flag)
     now = datetime.now(IST)
@@ -2362,7 +2362,7 @@ WHILE scanning == True:
 
 ```
 08:00  App boots --> AppConfig loaded, logging configured
-08:00  create_app() wires 20+ components
+08:00  create_app() wires 30+ components (incl. Phase 3 intelligence layer)
 08:00  SmartAPIAuthenticator.authenticate() (TOTP-based 2FA)
 08:01  InstrumentManager.load() (Nifty 500 from CSV)
 08:01  historical.fetch_previous_day_data()    <-- 499 stocks, batches of 3
@@ -2371,12 +2371,15 @@ WHILE scanning == True:
 08:20  ConfigRepository.initialize_default()
 08:20  bot.start() --> Telegram polling begins
 08:20  MarketScheduler.start() --> 9 cron jobs registered
+08:20  (Phase 3) Dashboard starts on configured port if dashboard_enabled
 
 09:00  [CRON] send_pre_market_alert()
          --> "Signals coming shortly after 9:15 AM"
 
 09:15  [CRON] start_scanning()
          |   _reset_session() --> clear intraday data, reset strategies
+         |   (Phase 3) circuit_breaker.reset() --> daily SL counter reset
+         |   (Phase 3) adaptive_manager daily state refresh
          |   websocket.connect() --> subscribe all 500 tokens (Mode 3)
          +-> _scan_loop() starts (every 1 second)
                |
@@ -2403,16 +2406,28 @@ WHILE scanning == True:
                |
                +-- (every pipeline iteration, all phases):
                |    |-- DuplicateChecker: filter active trades + same-day signals
+               |    |-- (Phase 3) ConfidenceDetector: multi-strategy confirmation
+               |    |     +-- When multiple strategies agree on same stock within
+               |    |         15-min window --> double/triple confirmation detected
+               |    |-- (Phase 3) CompositeScorer: 4-factor hybrid scoring
+               |    |     +-- Composite scores calculated and persisted to hybrid_scores
                |    |-- SignalRanker: score + rank --> RankedSignal (1-5 stars)
+               |    |-- (Phase 3) CircuitBreaker gate: block if SL limit exceeded
+               |    |-- (Phase 3) AdaptiveManager filter: block paused strategies
                |    |-- RiskManager: position limits + sizing --> FinalSignal
                |    |-- Paper mode check (ORB/VWAP)
                |    |-- SignalRepo: INSERT INTO signals
+               |    |-- (Phase 3) HybridScoreRepo: INSERT INTO hybrid_scores
                |    +-- Bot: send_signal() --> Telegram HTML message
                |
                +-- (every tick, all phases 9:15-15:15):
                     ExitMonitor.check_trade() for each active trade:
                       |-- SL/trailing SL hit?  --> persist + alert + stop monitoring
+                      |   +-- (Phase 3) circuit_breaker.on_sl_hit() --> increment counter
+                      |   +-- (Phase 3) adaptive_manager.on_trade_exit() --> track losses
+                      |   +-- IF circuit breaker activates: Telegram alert, signals halted
                       |-- T2 hit?              --> persist + alert + stop monitoring
+                      |   +-- (Phase 3) adaptive_manager.on_trade_exit() --> track wins
                       |-- T1 hit?              --> advisory alert (once)
                       +-- Trailing SL update?  --> advisory alert
 
@@ -2436,5 +2451,8 @@ WHILE scanning == True:
 Sunday 18:00  [CRON] weekly_rebalance()
          --> CapitalAllocator.calculate_allocations()
          --> check_auto_pause() (warn if win_rate < 40% after 10+ trades)
+         --> (Phase 3) AdaptiveManager.check_trailing_performance()
+         |     +-- 5-day win rate < 35%: warning alert
+         |     +-- 10-day win rate < 30%: auto-pause recommendation
          --> Send allocation summary to Telegram
 ```
