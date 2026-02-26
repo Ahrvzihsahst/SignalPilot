@@ -1,11 +1,17 @@
 """Exit monitor — checks active trades against exit conditions on every tick."""
 
+from __future__ import annotations
+
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from signalpilot.db.models import ExitAlert, ExitType, TickData, TradeRecord
 from signalpilot.utils.log_context import log_context
+
+if TYPE_CHECKING:
+    from signalpilot.events import EventBus
 
 logger = logging.getLogger(__name__)
 
@@ -85,12 +91,14 @@ class ExitMonitor:
         close_trade: TradeCloser | None = None,
         on_sl_hit_callback: Callable[..., Awaitable[None]] | None = None,
         on_trade_exit_callback: Callable[..., Awaitable[None]] | None = None,
+        event_bus: EventBus | None = None,
     ) -> None:
         self._get_tick = get_tick
         self._alert_callback = alert_callback
         self._close_trade = close_trade
         self._on_sl_hit_callback = on_sl_hit_callback
         self._on_trade_exit_callback = on_trade_exit_callback
+        self._event_bus = event_bus
         self._breakeven_trigger_pct = breakeven_trigger_pct
         self._trail_trigger_pct = trail_trigger_pct
         self._trail_factor = 1.0 - trail_distance_pct / 100.0
@@ -121,23 +129,32 @@ class ExitMonitor:
             except Exception:
                 logger.exception("Failed to persist trade %d closure", trade.id)
 
-        # Phase 3: notify circuit breaker on stop-loss exits
-        if exit_reason in ("sl_hit", "trailing_sl") and self._on_sl_hit_callback is not None:
-            try:
-                await self._on_sl_hit_callback(
-                    trade.symbol, getattr(trade, "strategy", "gap_go"), pnl_amount,
-                )
-            except Exception:
-                logger.exception("on_sl_hit_callback failed for trade %d", trade.id)
+        strategy = getattr(trade, "strategy", "gap_go")
 
-        # Phase 3: notify adaptive manager on any exit
-        if self._on_trade_exit_callback is not None:
-            try:
-                await self._on_trade_exit_callback(
-                    getattr(trade, "strategy", "gap_go"), is_loss,
+        if self._event_bus is not None:
+            # Event-bus path: emit typed events
+            from signalpilot.events import StopLossHitEvent, TradeExitedEvent
+
+            if exit_reason in ("sl_hit", "trailing_sl"):
+                await self._event_bus.emit(
+                    StopLossHitEvent(symbol=trade.symbol, strategy=strategy, pnl_amount=pnl_amount)
                 )
-            except Exception:
-                logger.exception("on_trade_exit_callback failed for trade %d", trade.id)
+            await self._event_bus.emit(
+                TradeExitedEvent(strategy_name=strategy, is_loss=is_loss)
+            )
+        else:
+            # Legacy callback path
+            if exit_reason in ("sl_hit", "trailing_sl") and self._on_sl_hit_callback is not None:
+                try:
+                    await self._on_sl_hit_callback(trade.symbol, strategy, pnl_amount)
+                except Exception:
+                    logger.exception("on_sl_hit_callback failed for trade %d", trade.id)
+
+            if self._on_trade_exit_callback is not None:
+                try:
+                    await self._on_trade_exit_callback(strategy, is_loss)
+                except Exception:
+                    logger.exception("on_trade_exit_callback failed for trade %d", trade.id)
 
     def start_monitoring(self, trade: TradeRecord) -> None:
         """Begin monitoring a trade by initializing its trailing stop state."""
@@ -211,7 +228,7 @@ class ExitMonitor:
                 )
                 self.stop_monitoring(trade.id)
                 await self._persist_exit(trade, current_price, alert.pnl_pct, exit_type.value)
-                await self._alert_callback(alert)
+                await self._emit_alert(alert)
                 return alert
 
             # Check T2 hit (full exit)
@@ -222,7 +239,7 @@ class ExitMonitor:
                 )
                 self.stop_monitoring(trade.id)
                 await self._persist_exit(trade, current_price, alert.pnl_pct, ExitType.T2_HIT.value)
-                await self._alert_callback(alert)
+                await self._emit_alert(alert)
                 return alert
 
             # Check T1 hit (advisory, once only)
@@ -240,12 +257,12 @@ class ExitMonitor:
                     "T1 advisory for trade %d (%s): price=%.2f",
                     trade.id, trade.symbol, current_price,
                 )
-                await self._alert_callback(alert)
+                await self._emit_alert(alert)
                 return alert
 
             # Send trailing SL update alert if one occurred
             if trailing_alert is not None:
-                await self._alert_callback(trailing_alert)
+                await self._emit_alert(trailing_alert)
                 return trailing_alert
 
             return None
@@ -350,10 +367,19 @@ class ExitMonitor:
                         trade.id, trade.symbol, current_price, pnl_pct,
                     )
 
-                await self._alert_callback(alert)
+                await self._emit_alert(alert)
                 alerts.append(alert)
 
         return alerts
+
+    async def _emit_alert(self, alert: ExitAlert) -> None:
+        """Send an exit alert via event bus or legacy callback."""
+        if self._event_bus is not None:
+            from signalpilot.events import ExitAlertEvent
+
+            await self._event_bus.emit(ExitAlertEvent(alert=alert))
+        else:
+            await self._alert_callback(alert)
 
     @staticmethod
     def _calc_pnl_pct(entry_price: float, current_price: float) -> float:

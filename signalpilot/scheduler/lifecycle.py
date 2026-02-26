@@ -8,10 +8,23 @@ from datetime import datetime
 from signalpilot.db.models import (
     FinalSignal,
     HistoricalReference,
-    HybridScoreRecord,
     SignalRecord,
     UserConfig,
 )
+from signalpilot.pipeline.context import ScanContext
+from signalpilot.pipeline.stage import ScanPipeline
+from signalpilot.pipeline.stages.adaptive_filter import AdaptiveFilterStage
+from signalpilot.pipeline.stages.circuit_breaker_gate import CircuitBreakerGateStage
+from signalpilot.pipeline.stages.composite_scoring import CompositeScoringStage
+from signalpilot.pipeline.stages.confidence import ConfidenceStage
+from signalpilot.pipeline.stages.deduplication import DeduplicationStage
+from signalpilot.pipeline.stages.diagnostic import DiagnosticStage
+from signalpilot.pipeline.stages.exit_monitoring import ExitMonitoringStage
+from signalpilot.pipeline.stages.gap_stock_marking import GapStockMarkingStage
+from signalpilot.pipeline.stages.persist_and_deliver import PersistAndDeliverStage
+from signalpilot.pipeline.stages.ranking import RankingStage
+from signalpilot.pipeline.stages.risk_sizing import RiskSizingStage
+from signalpilot.pipeline.stages.strategy_eval import StrategyEvalStage
 from signalpilot.telegram.formatters import format_daily_summary
 from signalpilot.utils.constants import IST
 from signalpilot.utils.log_context import reset_context, set_context
@@ -99,6 +112,7 @@ class SignalPilotApp:
         self._scan_task: asyncio.Task | None = None
         self._max_consecutive_errors = 10
         self._fetch_cooldown = 5  # seconds between prev-day and ADV fetch passes
+        self._pipeline: ScanPipeline | None = None
 
     async def startup(self) -> None:
         """Full startup sequence."""
@@ -222,20 +236,43 @@ class SignalPilotApp:
         if self._websocket and hasattr(self._websocket, "reset_volume_tracking"):
             self._websocket.reset_volume_tracking()
 
+    def _build_pipeline(self) -> ScanPipeline:
+        """Construct the composable scan pipeline from injected components."""
+        signal_stages = [
+            CircuitBreakerGateStage(self._circuit_breaker),
+            StrategyEvalStage(self._strategies, self._config_repo, self._market_data),
+            GapStockMarkingStage(),
+            DeduplicationStage(self._duplicate_checker),
+            ConfidenceStage(self._confidence_detector),
+            CompositeScoringStage(self._composite_scorer),
+            AdaptiveFilterStage(self._adaptive_manager),
+            RankingStage(self._ranker),
+            RiskSizingStage(self._risk_manager, self._trade_repo),
+            PersistAndDeliverStage(
+                self._signal_repo,
+                self._hybrid_score_repo,
+                self._bot,
+                self._adaptive_manager,
+                self._app_config,
+            ),
+            DiagnosticStage(self._websocket),
+        ]
+        always_stages = [
+            ExitMonitoringStage(self._trade_repo, self._exit_monitor, self._signal_repo),
+        ]
+        return ScanPipeline(signal_stages=signal_stages, always_stages=always_stages)
+
     async def _scan_loop(self) -> None:
         """Main scanning loop. Runs every second while active.
 
-        Phase 3 integration points (all guarded by None checks):
-        1. Circuit breaker check at start of each iteration
-        2. Confidence detection on candidates
-        3. Composite scoring
-        4. Adaptive filtering
-        5. Composite scores passed to ranker
-        6. Confirmation map passed to risk manager
-        7. Phase 3 fields persisted on signal records
+        Delegates to composable pipeline stages for signal generation,
+        exit monitoring, and diagnostics.
         """
+        # Build pipeline lazily so test mutations to app attributes are captured
+        if self._pipeline is None:
+            self._pipeline = self._build_pipeline()
+
         consecutive_errors = 0
-        _diag_cycle_count = 0
         while self._scanning:
             cycle_id = uuid.uuid4().hex[:8]
             try:
@@ -243,239 +280,17 @@ class SignalPilotApp:
                 phase = get_current_phase(now)
                 set_context(cycle_id=cycle_id, phase=phase.value)
 
-                # Phase 3: Check circuit breaker at start of each cycle
-                if self._circuit_breaker is not None and self._circuit_breaker.is_active:
-                    # Circuit breaker active -- skip signal generation but
-                    # continue exit monitoring
-                    self._accepting_signals = False
+                ctx = ScanContext(
+                    cycle_id=cycle_id,
+                    now=now,
+                    phase=phase,
+                    accepting_signals=self._accepting_signals,
+                )
+                ctx = await self._pipeline.run(ctx)
 
-                if self._accepting_signals and phase in (
-                    StrategyPhase.OPENING,
-                    StrategyPhase.ENTRY_WINDOW,
-                    StrategyPhase.CONTINUOUS,
-                ):
-                    user_config = await self._config_repo.get_user_config()
-                    enabled_strategies = self._get_enabled_strategies(user_config)
+                # Propagate circuit-breaker gate back to app-level state
+                self._accepting_signals = ctx.accepting_signals
 
-                    all_candidates = []
-                    for strat in enabled_strategies:
-                        if phase in strat.active_phases:
-                            candidates = await strat.evaluate(self._market_data, phase)
-                            if candidates:
-                                all_candidates.extend(candidates)
-
-                    # Exclude Gap & Go stocks from ORB scanning
-                    gap_symbols = {
-                        c.symbol
-                        for c in all_candidates
-                        if getattr(c, "strategy_name", None) == "Gap & Go"
-                    }
-                    if gap_symbols:
-                        for strat in enabled_strategies:
-                            if hasattr(strat, "mark_gap_stock"):
-                                for sym in gap_symbols:
-                                    strat.mark_gap_stock(sym)
-
-                    if all_candidates:
-                        # Deduplicate across strategies
-                        if self._duplicate_checker:
-                            all_candidates = await self._duplicate_checker.filter_duplicates(
-                                all_candidates, now.date()
-                            )
-
-                        if all_candidates:
-                            # Phase 3: Run confidence detection
-                            confirmation_map = None
-                            composite_scores = None
-
-                            if self._confidence_detector is not None:
-                                confirmation_results = (
-                                    await self._confidence_detector.detect_confirmations(
-                                        all_candidates, now
-                                    )
-                                )
-                                # Build symbol -> ConfirmationResult map
-                                confirmation_map = {}
-                                for candidate, conf_result in confirmation_results:
-                                    confirmation_map[candidate.symbol] = conf_result
-
-                            # Phase 3: Run composite scoring
-                            if self._composite_scorer is not None:
-                                composite_scores = {}
-                                for candidate in all_candidates:
-                                    # Get confirmation for this candidate
-                                    conf = None
-                                    if confirmation_map is not None:
-                                        conf = confirmation_map.get(candidate.symbol)
-                                    if conf is None:
-                                        from signalpilot.ranking.confidence import (
-                                            ConfirmationResult,
-                                        )
-                                        conf = ConfirmationResult(
-                                            confirmation_level="single",
-                                            confirmed_by=[candidate.strategy_name],
-                                        )
-                                    score_result = await self._composite_scorer.score(
-                                        candidate, conf, now.date()
-                                    )
-                                    composite_scores[candidate.symbol] = score_result
-
-                            # Phase 3: Adaptive filtering
-                            if self._adaptive_manager is not None:
-                                filtered = []
-                                for candidate in all_candidates:
-                                    # Need to estimate signal strength for filtering
-                                    strength = 3  # default
-                                    if composite_scores and candidate.symbol in composite_scores:
-                                        cs = composite_scores[candidate.symbol].composite_score
-                                        if cs >= 80:
-                                            strength = 5
-                                        elif cs >= 65:
-                                            strength = 4
-                                        elif cs >= 50:
-                                            strength = 3
-                                        elif cs >= 35:
-                                            strength = 2
-                                        else:
-                                            strength = 1
-                                    if self._adaptive_manager.should_allow_signal(
-                                        candidate.strategy_name, strength
-                                    ):
-                                        filtered.append(candidate)
-                                    else:
-                                        logger.info(
-                                            "Adaptive filter blocked %s (%s)",
-                                            candidate.symbol, candidate.strategy_name,
-                                        )
-                                all_candidates = filtered
-
-                            if all_candidates:
-                                # Pass composite scores and confirmations to ranker
-                                ranked = self._ranker.rank(
-                                    all_candidates,
-                                    composite_scores=composite_scores,
-                                    confirmations=confirmation_map,
-                                )
-                                active_count = await self._trade_repo.get_active_trade_count()
-                                final_signals = self._risk_manager.filter_and_size(
-                                    ranked,
-                                    user_config,
-                                    active_count,
-                                    confirmation_map=confirmation_map,
-                                )
-                                for signal in final_signals:
-                                    record = self._signal_to_record(signal, now)
-                                    is_paper = self._is_paper_mode(signal, self._app_config)
-                                    if is_paper:
-                                        record.status = "paper"
-
-                                    # Phase 3: Persist composite score and confirmation fields
-                                    conf_level = None
-                                    conf_by = None
-                                    boosted_stars = None
-                                    sym = signal.ranked_signal.candidate.symbol
-
-                                    if composite_scores and sym in composite_scores:
-                                        cs = composite_scores[sym]
-                                        record.composite_score = cs.composite_score
-                                        set_context(
-                                            cycle_id=cycle_id,
-                                            phase=phase.value,
-                                            symbol=sym,
-                                        )
-
-                                    if confirmation_map and sym in confirmation_map:
-                                        conf = confirmation_map[sym]
-                                        record.confirmation_level = conf.confirmation_level
-                                        record.confirmed_by = ",".join(conf.confirmed_by)
-                                        record.position_size_multiplier = conf.position_size_multiplier
-                                        conf_level = conf.confirmation_level
-                                        conf_by = ",".join(conf.confirmed_by)
-                                        if conf.star_boost > 0:
-                                            boosted_stars = min(
-                                                signal.ranked_signal.signal_strength + conf.star_boost, 5
-                                            )
-
-                                    if self._adaptive_manager is not None:
-                                        state = self._adaptive_manager.get_all_states().get(
-                                            signal.ranked_signal.candidate.strategy_name
-                                        )
-                                        if state is not None:
-                                            record.adaptation_status = state.level.value
-
-                                    signal_id = await self._signal_repo.insert_signal(record)
-                                    record.id = signal_id
-
-                                    # Phase 3: Persist hybrid score record
-                                    if (
-                                        self._hybrid_score_repo is not None
-                                        and composite_scores
-                                        and sym in composite_scores
-                                    ):
-                                        cs = composite_scores[sym]
-                                        hs_record = HybridScoreRecord(
-                                            signal_id=signal_id,
-                                            composite_score=cs.composite_score,
-                                            strategy_strength_score=cs.strategy_strength_score,
-                                            win_rate_score=cs.win_rate_score,
-                                            risk_reward_score=cs.risk_reward_score,
-                                            confirmation_bonus=cs.confirmation_bonus,
-                                            confirmed_by=conf_by,
-                                            confirmation_level=conf_level or "single",
-                                            position_size_multiplier=(
-                                                confirmation_map[sym].position_size_multiplier
-                                                if confirmation_map and sym in confirmation_map
-                                                else 1.0
-                                            ),
-                                            created_at=now,
-                                        )
-                                        try:
-                                            await self._hybrid_score_repo.insert_score(hs_record)
-                                        except Exception:
-                                            logger.warning(
-                                                "Failed to persist hybrid score for signal %d",
-                                                signal_id,
-                                            )
-
-                                    await self._bot.send_signal(
-                                        signal,
-                                        is_paper=is_paper,
-                                        signal_id=signal_id,
-                                        confirmation_level=conf_level,
-                                        confirmed_by=conf_by,
-                                        boosted_stars=boosted_stars,
-                                    )
-                                    logger.info(
-                                        "Signal %s for %s (id=%d, composite_score=%s, confirmation=%s)",
-                                        "paper-sent" if is_paper else "sent",
-                                        record.symbol,
-                                        signal_id,
-                                        record.composite_score,
-                                        record.confirmation_level or "single",
-                                    )
-
-                    # Periodic diagnostic: log when scanning is active but
-                    # producing no candidates (every 60 cycles ~ 1 minute).
-                    _diag_cycle_count += 1
-                    if _diag_cycle_count % 60 == 0:
-                        ws_ok = (
-                            self._websocket.is_connected
-                            if self._websocket
-                            else False
-                        )
-                        logger.info(
-                            "Scan heartbeat: phase=%s strategies=%d ws_connected=%s "
-                            "candidates_this_cycle=%d",
-                            phase.value,
-                            len(enabled_strategies),
-                            ws_ok,
-                            len(all_candidates),
-                        )
-
-                active_trades = await self._trade_repo.get_active_trades()
-                for trade in active_trades:
-                    await self._exit_monitor.check_trade(trade)
-                await self._expire_stale_signals()
                 consecutive_errors = 0
 
             except Exception:
@@ -680,13 +495,6 @@ class SignalPilotApp:
             logger.info("Weekly rebalance complete: %d strategies allocated", len(allocations))
         finally:
             reset_context()
-
-    async def _expire_stale_signals(self) -> None:
-        """Expire signals past their expiry time."""
-        now = datetime.now(IST)
-        count = await self._signal_repo.expire_stale_signals(now)
-        if count > 0:
-            logger.info("Expired %d stale signals", count)
 
     def _get_enabled_strategies(self, user_config: UserConfig | None) -> list:
         """Filter strategies by the corresponding enabled flag in user_config."""

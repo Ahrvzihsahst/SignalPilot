@@ -426,16 +426,25 @@ async def test_recover_starts_scanning() -> None:
     assert app._scanning is True
 
 
-# -- _expire_stale_signals -----------------------------------------------------
+# -- expire_stale_signals (now in ExitMonitoringStage) -------------------------
 
 
-async def test_expire_stale_signals_delegates_to_repo() -> None:
-    app = _make_app()
-    app._signal_repo.expire_stale_signals = AsyncMock(return_value=3)
+async def test_expire_stale_signals_runs_in_pipeline() -> None:
+    """ExitMonitoringStage calls signal_repo.expire_stale_signals each cycle."""
+    from signalpilot.pipeline.stages.exit_monitoring import ExitMonitoringStage
 
-    await app._expire_stale_signals()
+    trade_repo = AsyncMock()
+    trade_repo.get_active_trades = AsyncMock(return_value=[])
+    signal_repo = AsyncMock()
+    signal_repo.expire_stale_signals = AsyncMock(return_value=3)
+    exit_monitor = MagicMock(check_trade=AsyncMock())
 
-    app._signal_repo.expire_stale_signals.assert_awaited_once()
+    stage = ExitMonitoringStage(trade_repo, exit_monitor, signal_repo)
+    from signalpilot.pipeline.context import ScanContext
+    ctx = ScanContext()
+    await stage.process(ctx)
+
+    signal_repo.expire_stale_signals.assert_awaited_once()
 
 
 # -- _signal_to_record ---------------------------------------------------------

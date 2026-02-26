@@ -124,12 +124,16 @@ async def create_app(config: AppConfig) -> SignalPilotApp:
     position_sizer = PositionSizer()
     risk_manager = RiskManager(position_sizer)
 
-    # --- Exit monitor (needs bot callback -- use closure to break cycle) ---
-    bot_ref: list[SignalPilotBot | None] = [None]
+    # --- Event Bus (replaces closure-based callbacks) ---
+    from signalpilot.events import (
+        AlertMessageEvent,
+        EventBus,
+        ExitAlertEvent,
+        StopLossHitEvent,
+        TradeExitedEvent,
+    )
 
-    async def _exit_alert_callback(alert):
-        if bot_ref[0] is not None:
-            await bot_ref[0].send_exit_alert(alert)
+    event_bus = EventBus()
 
     # Build per-strategy trailing stop configs from AppConfig
     from signalpilot.monitor.exit_monitor import TrailingStopConfig
@@ -167,60 +171,33 @@ async def create_app(config: AppConfig) -> SignalPilotApp:
         ),
     }
 
-    # Forward-declare circuit_breaker / adaptive_manager for exit monitor callbacks.
-    # These closures capture the objects created below.
-    circuit_breaker_ref: list[CircuitBreaker | None] = [None]
-    adaptive_manager_ref: list[AdaptiveManager | None] = [None]
-
-    async def _on_sl_hit(symbol: str, strategy: str, pnl_amount: float) -> None:
-        if circuit_breaker_ref[0] is not None:
-            await circuit_breaker_ref[0].on_sl_hit(symbol, strategy, pnl_amount)
-
-    async def _on_trade_exit(strategy_name: str, is_loss: bool) -> None:
-        if adaptive_manager_ref[0] is not None:
-            today = datetime.now(IST).date()
-            await adaptive_manager_ref[0].on_trade_exit(strategy_name, is_loss, today)
-
+    # --- Exit monitor (uses event bus for cross-component communication) ---
     exit_monitor = ExitMonitor(
         get_tick=market_data.get_tick,
-        alert_callback=_exit_alert_callback,
+        alert_callback=lambda alert: None,  # placeholder; event bus handles delivery
         breakeven_trigger_pct=config.trailing_sl_breakeven_trigger_pct,
         trail_trigger_pct=config.trailing_sl_trail_trigger_pct,
         trail_distance_pct=config.trailing_sl_trail_distance_pct,
         trailing_configs=trailing_configs,
         close_trade=trade_repo.close_trade,
-        on_sl_hit_callback=_on_sl_hit,
-        on_trade_exit_callback=_on_trade_exit,
+        event_bus=event_bus,
     )
 
     # --- Phase 3: Circuit breaker ---
-    # Forward-declare app_ref for circuit breaker callback
-    app_ref: list[SignalPilotApp | None] = [None]
-
-    async def _circuit_break_callback(message: str):
-        if bot_ref[0] is not None:
-            await bot_ref[0].send_alert(message)
-
     circuit_breaker = CircuitBreaker(
         circuit_breaker_repo=circuit_breaker_repo,
         config_repo=config_repo,
-        on_circuit_break=_circuit_break_callback,
         sl_limit=config.circuit_breaker_sl_limit,
+        event_bus=event_bus,
     )
-    circuit_breaker_ref[0] = circuit_breaker
 
     # --- Phase 3: Adaptive manager ---
-    async def _adaptive_alert_callback(message: str):
-        if bot_ref[0] is not None:
-            await bot_ref[0].send_alert(message)
-
     adaptive_manager = AdaptiveManager(
         adaptation_log_repo=adaptation_log_repo,
         config_repo=config_repo,
         strategy_performance_repo=strategy_performance_repo,
-        alert_callback=_adaptive_alert_callback,
+        event_bus=event_bus,
     )
-    adaptive_manager_ref[0] = adaptive_manager
 
     # --- Telegram bot ---
     # Wrapper: handle_status expects list[str] -> dict[str, float], but
@@ -250,7 +227,25 @@ async def create_app(config: AppConfig) -> SignalPilotApp:
         hybrid_score_repo=hybrid_score_repo,
         adaptation_log_repo=adaptation_log_repo,
     )
-    bot_ref[0] = bot  # complete the circular reference
+
+    # --- Wire event bus subscriptions (after all components exist) ---
+    async def _on_exit_alert(event: ExitAlertEvent) -> None:
+        await bot.send_exit_alert(event.alert)
+
+    async def _on_sl_hit(event: StopLossHitEvent) -> None:
+        await circuit_breaker.on_sl_hit(event.symbol, event.strategy, event.pnl_amount)
+
+    async def _on_trade_exit(event: TradeExitedEvent) -> None:
+        today = datetime.now(IST).date()
+        await adaptive_manager.on_trade_exit(event.strategy_name, event.is_loss, today)
+
+    async def _on_alert_message(event: AlertMessageEvent) -> None:
+        await bot.send_alert(event.message)
+
+    event_bus.subscribe(ExitAlertEvent, _on_exit_alert)
+    event_bus.subscribe(StopLossHitEvent, _on_sl_hit)
+    event_bus.subscribe(TradeExitedEvent, _on_trade_exit)
+    event_bus.subscribe(AlertMessageEvent, _on_alert_message)
 
     # --- WebSocket ---
     websocket = WebSocketClient(

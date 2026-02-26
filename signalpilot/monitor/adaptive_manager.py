@@ -6,6 +6,10 @@ import logging
 from dataclasses import dataclass
 from datetime import date
 from enum import Enum
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from signalpilot.events import EventBus
 
 logger = logging.getLogger(__name__)
 
@@ -38,12 +42,23 @@ class AdaptiveManager:
         config_repo=None,
         strategy_performance_repo=None,
         alert_callback=None,
+        event_bus: EventBus | None = None,
     ):
         self._adaptation_log_repo = adaptation_log_repo
         self._config_repo = config_repo
         self._strategy_perf_repo = strategy_performance_repo
         self._alert_callback = alert_callback
+        self._event_bus = event_bus
         self._states: dict[str, StrategyAdaptationState] = {}
+
+    async def _send_alert(self, message: str) -> None:
+        """Send alert via event bus or legacy callback."""
+        if self._event_bus is not None:
+            from signalpilot.events import AlertMessageEvent
+
+            await self._event_bus.emit(AlertMessageEvent(message=message))
+        elif self._alert_callback:
+            await self._alert_callback(message)
 
     async def on_trade_exit(self, strategy_name: str, is_loss: bool, today: date) -> None:
         state = self._ensure_state(strategy_name)
@@ -57,19 +72,17 @@ class AdaptiveManager:
                 state.consecutive_losses >= self.CONSECUTIVE_LOSS_PAUSE
                 and state.level != AdaptationLevel.PAUSED
             ):
-                old_level = state.level.value
                 state.level = AdaptationLevel.PAUSED
                 await self._log_adaptation(
                     today, strategy_name, "pause",
                     f"{state.consecutive_losses} consecutive losses",
                     None, None,
                 )
-                if self._alert_callback:
-                    msg = (
-                        f"\U0001f6ab {strategy_name} hit {state.consecutive_losses} consecutive losses today. "
-                        f"Fully paused for rest of day."
-                    )
-                    await self._alert_callback(msg)
+                msg = (
+                    f"\U0001f6ab {strategy_name} hit {state.consecutive_losses} consecutive losses today. "
+                    f"Fully paused for rest of day."
+                )
+                await self._send_alert(msg)
             elif (
                 state.consecutive_losses >= self.CONSECUTIVE_LOSS_THROTTLE
                 and state.level == AdaptationLevel.NORMAL
@@ -80,12 +93,11 @@ class AdaptiveManager:
                     f"{state.consecutive_losses} consecutive losses",
                     None, None,
                 )
-                if self._alert_callback:
-                    msg = (
-                        f"\u26a0\ufe0f {strategy_name} hit {state.consecutive_losses} consecutive losses today. "
-                        f"Reduced to 5-star signals only for rest of day."
-                    )
-                    await self._alert_callback(msg)
+                msg = (
+                    f"\u26a0\ufe0f {strategy_name} hit {state.consecutive_losses} consecutive losses today. "
+                    f"Reduced to 5-star signals only for rest of day."
+                )
+                await self._send_alert(msg)
         else:
             state.consecutive_wins += 1
             state.consecutive_losses = 0
