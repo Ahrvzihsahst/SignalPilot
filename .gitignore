@@ -212,5 +212,12 @@ __marimo__/
 *.db-wal
 *.db-journal
 
+# Backend-specific
+backend/logs/
+
+# Frontend-specific
+frontend/node_modules/
+frontend/dist/
+
 # Claude
 *.kiro/

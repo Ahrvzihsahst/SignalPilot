@@ -19,20 +19,25 @@
    - [7b. ORB Strategy](#7b-orb-strategy)
    - [7c. VWAP Reversal Strategy](#7c-vwap-reversal-strategy)
 9. [Step 8 — Duplicate Checking](#9-step-8--duplicate-checking)
-10. [Step 9 — Signal Ranking & Scoring](#10-step-9--signal-ranking--scoring)
-11. [Step 10 — Risk Management & Position Sizing](#11-step-10--risk-management--position-sizing)
-12. [Step 11 — Capital Allocation](#12-step-11--capital-allocation)
-13. [Step 12 — Database Persistence](#13-step-12--database-persistence)
-14. [Step 13 — Telegram Delivery](#14-step-13--telegram-delivery)
-15. [Step 14 — Exit Monitoring](#15-step-14--exit-monitoring)
-16. [Step 15 — Telegram Commands (User Interaction)](#16-step-15--telegram-commands-user-interaction)
-17. [Step 16 — Daily Wind-Down & Summary](#17-step-16--daily-wind-down--summary)
-18. [Step 17 — Shutdown & Crash Recovery](#18-step-17--shutdown--crash-recovery)
-19. [Data Model Chain](#19-data-model-chain)
-20. [Logging & Observability](#20-logging--observability)
-21. [Rate Limiting & Retry](#21-rate-limiting--retry)
-22. [Complete Scan Loop Iteration](#22-complete-scan-loop-iteration)
-23. [Summary: A Complete Trading Day](#23-summary-a-complete-trading-day)
+10. [Step 8.5 — Multi-Strategy Confirmation Detection (Phase 3)](#10-step-85--multi-strategy-confirmation-detection-phase-3)
+11. [Step 9 — Signal Ranking & Scoring](#11-step-9--signal-ranking--scoring)
+12. [Step 9.5 — Composite Hybrid Scoring (Phase 3)](#12-step-95--composite-hybrid-scoring-phase-3)
+13. [Step 10 — Risk Management & Position Sizing](#13-step-10--risk-management--position-sizing)
+14. [Step 10.5 — Circuit Breaker Gate (Phase 3)](#14-step-105--circuit-breaker-gate-phase-3)
+15. [Step 10.6 — Adaptive Strategy Management (Phase 3)](#15-step-106--adaptive-strategy-management-phase-3)
+16. [Step 11 — Capital Allocation](#16-step-11--capital-allocation)
+17. [Step 12 — Database Persistence](#17-step-12--database-persistence)
+18. [Step 13 — Telegram Delivery](#18-step-13--telegram-delivery)
+19. [Step 14 — Exit Monitoring](#19-step-14--exit-monitoring)
+20. [Step 15 — Telegram Commands (User Interaction)](#20-step-15--telegram-commands-user-interaction)
+21. [Step 16 — Daily Wind-Down & Summary](#21-step-16--daily-wind-down--summary)
+22. [Step 17 — Shutdown & Crash Recovery](#22-step-17--shutdown--crash-recovery)
+23. [Step 18 — Dashboard (Phase 3)](#23-step-18--dashboard-phase-3)
+24. [Data Model Chain](#24-data-model-chain)
+25. [Logging & Observability](#25-logging--observability)
+26. [Rate Limiting & Retry](#26-rate-limiting--retry)
+27. [Complete Scan Loop Iteration](#27-complete-scan-loop-iteration)
+28. [Summary: A Complete Trading Day](#28-summary-a-complete-trading-day)
 
 ---
 
@@ -50,13 +55,16 @@ its dependencies via constructor parameters.
    AppConfig (pydantic-settings)
         |
         v
-   create_app()          <-- wires 20+ components in dependency order
+   create_app()          <-- wires 30+ components in dependency order
         |
         |-- DatabaseManager --> SignalRepository
         |                   --> TradeRepository
         |                   --> ConfigRepository
         |                   --> MetricsCalculator
         |                   --> StrategyPerformanceRepository
+        |                   --> HybridScoreRepository       (Phase 3)
+        |                   --> CircuitBreakerRepository     (Phase 3)
+        |                   --> AdaptationLogRepository      (Phase 3)
         |
         |-- SmartAPIAuthenticator --> Angel One SmartAPI (TOTP-based 2FA)
         |
@@ -84,6 +92,8 @@ its dependencies via constructor parameters.
         |-- DuplicateChecker (cross-strategy same-day dedup)
         |
         |-- SignalRanker (SignalScorer --> ORBScorer / VWAPScorer)
+        |       |-- ConfidenceDetector     (Phase 3) — multi-strategy confirmation detection
+        |       |-- CompositeScorer        (Phase 3) — 4-factor hybrid scoring
         |
         |-- RiskManager (PositionSizer)
         |
@@ -91,13 +101,25 @@ its dependencies via constructor parameters.
         |       |-- 20% reserve, expectancy-weighted allocation
         |       |-- Auto-pause: win_rate < 40% after 10+ trades
         |
+        |-- Intelligence Layer (Phase 3)
+        |       |-- CircuitBreaker           — halt signals after N SL hits/day
+        |       |-- AdaptiveManager          — throttle/pause underperforming strategies
+        |       |-- ConfidenceDetector       — cross-strategy confirmation (single/double/triple)
+        |
         |-- ExitMonitor --> reads MarketDataStore, fires Telegram alerts
         |       |-- Per-strategy TrailingStopConfig
         |       |-- close_trade callback --> TradeRepository
+        |       |-- on_sl_hit_callback --> CircuitBreaker (Phase 3)
+        |       |-- on_trade_exit_callback --> AdaptiveManager (Phase 3)
         |
         |-- SignalPilotBot (Telegram, python-telegram-bot)
-        |       |-- 9 commands: TAKEN, STATUS, JOURNAL, CAPITAL, PAUSE,
-        |       |   RESUME, ALLOCATE, STRATEGY, HELP
+        |       |-- 13 commands: TAKEN, STATUS, JOURNAL, CAPITAL, PAUSE,
+        |       |   RESUME, ALLOCATE, STRATEGY, OVERRIDE, SCORE, ADAPT,
+        |       |   REBALANCE, HELP
+        |
+        |-- Dashboard (Phase 3)
+        |       |-- FastAPI backend          — 8 route modules (/api/signals, /trades, etc.)
+        |       |-- React frontend           — Vite + TypeScript + Tailwind + React Query
         |
         +-- MarketScheduler (APScheduler 3.x, 9 IST cron jobs)
                 |
@@ -236,6 +258,46 @@ using **pydantic-settings**. There is no hardcoded configuration.
 | `orb_paper_mode` | `True` | ORB signals are paper-only by default |
 | `vwap_paper_mode` | `True` | VWAP signals are paper-only by default |
 
+**Phase 3 — Composite Scoring:**
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `composite_weight_strategy` | `0.4` | Strategy strength weight |
+| `composite_weight_win_rate` | `0.3` | Win rate weight |
+| `composite_weight_risk_reward` | `0.2` | Risk-reward ratio weight |
+| `composite_weight_confirmation` | `0.1` | Confirmation bonus weight |
+| `confirmation_window_minutes` | `15` | Window for cross-strategy confirmation |
+
+**Phase 3 — Circuit Breaker:**
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `circuit_breaker_sl_limit` | `3` | SL hits before circuit breaker activates |
+
+**Phase 3 — Adaptive Learning:**
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `adaptive_consecutive_loss_throttle` | `3` | Consecutive losses to trigger throttle |
+| `adaptive_consecutive_loss_pause` | `5` | Consecutive losses to trigger pause |
+| `adaptive_5d_warn_threshold` | `35.0` | 5-day win rate warning threshold % |
+| `adaptive_10d_pause_threshold` | `30.0` | 10-day win rate pause threshold % |
+
+**Phase 3 — Confirmed Signal Caps:**
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `confirmed_double_cap_pct` | `20.0` | Max capital % for double-confirmed signals |
+| `confirmed_triple_cap_pct` | `25.0` | Max capital % for triple-confirmed signals |
+
+**Phase 3 — Dashboard:**
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `dashboard_enabled` | `True` | Enable web dashboard |
+| `dashboard_port` | `8000` | Dashboard server port |
+| `dashboard_host` | `"127.0.0.1"` | Dashboard bind address |
+
 **Retry & Resilience:**
 
 | Field | Default | Description |
@@ -248,8 +310,11 @@ using **pydantic-settings**. There is no hardcoded configuration.
 **Validators:**
 
 A `@model_validator` enforces that each of the three scoring weight groups
-(Gap & Go, ORB, VWAP) sums to `1.0 +/- 0.01` tolerance. The app won't start
-with invalid weights.
+(Gap & Go, ORB, VWAP) sums to `1.0 +/- 0.01` tolerance. A separate
+`@model_validator` enforces that the four composite scoring weights
+(`composite_weight_strategy`, `composite_weight_win_rate`,
+`composite_weight_risk_reward`, `composite_weight_confirmation`) sum to
+`1.0`. The app won't start with invalid weights.
 
 ### Entry Point: `signalpilot/main.py`
 
@@ -257,7 +322,7 @@ with invalid weights.
 async def main() -> None:
     config = AppConfig()                     # load .env
     configure_logging(level=config.log_level, log_file=config.log_file)
-    app = await create_app(config)           # wire 20+ components
+    app = await create_app(config)           # wire 30+ components
 
     # Setup SIGINT/SIGTERM handlers (once via shutting_down flag)
     now = datetime.now(IST)
@@ -270,10 +335,10 @@ async def main() -> None:
         await asyncio.sleep(1)               # keep event loop alive
 ```
 
-#### `create_app()` Wiring Order (13 stages)
+#### `create_app()` Wiring Order (19 stages)
 
-1. **Database** — `DatabaseManager(db_path)` + `initialize()` (WAL mode, foreign keys, phase 2 migration)
-2. **Repositories** — `SignalRepository`, `TradeRepository`, `ConfigRepository`, `MetricsCalculator`, `StrategyPerformanceRepository` (all sharing the same `aiosqlite.Connection`)
+1. **Database** — `DatabaseManager(db_path)` + `initialize()` (WAL mode, foreign keys, phase 2 migration, phase 3 migration)
+2. **Repositories** — `SignalRepository`, `TradeRepository`, `ConfigRepository`, `MetricsCalculator`, `StrategyPerformanceRepository`, `HybridScoreRepository`, `CircuitBreakerRepository`, `AdaptationLogRepository` (all sharing the same `aiosqlite.Connection`)
 3. **Auth** — `SmartAPIAuthenticator(config)`
 4. **Data** — `InstrumentManager(csv_path)`, `MarketDataStore()`, `HistoricalDataFetcher(authenticator, instruments, rate_limit)`
 5. **Strategies** — `GapAndGoStrategy(config)`, `ORBStrategy(config, market_data)`, `VWAPCooldownTracker(max_signals=2, cooldown=60)` + `VWAPReversalStrategy(config, market_data, cooldown_tracker)`
@@ -285,6 +350,12 @@ async def main() -> None:
 11. **Telegram Bot** — `SignalPilotBot(...)` with `_get_current_prices` wrapper (converts `list[str]` to `dict[str, float]` via `market_data.get_tick()`)
 12. **WebSocket** — `WebSocketClient(authenticator, instruments, market_data_store, on_disconnect_alert, max_reconnect_attempts)`
 13. **Scheduler** — `MarketScheduler()`
+14. **Confidence Detector** (Phase 3) — `ConfidenceDetector(signal_repo, confirmation_window_minutes=15)`
+15. **Composite Scorer** (Phase 3) — `CompositeScorer(strategy_performance_repo, config)` with 4 weighted factors
+16. **Circuit Breaker** (Phase 3) — `CircuitBreaker(circuit_breaker_repo, config_repo, on_circuit_break=callback, sl_limit=3)`
+17. **Adaptive Manager** (Phase 3) — `AdaptiveManager(adaptation_log_repo, config_repo, strategy_performance_repo, alert_callback=callback)`
+18. **Exit Monitor Callbacks** (Phase 3) — wires `on_sl_hit_callback` to CircuitBreaker, `on_trade_exit_callback` to AdaptiveManager
+19. **Dashboard** (Phase 3) — `create_dashboard_app(db_path, write_connection)` (if `dashboard_enabled`)
 
 The bot and exit monitor have a circular dependency (exit alerts are sent via
 the bot). This is resolved with a `bot_ref: list[SignalPilotBot | None]`
@@ -913,9 +984,53 @@ CandidateSignal(
 This prevents the same stock from receiving signals from multiple strategies
 on the same day.
 
+**Phase 3 exception:** Symbols with multi-strategy confirmation (detected by
+`ConfidenceDetector`) bypass the same-day signal dedup check, allowing
+confirmed setups to generate signals even if a prior strategy already signaled
+the stock.
+
 ---
 
-## 10. Step 9 — Signal Ranking & Scoring
+## 10. Step 8.5 — Multi-Strategy Confirmation Detection (Phase 3)
+
+### File: `signalpilot/ranking/confidence.py`
+
+The `ConfidenceDetector` identifies when multiple strategies agree on the same
+stock within a configurable time window (default: 15 minutes). This is a
+Phase 3 component that runs after duplicate checking and before ranking.
+
+#### Confirmation Levels
+
+| Level | Condition | Position Multiplier |
+|-------|-----------|---------------------|
+| `single` | Only 1 strategy signals the stock | 1.0x (no boost) |
+| `double` | 2 strategies signal within window | 1.5x |
+| `triple` | 3 strategies signal within window | 2.0x |
+
+#### Detection Flow
+
+1. Group current batch of candidates by symbol
+2. For each symbol with candidates, query
+   `signal_repo.get_recent_signals_by_symbol(symbol, since=now - window)`
+3. Collect unique strategy names from both current candidates and recent DB
+   signals
+4. Determine level: 3+ strategies = triple, 2 = double, 1 = single
+5. Return `ConfirmationResult(symbol, level, confirmed_by=[strategy_names], multiplier)`
+
+#### Impact on Downstream Components
+
+- **DuplicateChecker:** Symbols with multi-strategy confirmation bypass
+  same-day dedup
+- **PositionSizer:** Multiplier applied to position size (capped at 20%/25%
+  of capital for double/triple confirmation respectively)
+- **SignalRecord:** `confirmation_level`, `confirmed_by`, and
+  `position_size_multiplier` fields are persisted to the `signals` table
+- **Telegram:** Confirmation badge shown in the signal message (e.g.,
+  "DOUBLE CONFIRMED by Gap & Go + ORB")
+
+---
+
+## 11. Step 9 — Signal Ranking & Scoring
 
 ### Files: `signalpilot/ranking/scorer.py`, `ranker.py`, `orb_scorer.py`, `vwap_scorer.py`
 
@@ -1014,7 +1129,55 @@ list of `RankedSignal` objects.
 
 ---
 
-## 11. Step 10 — Risk Management & Position Sizing
+## 12. Step 9.5 — Composite Hybrid Scoring (Phase 3)
+
+### File: `signalpilot/ranking/composite_scorer.py`
+
+When Phase 3 is active, signals are scored using a 4-factor composite system
+instead of legacy single-factor scoring. The composite scorer runs after the
+per-strategy scorer and produces a blended score incorporating historical
+performance and cross-strategy confirmation data.
+
+#### Four Factors
+
+| Factor | Weight | Source | Range |
+|--------|--------|--------|-------|
+| Strategy Strength | 0.40 | `candidate.strategy_specific_score` or legacy scorer | 0-100 |
+| Win Rate | 0.30 | 30-day trailing win rate from `strategy_performance` table | 0-100 |
+| Risk-Reward | 0.20 | Linear mapping: R:R 1.0 -> 0, R:R 3.0+ -> 100 | 0-100 |
+| Confirmation Bonus | 0.10 | 0 (single), 50 (double), 100 (triple) | 0-100 |
+
+#### Formula
+
+```
+composite = (strategy_strength * 0.40) + (win_rate * 0.30) + (risk_reward * 0.20) + (confirmation * 0.10)
+```
+
+#### Win Rate Cache
+
+Per-strategy win rates are cached per day to avoid repeated DB queries. The
+cache is keyed by `(strategy_name, date)` and populated on first access via
+`strategy_performance_repo`.
+
+#### Star Rating (Composite Mode)
+
+| Score Range | Stars |
+|-------------|-------|
+| [0, 20) | 1 |
+| [20, 40) | 2 |
+| [40, 60) | 3 |
+| [60, 80) | 4 |
+| [80, 100] | 5 |
+
+#### Persistence
+
+`HybridScoreRecord` is persisted to the `hybrid_scores` table for every
+scored signal, capturing the composite score and all four factor scores along
+with confirmation details.
+
+---
+
+## 13. Step 10 — Risk Management & Position Sizing
 
 ### Files: `signalpilot/risk/risk_manager.py`, `position_sizer.py`
 
@@ -1078,7 +1241,92 @@ class FinalSignal:
 
 ---
 
-## 12. Step 11 — Capital Allocation
+## 14. Step 10.5 — Circuit Breaker Gate (Phase 3)
+
+### File: `signalpilot/monitor/circuit_breaker.py`
+
+After scoring but before delivery, signals pass through the circuit breaker
+gate. The circuit breaker protects against cascading losses by halting all
+new signal generation after a configurable number of stop-loss exits in a
+single trading day.
+
+#### How It Works
+
+- Tracks daily stop-loss count via the `on_sl_hit()` callback wired from
+  ExitMonitor
+- When `sl_count >= sl_limit` (default 3): activates, halting all new
+  signals for the rest of the day
+- Sends a Telegram alert: "Circuit breaker activated after N stop-losses"
+- Logs activation to the `circuit_breaker_log` table
+- Can be overridden via the `OVERRIDE` Telegram command or the dashboard API
+- Resets daily at the start of scanning (9:15 AM)
+
+#### State
+
+```python
+_daily_sl_count: int = 0
+_is_active: bool = False
+_overridden: bool = False
+```
+
+#### Key Methods
+
+| Method | Description |
+|--------|-------------|
+| `on_sl_hit()` | Increment SL count; activate if threshold reached |
+| `is_active` | Property: `True` if circuit breaker has tripped |
+| `is_overridden` | Property: `True` if user manually overrode |
+| `override()` | Set `_overridden = True`, log override to DB |
+| `reset()` | Reset all state for new trading day |
+
+---
+
+## 15. Step 10.6 — Adaptive Strategy Management (Phase 3)
+
+### File: `signalpilot/monitor/adaptive_manager.py`
+
+The `AdaptiveManager` adjusts strategy behavior based on recent performance.
+It operates at the per-strategy level, tracking consecutive losses and
+trailing win rates to automatically throttle or pause underperforming
+strategies.
+
+#### Adaptation Levels (Per Strategy)
+
+| Level | Trigger | Effect |
+|-------|---------|--------|
+| `NORMAL` | Default / win resets | Full signal generation |
+| `REDUCED` | 3 consecutive losses | Signals generated but flagged as reduced confidence |
+| `PAUSED` | 5 consecutive losses | Strategy temporarily disabled |
+
+#### `on_trade_exit()` Flow
+
+1. If loss: increment `consecutive_losses`, reset `consecutive_wins`
+2. If `consecutive_losses >= pause_threshold` (5): transition to `PAUSED`,
+   log to `adaptation_log` table, send Telegram alert
+3. Elif `consecutive_losses >= throttle_threshold` (3): transition to
+   `REDUCED`, log, alert
+4. If win: reset `consecutive_losses`, if strategy was `REDUCED` or `PAUSED`
+   then transition back to `NORMAL`
+
+#### Trailing Performance Check
+
+`check_trailing_performance()` is called during the weekly rebalance job:
+
+- 5-day win rate < 35%: warning alert sent via Telegram
+- 10-day win rate < 30%: auto-pause recommendation sent
+
+#### `should_allow_signal(strategy_name)`
+
+Returns `True` if the strategy is `NORMAL` or `REDUCED`, `False` if `PAUSED`.
+This method is called in the scan loop to filter out signals from paused
+strategies before delivery.
+
+All state changes are logged to the `adaptation_log` table with event type,
+old weight, new weight, and details.
+
+---
+
+## 16. Step 11 — Capital Allocation
 
 ### File: `signalpilot/risk/capital_allocator.py`
 
@@ -1128,14 +1376,14 @@ recommendations to Telegram.
 
 ---
 
-## 13. Step 12 — Database Persistence
+## 17. Step 12 — Database Persistence
 
 ### File: `signalpilot/db/database.py`
 
 SQLite with **WAL mode** and **foreign keys** enabled via pragma. Uses
 `aiosqlite` with `Row` factory for named column access.
 
-### Five Tables
+### Eight Tables (5 core + 3 Phase 3)
 
 #### `signals` table
 
@@ -1244,6 +1492,70 @@ CREATE TABLE vwap_cooldown (
 `gap_go_enabled`, `orb_enabled`, `vwap_enabled` to user_config) and creates
 the `strategy_performance` and `vwap_cooldown` tables.
 
+#### `hybrid_scores` table (Phase 3)
+
+```sql
+CREATE TABLE hybrid_scores (
+    id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+    signal_id               INTEGER NOT NULL REFERENCES signals(id),
+    composite_score         REAL NOT NULL DEFAULT 0.0,
+    strategy_strength_score REAL NOT NULL DEFAULT 0.0,
+    win_rate_score          REAL NOT NULL DEFAULT 0.0,
+    risk_reward_score       REAL NOT NULL DEFAULT 0.0,
+    confirmation_bonus      REAL NOT NULL DEFAULT 0.0,
+    confirmed_by            TEXT,
+    confirmation_level      TEXT NOT NULL DEFAULT 'single',
+    position_size_multiplier REAL NOT NULL DEFAULT 1.0,
+    created_at              TEXT
+);
+```
+
+#### `circuit_breaker_log` table (Phase 3)
+
+```sql
+CREATE TABLE circuit_breaker_log (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    date            TEXT NOT NULL,
+    sl_count        INTEGER NOT NULL DEFAULT 0,
+    triggered_at    TEXT,
+    resumed_at      TEXT,
+    manual_override INTEGER NOT NULL DEFAULT 0,
+    override_at     TEXT
+);
+```
+
+#### `adaptation_log` table (Phase 3)
+
+```sql
+CREATE TABLE adaptation_log (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    date        TEXT NOT NULL,
+    strategy    TEXT NOT NULL,
+    event_type  TEXT NOT NULL,
+    details     TEXT NOT NULL DEFAULT '',
+    old_weight  REAL,
+    new_weight  REAL,
+    created_at  TEXT
+);
+```
+
+#### Phase 3 Columns Added to Existing Tables
+
+The Phase 3 migration adds new columns to existing tables:
+
+- **`signals` table:** `composite_score`, `confirmation_level`, `confirmed_by`,
+  `position_size_multiplier`, `adaptation_status`
+- **`user_config` table:** `circuit_breaker_limit`, `confidence_boost_enabled`,
+  `adaptive_learning_enabled`, `auto_rebalance_enabled`, `adaptation_mode`
+
+#### Phase 3 Migration
+
+`DatabaseManager._run_phase3_migration()` is idempotent, following the same
+pattern as the Phase 2 migration. It uses `PRAGMA table_info()` to check
+column existence before adding new columns to `signals` and `user_config`,
+and creates the `hybrid_scores`, `circuit_breaker_log`, and `adaptation_log`
+tables.
+
 ### Signal Status Lifecycle
 
 Valid statuses: `frozenset({"sent", "taken", "expired", "paper", "position_full"})`
@@ -1307,7 +1619,7 @@ Valid statuses: `frozenset({"sent", "taken", "expired", "paper", "position_full"
 
 ---
 
-## 14. Step 13 — Telegram Delivery
+## 18. Step 13 — Telegram Delivery
 
 ### Files: `signalpilot/telegram/bot.py`, `formatters.py`
 
@@ -1370,7 +1682,7 @@ from signal generation time.
 
 ---
 
-## 15. Step 14 — Exit Monitoring
+## 19. Step 14 — Exit Monitoring
 
 ### File: `signalpilot/monitor/exit_monitor.py`
 
@@ -1502,7 +1814,7 @@ if move_pct >= trail_trigger_pct:
 
 ---
 
-## 16. Step 15 — Telegram Commands (User Interaction)
+## 20. Step 15 — Telegram Commands (User Interaction)
 
 ### File: `signalpilot/telegram/handlers.py`
 
@@ -1512,13 +1824,17 @@ handler functions. All commands are case-insensitive.
 | Command | Regex Pattern | Action |
 |---------|--------------|--------|
 | `TAKEN [FORCE] [id]` | `(?i)^/?taken(?:\s+force)?(?:\s+(\d+))?$` | Mark a signal as a trade (optionally by signal ID); FORCE overrides position limit |
-| `STATUS` | `(?i)^status$` | Show active signals and open trades with live P&L |
-| `JOURNAL` | `(?i)^journal$` | Display performance metrics (win rate, P&L, risk-reward) |
+| `STATUS` | `(?i)^status$` | Show active signals, open trades with live P&L, and circuit breaker status |
+| `JOURNAL` | `(?i)^journal$` | Display performance metrics with per-strategy breakdown (win rate, P&L, risk-reward) |
 | `CAPITAL <amt>` | `(?i)^capital\s+\d+(?:\.\d+)?$` | Update total trading capital |
 | `PAUSE <strat>` | `(?i)^pause\s+\w+$` | Disable a strategy (GAP/ORB/VWAP) |
 | `RESUME <strat>` | `(?i)^resume\s+\w+$` | Re-enable a paused strategy |
 | `ALLOCATE` | `(?i)^allocate` | Show/set capital allocation (AUTO or manual) |
 | `STRATEGY` | `(?i)^strategy$` | Show 30-day per-strategy performance breakdown |
+| `OVERRIDE` | `(?i)^override$` | Override circuit breaker, resume signals (requires confirmation) |
+| `SCORE <sym>` | `(?i)^score\s+\w+$` | Show composite score breakdown for a symbol's latest signal |
+| `ADAPT` | `(?i)^adapt$` | Show per-strategy adaptation status (normal/throttled/paused) |
+| `REBALANCE` | `(?i)^rebalance$` | Trigger immediate capital rebalance across strategies |
 | `HELP` | `(?i)^help$` | List all commands |
 
 #### TAKEN Flow
@@ -1600,9 +1916,37 @@ _STRATEGY_MAP = {
 | `ALLOCATE AUTO` | Re-enable automatic expectancy-weighted allocation |
 | `ALLOCATE GAP 40 ORB 20 VWAP 20` | Manual allocation (total must be <= 80%) |
 
+#### Phase 3 Commands
+
+**OVERRIDE** — Circuit Breaker Override
+
+Resets the circuit breaker and resumes signal generation. The bot asks for
+confirmation before proceeding. Once confirmed, sets `_overridden = True` on
+the circuit breaker instance and logs the override to the
+`circuit_breaker_log` table.
+
+**SCORE \<symbol\>** — Composite Score Breakdown
+
+Shows the composite score breakdown for the latest signal of the given
+symbol, including all four factor scores (strategy strength, win rate,
+risk-reward, confirmation bonus), the final composite score, star rating,
+and confirmation level.
+
+**ADAPT** — Adaptation Status
+
+Displays the current adaptation level for each strategy (`NORMAL`,
+`REDUCED`, or `PAUSED`), along with the consecutive loss count and trailing
+win rate statistics.
+
+**REBALANCE** — Immediate Capital Rebalance
+
+Triggers an immediate capital rebalance across strategies (the same logic
+that runs weekly on Sundays at 18:00). Recalculates expectancy-weighted
+allocations and sends the updated allocation summary.
+
 ---
 
-## 17. Step 16 — Daily Wind-Down & Summary
+## 21. Step 16 — Daily Wind-Down & Summary
 
 ### Wind-Down Phase (14:30-15:35)
 
@@ -1643,7 +1987,7 @@ Cumulative P&L is calculated as:
 
 ---
 
-## 18. Step 17 — Shutdown & Crash Recovery
+## 22. Step 17 — Shutdown & Crash Recovery
 
 ### Graceful Shutdown
 
@@ -1700,7 +2044,56 @@ signal generation after a mid-day crash.
 
 ---
 
-## 19. Data Model Chain
+## 23. Step 18 — Dashboard (Phase 3)
+
+### Files: `signalpilot/dashboard/` (backend), `dashboard/` (frontend)
+
+The web dashboard provides a visual interface for monitoring and managing
+SignalPilot. It runs alongside the main application when `dashboard_enabled`
+is `True` in configuration.
+
+### Backend — FastAPI
+
+- `create_dashboard_app(db_path, write_connection)` factory creates the
+  FastAPI application
+- Uses a separate read-only DB connection for queries, shared write
+  connection for mutations
+- CORS enabled for localhost development
+
+### API Routes
+
+| Prefix | Module | Endpoints |
+|--------|--------|-----------|
+| `/api/signals` | `signals.py` | GET /live, GET /history |
+| `/api/trades` | `trades.py` | GET /, GET /export (CSV download) |
+| `/api/performance` | `performance.py` | GET /equity-curve, /daily-pnl, /win-rate, /monthly |
+| `/api/strategies` | `strategies.py` | GET /comparison, /confirmed, /pnl-series |
+| `/api/allocation` | `allocation.py` | GET /current, GET /history, POST /override, POST /reset |
+| `/api/settings` | `settings.py` | GET /, PUT /, PUT /strategies |
+| `/api/circuit-breaker` | `circuit_breaker.py` | GET /, POST /override, GET /history |
+| `/api/adaptation` | `adaptation.py` | GET /status, GET /log |
+
+### Frontend — React + TypeScript
+
+- **Build tool:** Vite
+- **Styling:** Tailwind CSS
+- **Data fetching:** React Query with 30-second polling for live data
+- **Routing:** React Router with lazy-loaded routes
+
+#### Pages
+
+| Page | Description |
+|------|-------------|
+| Live Signals | Real-time view of active signals with current prices and P&L |
+| Trade Journal | Searchable/filterable trade history with CSV export |
+| Performance Charts | Equity curve, daily P&L bar chart, win rate trend, monthly breakdown |
+| Strategy Comparison | Side-by-side strategy metrics, confirmed signal analysis |
+| Capital Allocation | Current allocation pie chart, allocation history, manual override controls |
+| Settings | Configuration editor, strategy enable/disable toggles, circuit breaker controls |
+
+---
+
+## 24. Data Model Chain
 
 The journey of a signal from detection to database:
 
@@ -1714,20 +2107,41 @@ CandidateSignal          <-- produced by GapAndGoStrategy / ORBStrategy / VWAPRe
     v
   [DuplicateChecker]     <-- filter: active trades + same-day signals
     v
+  [ConfidenceDetector]   <-- (Phase 3) produces ConfirmationResult (level, confirmed_by, multiplier)
+    v
+  [CompositeScorer]      <-- (Phase 3) produces CompositeScoreResult (composite, factor scores)
+    v
 RankedSignal             <-- produced by SignalRanker
     | candidate, composite_score, rank (1-N), signal_strength (1-5 stars)
+    v
+  [CircuitBreaker]       <-- (Phase 3) gate: blocks signals if SL limit exceeded
+    v
+  [AdaptiveManager]      <-- (Phase 3) filter: blocks signals from paused strategies
     v
 FinalSignal              <-- produced by RiskManager
     | ranked_signal, quantity, capital_required, expires_at
     v
-SignalRecord             <-- persisted to `signals` table (18 fields)
+SignalRecord             <-- persisted to `signals` table
     | id, date, symbol, strategy, entry_price, stop_loss, T1, T2,
     | quantity, capital_required, signal_strength, gap_pct, volume_ratio,
     | reason, created_at, expires_at, status, setup_type, strategy_specific_score
+    | + Phase 3: composite_score, confirmation_level, confirmed_by,
+    |   position_size_multiplier, adaptation_status
+    v
+HybridScoreRecord        <-- (Phase 3) persisted to `hybrid_scores` table
+    | signal_id, composite_score, strategy_strength_score, win_rate_score,
+    | risk_reward_score, confirmation_bonus, confirmed_by, confirmation_level,
+    | position_size_multiplier
     v
 TradeRecord              <-- created when user replies TAKEN (15 fields)
     | signal_id, date, symbol, strategy, entry_price, stop_loss, T1, T2,
     | quantity, taken_at, exit_price, pnl_amount, pnl_pct, exit_reason, exited_at
+
+CircuitBreakerRecord     <-- (Phase 3) persisted to `circuit_breaker_log` table
+    | date, sl_count, triggered_at, resumed_at, manual_override, override_at
+
+AdaptationLogRecord      <-- (Phase 3) persisted to `adaptation_log` table
+    | date, strategy, event_type, details, old_weight, new_weight
 ```
 
 ### All Dataclasses
@@ -1756,6 +2170,11 @@ TradeRecord              <-- created when user replies TAKEN (15 fields)
 | `OpeningRange` | `market_data_store.py` | range_high, range_low, locked, range_size_pct |
 | `VWAPState` | `market_data_store.py` | cumulative_price_volume, cumulative_volume, current_vwap |
 | `Candle15Min` | `market_data_store.py` | symbol, OHLCV, start_time, end_time, is_complete |
+| `ConfirmationResult` | `ranking/confidence.py` | symbol, level (single/double/triple), confirmed_by, multiplier |
+| `CompositeScoreResult` | `ranking/composite_scorer.py` | composite_score, strategy_strength, win_rate, risk_reward, confirmation_bonus |
+| `HybridScoreRecord` | `db/models.py` | signal_id, composite_score, factor scores, confirmation details |
+| `CircuitBreakerRecord` | `db/models.py` | date, sl_count, triggered_at, resumed_at, manual_override |
+| `AdaptationLogRecord` | `db/models.py` | date, strategy, event_type, details, old_weight, new_weight |
 
 ### Enums
 
@@ -1764,10 +2183,12 @@ TradeRecord              <-- created when user replies TAKEN (15 fields)
 | `SignalDirection` | `BUY`, `SELL` |
 | `ExitType` | `SL_HIT`, `T1_HIT`, `T2_HIT`, `TRAILING_SL_HIT`, `TIME_EXIT` |
 | `StrategyPhase` | `PRE_MARKET`, `OPENING`, `ENTRY_WINDOW`, `CONTINUOUS`, `WIND_DOWN`, `POST_MARKET` |
+| `ConfirmationLevel` | `SINGLE`, `DOUBLE`, `TRIPLE` |
+| `AdaptationLevel` | `NORMAL`, `REDUCED`, `PAUSED` |
 
 ---
 
-## 20. Logging & Observability
+## 25. Logging & Observability
 
 ### Files: `signalpilot/utils/logger.py`, `log_context.py`
 
@@ -1833,7 +2254,7 @@ enabled strategy count, WebSocket connection status, and candidate count.
 
 ---
 
-## 21. Rate Limiting & Retry
+## 26. Rate Limiting & Retry
 
 ### Token Bucket Rate Limiter
 
@@ -1887,7 +2308,7 @@ async def some_api_call():
 
 ---
 
-## 22. Complete Scan Loop Iteration
+## 27. Complete Scan Loop Iteration
 
 ### File: `signalpilot/scheduler/lifecycle.py` — `_scan_loop()`
 
@@ -1911,9 +2332,29 @@ WHILE scanning == True:
   |   |-- e. IF candidates AND duplicate_checker:
   |   |     candidates = await duplicate_checker.filter_duplicates(candidates, today)
   |   |
+  |   |-- e.5 (Phase 3) Confirmation detection:
+  |   |     confirmations = await confidence_detector.detect_confirmations(all_candidates, now)
+  |   |
   |   |-- f. IF candidates:
   |   |     ranked = ranker.rank(candidates)
+  |   |
+  |   |     f.5 (Phase 3) Composite scoring:
+  |   |       composite_scores = {}
+  |   |       FOR candidate in unique_candidates:
+  |   |         result = await composite_scorer.score(candidate, confirmations.get(symbol))
+  |   |         composite_scores[symbol] = result
+  |   |
   |   |     active_count = await trade_repo.get_active_trade_count()
+  |   |
+  |   |     f.6 (Phase 3) Circuit breaker check:
+  |   |       IF circuit_breaker.is_active AND NOT circuit_breaker.is_overridden:
+  |   |         skip all signals, log "Circuit breaker active"
+  |   |
+  |   |     f.7 (Phase 3) Adaptive filter:
+  |   |       FOR signal in ranked_signals:
+  |   |         IF NOT adaptive_manager.should_allow_signal(signal.strategy_name):
+  |   |           filter out signal
+  |   |
   |   |     final_signals = risk_manager.filter_and_size(ranked, config, active_count)
   |   |
   |   |     g. FOR each signal in final_signals:
@@ -1921,6 +2362,7 @@ WHILE scanning == True:
   |   |       |-- is_paper = _is_paper_mode(signal, app_config)
   |   |       |-- IF is_paper: record.status = "paper"
   |   |       |-- signal_id = await signal_repo.insert_signal(record)
+  |   |       |-- (Phase 3) await hybrid_score_repo.insert_score(HybridScoreRecord(...))
   |   |       +-- await bot.send_signal(signal, is_paper)
   |   |
   |   +-- h. Heartbeat every 60 cycles (~1 min)
@@ -1946,11 +2388,11 @@ WHILE scanning == True:
 
 ---
 
-## 23. Summary: A Complete Trading Day
+## 28. Summary: A Complete Trading Day
 
 ```
 08:00  App boots --> AppConfig loaded, logging configured
-08:00  create_app() wires 20+ components
+08:00  create_app() wires 30+ components (incl. Phase 3 intelligence layer)
 08:00  SmartAPIAuthenticator.authenticate() (TOTP-based 2FA)
 08:01  InstrumentManager.load() (Nifty 500 from CSV)
 08:01  historical.fetch_previous_day_data()    <-- 499 stocks, batches of 3
@@ -1959,12 +2401,15 @@ WHILE scanning == True:
 08:20  ConfigRepository.initialize_default()
 08:20  bot.start() --> Telegram polling begins
 08:20  MarketScheduler.start() --> 9 cron jobs registered
+08:20  (Phase 3) Dashboard starts on configured port if dashboard_enabled
 
 09:00  [CRON] send_pre_market_alert()
          --> "Signals coming shortly after 9:15 AM"
 
 09:15  [CRON] start_scanning()
          |   _reset_session() --> clear intraday data, reset strategies
+         |   (Phase 3) circuit_breaker.reset() --> daily SL counter reset
+         |   (Phase 3) adaptive_manager daily state refresh
          |   websocket.connect() --> subscribe all 500 tokens (Mode 3)
          +-> _scan_loop() starts (every 1 second)
                |
@@ -1991,16 +2436,28 @@ WHILE scanning == True:
                |
                +-- (every pipeline iteration, all phases):
                |    |-- DuplicateChecker: filter active trades + same-day signals
+               |    |-- (Phase 3) ConfidenceDetector: multi-strategy confirmation
+               |    |     +-- When multiple strategies agree on same stock within
+               |    |         15-min window --> double/triple confirmation detected
+               |    |-- (Phase 3) CompositeScorer: 4-factor hybrid scoring
+               |    |     +-- Composite scores calculated and persisted to hybrid_scores
                |    |-- SignalRanker: score + rank --> RankedSignal (1-5 stars)
+               |    |-- (Phase 3) CircuitBreaker gate: block if SL limit exceeded
+               |    |-- (Phase 3) AdaptiveManager filter: block paused strategies
                |    |-- RiskManager: position limits + sizing --> FinalSignal
                |    |-- Paper mode check (ORB/VWAP)
                |    |-- SignalRepo: INSERT INTO signals
+               |    |-- (Phase 3) HybridScoreRepo: INSERT INTO hybrid_scores
                |    +-- Bot: send_signal() --> Telegram HTML message
                |
                +-- (every tick, all phases 9:15-15:15):
                     ExitMonitor.check_trade() for each active trade:
                       |-- SL/trailing SL hit?  --> persist + alert + stop monitoring
+                      |   +-- (Phase 3) circuit_breaker.on_sl_hit() --> increment counter
+                      |   +-- (Phase 3) adaptive_manager.on_trade_exit() --> track losses
+                      |   +-- IF circuit breaker activates: Telegram alert, signals halted
                       |-- T2 hit?              --> persist + alert + stop monitoring
+                      |   +-- (Phase 3) adaptive_manager.on_trade_exit() --> track wins
                       |-- T1 hit?              --> advisory alert (once)
                       +-- Trailing SL update?  --> advisory alert
 
@@ -2024,5 +2481,8 @@ WHILE scanning == True:
 Sunday 18:00  [CRON] weekly_rebalance()
          --> CapitalAllocator.calculate_allocations()
          --> check_auto_pause() (warn if win_rate < 40% after 10+ trades)
+         --> (Phase 3) AdaptiveManager.check_trailing_performance()
+         |     +-- 5-day win rate < 35%: warning alert
+         |     +-- 10-day win rate < 30%: auto-pause recommendation
          --> Send allocation summary to Telegram
 ```
