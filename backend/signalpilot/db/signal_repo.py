@@ -154,6 +154,15 @@ class SignalRepository:
         row = await cursor.fetchone()
         return self._row_to_record(row) if row else None
 
+    async def get_signal_status(self, signal_id: int) -> str | None:
+        """Return the status of a signal by its ID, or None if not found."""
+        cursor = await self._conn.execute(
+            "SELECT status FROM signals WHERE id = ?",
+            (signal_id,),
+        )
+        row = await cursor.fetchone()
+        return row[0] if row else None
+
     async def get_recent_signals_by_symbol(
         self, symbol: str, since: datetime,
     ) -> list[tuple[str, datetime]]:

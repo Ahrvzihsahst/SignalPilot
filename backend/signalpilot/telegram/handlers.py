@@ -25,34 +25,48 @@ from signalpilot.utils.constants import IST
 logger = logging.getLogger(__name__)
 
 _CAPITAL_PATTERN = re.compile(r"(?i)^capital\s+(\d+(?:\.\d+)?)$")
-_TAKEN_PATTERN = re.compile(r"(?i)^/?taken(?:\s+(\d+))?$")
+_TAKEN_PATTERN = re.compile(r"(?i)^/?taken(?:\s+(force))?(?:\s+(\d+))?$")
 _SCORE_PATTERN = re.compile(r"(?i)^score\s+(\S+)$")
 
 
 async def handle_taken(
     signal_repo,
     trade_repo,
+    config_repo,
     exit_monitor,
     now: datetime | None = None,
     text: str | None = None,
+    signal_action_repo=None,
 ) -> str:
     """Process the TAKEN command.
 
     Finds the latest active signal (or a specific one by ID), creates a
     trade record, starts exit monitoring, and returns a confirmation message.
+
+    Supports ``TAKEN FORCE`` to bypass position limit soft-blocks.
+    When ``signal_action_repo`` is provided, records the action for analytics.
     """
     now = now or datetime.now(IST)
 
-    # Parse optional signal ID from command text
+    # Parse optional FORCE flag and signal ID from command text
     requested_id: int | None = None
+    force: bool = False
     if text is not None:
         match = _TAKEN_PATTERN.match(text.strip())
-        if match and match.group(1):
-            requested_id = int(match.group(1))
+        if match:
+            if match.group(1):
+                force = True
+            if match.group(2):
+                requested_id = int(match.group(2))
 
     if requested_id is not None:
         signal: SignalRecord | None = await signal_repo.get_active_signal_by_id(requested_id, now)
         if signal is None:
+            # Check if signal was skipped via button
+            if hasattr(signal_repo, "get_signal_status"):
+                status = await signal_repo.get_signal_status(requested_id)
+                if status == "skipped":
+                    return f"Signal {requested_id} was already skipped."
             logger.warning("TAKEN %d: no active signal with that ID", requested_id)
             return f"No active signal with ID {requested_id}."
     else:
@@ -64,6 +78,26 @@ async def handle_taken(
     if signal.expires_at is not None and signal.expires_at <= now:
         logger.warning("TAKEN command received but signal %d (%s) has expired", signal.id, signal.symbol)
         return "Signal has expired and is no longer valid."
+
+    # Position limit check (soft-block unless FORCE)
+    if not force and config_repo is not None:
+        try:
+            user_config = await config_repo.get_user_config()
+            if user_config is not None:
+                max_pos = getattr(user_config, "max_positions", None)
+                if max_pos is not None:
+                    active_count = await trade_repo.get_active_trade_count()
+                    if active_count >= max_pos:
+                        logger.warning(
+                            "TAKEN blocked: %d/%d positions filled",
+                            active_count, max_pos,
+                        )
+                        return (
+                            f"Position limit reached ({active_count}/{max_pos}). "
+                            f"Use TAKEN FORCE to override."
+                        )
+        except Exception:
+            logger.debug("Could not check position limit", exc_info=True)
 
     trade = TradeRecord(
         signal_id=signal.id,
@@ -83,6 +117,19 @@ async def handle_taken(
     await signal_repo.update_status(signal.id, "taken")
 
     exit_monitor.start_monitoring(trade)
+
+    # Record signal action for analytics
+    if signal_action_repo is not None:
+        try:
+            await signal_action_repo.insert_action(
+                SignalActionRecord(
+                    signal_id=signal.id,
+                    action="taken",
+                    acted_at=now,
+                )
+            )
+        except Exception:
+            logger.debug("Failed to record signal action", exc_info=True)
 
     logger.info("Trade logged for %s (signal_id=%d, trade_id=%d)", signal.symbol, signal.id, trade_id)
     return f"Trade logged. Tracking {signal.symbol}."
@@ -530,7 +577,7 @@ async def handle_help() -> str:
     return (
         "<b>SignalPilot Commands</b>\n"
         "\n"
-        "<b>TAKEN [id]</b> - Log a signal as a trade (latest or by ID)\n"
+        "<b>TAKEN [FORCE] [id]</b> - Log a signal as a trade (latest or by ID)\n"
         "<b>STATUS</b> - View active signals and open trades\n"
         "<b>JOURNAL</b> - View trading performance summary\n"
         "<b>CAPITAL &lt;amount&gt;</b> - Update trading capital\n"
@@ -544,7 +591,9 @@ async def handle_help() -> str:
         "<b>OVERRIDE CIRCUIT</b> - Override circuit breaker\n"
         "<b>WATCHLIST</b> - View active watchlist\n"
         "<b>UNWATCH &lt;symbol&gt;</b> - Remove from watchlist\n"
-        "<b>HELP</b> - Show this help message"
+        "<b>HELP</b> - Show this help message\n"
+        "\n"
+        "Tap buttons below each signal to quickly TAKEN/SKIP/WATCH."
     )
 
 
