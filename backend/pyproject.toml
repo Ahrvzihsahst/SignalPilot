@@ -3,7 +3,6 @@ name = "signalpilot"
 version = "0.1.0"
 description = "Intraday signal generation tool for Indian equity markets (NSE)"
 requires-python = ">=3.11"
-readme = "README.md"
 
 dependencies = [
     "smartapi-python>=1.5",

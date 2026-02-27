@@ -209,5 +209,12 @@ __marimo__/
 # Database
 *.db
 
+# Backend-specific
+backend/logs/
+
+# Frontend-specific
+frontend/node_modules/
+frontend/dist/
+
 # Claude
 *.kiro/
