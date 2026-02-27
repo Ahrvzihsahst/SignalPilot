@@ -110,6 +110,7 @@ class DatabaseManager:
         await self.connection.executescript(SCHEMA_SQL)
         await self.connection.commit()
         await self._run_phase2_migration()
+        await self._run_phase4_migration()
 
     async def _run_phase2_migration(self) -> None:
         """Phase 2 idempotent migration: add new columns and tables.
@@ -179,3 +180,44 @@ class DatabaseManager:
 
         await conn.commit()
         logger.info("Phase 2 migration complete")
+
+    async def _run_phase4_migration(self) -> None:
+        """Phase 4 idempotent migration: signal_actions and watchlist tables."""
+        conn = self.connection
+
+        await conn.executescript("""
+            CREATE TABLE IF NOT EXISTS signal_actions (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                signal_id       INTEGER NOT NULL REFERENCES signals(id),
+                action          TEXT    NOT NULL,
+                reason          TEXT,
+                response_time_ms INTEGER,
+                acted_at        TEXT    NOT NULL,
+                message_id      INTEGER
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_signal_actions_signal_id
+                ON signal_actions(signal_id);
+            CREATE INDEX IF NOT EXISTS idx_signal_actions_acted_at
+                ON signal_actions(acted_at);
+
+            CREATE TABLE IF NOT EXISTS watchlist (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol          TEXT    NOT NULL,
+                signal_id       INTEGER REFERENCES signals(id),
+                strategy        TEXT    NOT NULL DEFAULT '',
+                entry_price     REAL    NOT NULL DEFAULT 0.0,
+                added_at        TEXT    NOT NULL,
+                expires_at      TEXT    NOT NULL,
+                triggered_count INTEGER NOT NULL DEFAULT 0,
+                last_triggered_at TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_watchlist_symbol
+                ON watchlist(symbol);
+            CREATE INDEX IF NOT EXISTS idx_watchlist_expires_at
+                ON watchlist(expires_at);
+        """)
+
+        await conn.commit()
+        logger.info("Phase 4 migration complete")

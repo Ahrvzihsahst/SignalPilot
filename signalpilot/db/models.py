@@ -34,6 +34,10 @@ __all__ = [
     "UserConfig",
     # Exit Monitor
     "ExitAlert",
+    # Phase 4: Quick Action Buttons
+    "SignalActionRecord",
+    "WatchlistRecord",
+    "CallbackResult",
     # Performance
     "PerformanceMetrics",
     "DailySummary",
@@ -215,7 +219,8 @@ class SignalRecord:
     reason: str = ""
     created_at: datetime | None = None
     expires_at: datetime | None = None
-    status: str = "sent"        # "sent" | "taken" | "expired" | "paper" | "position_full"
+    # "sent" | "taken" | "expired" | "paper" | "position_full" | "skipped"
+    status: str = "sent"
     setup_type: str | None = None
     strategy_specific_score: float | None = None
 
@@ -272,6 +277,51 @@ class ExitAlert:
     pnl_pct: float
     is_alert_only: bool         # True for T1 advisory, False for actual exits
     trailing_sl_update: float | None = None
+    keyboard_type: str | None = None  # "t1", "t2", "sl_approaching", "near_t2"
+
+
+# ---------------------------------------------------------------------------
+# Phase 4: Quick Action Buttons
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class SignalActionRecord:
+    """Record of a user action on a signal (taken/skip/watch via button or text)."""
+
+    id: int | None = None
+    signal_id: int = 0
+    action: str = ""             # "taken", "skip", "watch"
+    # skip reason code: "no_capital", "low_confidence", "sector", "other"
+    reason: str | None = None
+    response_time_ms: int | None = None
+    acted_at: datetime | None = None
+    message_id: int | None = None
+
+
+@dataclass
+class WatchlistRecord:
+    """A stock on the user's watchlist for re-alert on future signals."""
+
+    id: int | None = None
+    symbol: str = ""
+    signal_id: int | None = None
+    strategy: str = ""
+    entry_price: float = 0.0
+    added_at: datetime | None = None
+    expires_at: datetime | None = None
+    triggered_count: int = 0
+    last_triggered_at: datetime | None = None
+
+
+@dataclass
+class CallbackResult:
+    """Result of processing an inline keyboard callback."""
+
+    answer_text: str = ""
+    success: bool = True
+    status_line: str | None = None
+    new_keyboard: object | None = None  # InlineKeyboardMarkup or None
 
 
 # ---------------------------------------------------------------------------

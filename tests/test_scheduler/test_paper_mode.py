@@ -200,7 +200,7 @@ class TestScanLoopPaperMode:
         assert record.status == "paper"
 
         # Verify send_signal was called with is_paper=True
-        app._bot.send_signal.assert_awaited_once_with(signal, is_paper=True, signal_id=1)
+        app._bot.send_signal.assert_awaited_once_with(signal, is_paper=True, signal_id=1, is_watchlisted=False)
 
     async def test_gap_go_signal_gets_sent_status(self):
         """Gap & Go signal should always be saved with status='sent'."""
@@ -234,7 +234,7 @@ class TestScanLoopPaperMode:
         assert record.status == "sent"
 
         # Verify send_signal was called with is_paper=False
-        app._bot.send_signal.assert_awaited_once_with(signal, is_paper=False, signal_id=1)
+        app._bot.send_signal.assert_awaited_once_with(signal, is_paper=False, signal_id=1, is_watchlisted=False)
 
     async def test_orb_paper_mode_false_gets_sent_status(self):
         """ORB signal with paper_mode=False should be saved with status='sent'."""
@@ -265,7 +265,7 @@ class TestScanLoopPaperMode:
         insert_call = app._signal_repo.insert_signal.call_args
         record = insert_call[0][0]
         assert record.status == "sent"
-        app._bot.send_signal.assert_awaited_once_with(signal, is_paper=False, signal_id=1)
+        app._bot.send_signal.assert_awaited_once_with(signal, is_paper=False, signal_id=1, is_watchlisted=False)
 
     async def test_vwap_paper_signal_gets_paper_status(self):
         """VWAP Reversal signal in paper mode should be saved with status='paper'."""
@@ -296,4 +296,4 @@ class TestScanLoopPaperMode:
         insert_call = app._signal_repo.insert_signal.call_args
         record = insert_call[0][0]
         assert record.status == "paper"
-        app._bot.send_signal.assert_awaited_once_with(signal, is_paper=True, signal_id=1)
+        app._bot.send_signal.assert_awaited_once_with(signal, is_paper=True, signal_id=1, is_watchlisted=False)

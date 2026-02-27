@@ -50,10 +50,15 @@ async def create_app(config: AppConfig) -> SignalPilotApp:
     connection = db.connection
 
     # --- Repositories ---
+    from signalpilot.db.signal_action_repo import SignalActionRepository
+    from signalpilot.db.watchlist_repo import WatchlistRepository
+
     signal_repo = SignalRepository(connection)
     trade_repo = TradeRepository(connection)
     config_repo = ConfigRepository(connection)
     metrics_calculator = MetricsCalculator(connection)
+    signal_action_repo = SignalActionRepository(connection)
+    watchlist_repo = WatchlistRepository(connection)
 
     # --- Data layer (no DB deps) ---
     authenticator = SmartAPIAuthenticator(config)
@@ -175,6 +180,8 @@ async def create_app(config: AppConfig) -> SignalPilotApp:
         metrics_calculator=metrics_calculator,
         exit_monitor=exit_monitor,
         get_current_prices=_get_current_prices,
+        signal_action_repo=signal_action_repo,
+        watchlist_repo=watchlist_repo,
     )
     bot_ref[0] = bot  # complete the circular reference
 
@@ -211,6 +218,8 @@ async def create_app(config: AppConfig) -> SignalPilotApp:
         capital_allocator=capital_allocator,
         strategy_performance_repo=strategy_performance_repo,
         app_config=config,
+        watchlist_repo=watchlist_repo,
+        signal_action_repo=signal_action_repo,
     )
 
 

@@ -134,7 +134,7 @@ def test_signal_message_contains_all_fields() -> None:
     assert "Gap & Go" in msg
     assert "Gap up 4.2%" in msg
     assert "10:05 AM" in msg  # expires_at
-    assert "Reply TAKEN" in msg
+    assert "Tap a button below" in msg
 
 
 def test_signal_message_with_signal_id() -> None:
@@ -142,7 +142,7 @@ def test_signal_message_with_signal_id() -> None:
     signal = _make_final_signal()
     msg = format_signal_message(signal, signal_id=42)
     assert "Signal ID: #42" in msg
-    assert "Reply TAKEN 42 to log this trade" in msg
+    assert "Tap a button below or reply TAKEN 42" in msg
 
 
 def test_signal_message_without_signal_id() -> None:
@@ -150,7 +150,7 @@ def test_signal_message_without_signal_id() -> None:
     signal = _make_final_signal()
     msg = format_signal_message(signal)
     assert "Signal ID:" not in msg
-    assert "Reply TAKEN to log this trade" in msg
+    assert "Tap a button below or reply TAKEN" in msg
 
 
 def test_signal_message_risk_pct() -> None:

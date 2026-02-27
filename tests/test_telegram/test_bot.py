@@ -99,7 +99,7 @@ async def test_send_signal_with_signal_id() -> None:
     mock_send.assert_called_once()
     text = mock_send.call_args.kwargs["text"]
     assert "Signal ID: #42" in text
-    assert "Reply TAKEN 42 to log this trade" in text
+    assert "Tap a button below or reply TAKEN 42" in text
 
 
 @pytest.mark.asyncio
@@ -116,7 +116,7 @@ async def test_send_signal_without_signal_id() -> None:
     mock_send.assert_called_once()
     text = mock_send.call_args.kwargs["text"]
     assert "Signal ID:" not in text
-    assert "Reply TAKEN to log this trade" in text
+    assert "Tap a button below or reply TAKEN" in text
 
 
 @pytest.mark.asyncio
