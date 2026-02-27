@@ -208,6 +208,9 @@ __marimo__/
 
 # Database
 *.db
+*.db-shm
+*.db-wal
+*.db-journal
 
 # Claude
 *.kiro/
