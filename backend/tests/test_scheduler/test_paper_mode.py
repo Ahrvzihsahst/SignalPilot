@@ -15,49 +15,12 @@ from signalpilot.db.models import (
 from signalpilot.scheduler.lifecycle import SignalPilotApp
 from signalpilot.utils.constants import IST
 from signalpilot.utils.market_calendar import StrategyPhase
+from tests.test_integration.conftest import make_mock_strategy
+from tests.test_scheduler.conftest import make_scheduler_app
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _make_mock_strategy(evaluate_return=None, active_phases=None, name="Gap & Go"):
-    """Create a mock strategy with required attributes for the scan loop."""
-    mock = AsyncMock(evaluate=AsyncMock(return_value=evaluate_return or []))
-    mock.name = name
-    mock.active_phases = active_phases or [
-        StrategyPhase.OPENING,
-        StrategyPhase.ENTRY_WINDOW,
-    ]
-    return mock
-
-
-def _make_app(**overrides) -> SignalPilotApp:
-    """Create a SignalPilotApp with all mocked dependencies."""
-    defaults = {
-        "db": AsyncMock(),
-        "signal_repo": AsyncMock(),
-        "trade_repo": AsyncMock(),
-        "config_repo": AsyncMock(),
-        "metrics_calculator": AsyncMock(),
-        "authenticator": AsyncMock(),
-        "instruments": AsyncMock(),
-        "market_data": MagicMock(),
-        "historical": AsyncMock(),
-        "websocket": AsyncMock(),
-        "strategy": _make_mock_strategy(),
-        "ranker": MagicMock(),
-        "risk_manager": MagicMock(),
-        "exit_monitor": MagicMock(
-            check_trade=AsyncMock(return_value=None),
-            trigger_time_exit=AsyncMock(return_value=[]),
-            start_monitoring=MagicMock(),
-        ),
-        "bot": AsyncMock(),
-        "scheduler": MagicMock(),
-    }
-    defaults.update(overrides)
-    return SignalPilotApp(**defaults)
 
 
 def _make_final_signal(symbol: str = "SBIN", strategy_name: str = "Gap & Go") -> FinalSignal:
@@ -92,7 +55,7 @@ def _run_single_scan_iteration(app, signal, user_config):
 
     Returns the SignalRecord that was passed to insert_signal.
     """
-    mock_strategy = _make_mock_strategy(evaluate_return=["candidate1"])
+    mock_strategy = make_mock_strategy(evaluate_return=["candidate1"])
     app._strategies = [mock_strategy]
     app._ranker.rank = MagicMock(return_value=["ranked1"])
     app._config_repo.get_user_config = AsyncMock(return_value=user_config)
@@ -173,7 +136,7 @@ class TestScanLoopPaperMode:
         signal = _make_final_signal(strategy_name="ORB")
         user_config = UserConfig(total_capital=50000.0, max_positions=8)
 
-        app = _make_app(app_config=SimpleNamespace(orb_paper_mode=True, vwap_paper_mode=False))
+        app = make_scheduler_app(app_config=SimpleNamespace(orb_paper_mode=True, vwap_paper_mode=False))
         _run_single_scan_iteration(app, signal, user_config)
 
         call_count = 0
@@ -210,7 +173,7 @@ class TestScanLoopPaperMode:
         signal = _make_final_signal(strategy_name="Gap & Go")
         user_config = UserConfig(total_capital=50000.0, max_positions=8)
 
-        app = _make_app(app_config=SimpleNamespace(orb_paper_mode=True, vwap_paper_mode=True))
+        app = make_scheduler_app(app_config=SimpleNamespace(orb_paper_mode=True, vwap_paper_mode=True))
         _run_single_scan_iteration(app, signal, user_config)
 
         call_count = 0
@@ -247,7 +210,7 @@ class TestScanLoopPaperMode:
         signal = _make_final_signal(strategy_name="ORB")
         user_config = UserConfig(total_capital=50000.0, max_positions=8)
 
-        app = _make_app(app_config=SimpleNamespace(orb_paper_mode=False, vwap_paper_mode=False))
+        app = make_scheduler_app(app_config=SimpleNamespace(orb_paper_mode=False, vwap_paper_mode=False))
         _run_single_scan_iteration(app, signal, user_config)
 
         call_count = 0
@@ -281,7 +244,7 @@ class TestScanLoopPaperMode:
         signal = _make_final_signal(strategy_name="VWAP Reversal")
         user_config = UserConfig(total_capital=50000.0, max_positions=8)
 
-        app = _make_app(app_config=SimpleNamespace(orb_paper_mode=False, vwap_paper_mode=True))
+        app = make_scheduler_app(app_config=SimpleNamespace(orb_paper_mode=False, vwap_paper_mode=True))
         _run_single_scan_iteration(app, signal, user_config)
 
         call_count = 0

@@ -9,16 +9,10 @@ from signalpilot.utils.constants import IST
 from signalpilot.utils.market_calendar import StrategyPhase
 from tests.test_integration.conftest import (
     make_final_signal_for_strategy,
+    make_mock_strategy,
     make_signal_record,
     make_trade_record,
 )
-
-
-def _make_mock_strategy(name, active_phases, evaluate_return=None):
-    mock = AsyncMock(evaluate=AsyncMock(return_value=evaluate_return or []))
-    mock.name = name
-    mock.active_phases = active_phases
-    return mock
 
 
 async def test_no_new_signals_at_8_active_trades(db, repos):
@@ -37,7 +31,7 @@ async def test_no_new_signals_at_8_active_trades(db, repos):
         )
         await repos["trade_repo"].insert_trade(trade)
 
-    gap_strat = _make_mock_strategy(
+    gap_strat = make_mock_strategy(
         "Gap & Go",
         [StrategyPhase.OPENING, StrategyPhase.ENTRY_WINDOW],
         ["candidate"],
@@ -110,7 +104,7 @@ async def test_one_signal_allowed_at_7_active_trades(db, repos):
     signal = make_final_signal_for_strategy(
         "Gap & Go", symbol="NEWSTOCK", generated_at=now,
     )
-    gap_strat = _make_mock_strategy(
+    gap_strat = make_mock_strategy(
         "Gap & Go",
         [StrategyPhase.OPENING, StrategyPhase.ENTRY_WINDOW],
         ["candidate"],

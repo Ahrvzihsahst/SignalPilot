@@ -142,25 +142,33 @@ def make_trade_record(
     )
 
 
-def _make_default_mock_strategy():
-    """Create a default mock strategy with proper Phase 2 attributes."""
+def make_mock_strategy(name="Gap & Go", active_phases=None, evaluate_return=None):
+    """Create a mock strategy with configurable name, phases, and return value.
+
+    Supports both positional usage (integration tests) and keyword-only
+    usage with defaults (scheduler/pipeline tests).
+    """
     from signalpilot.utils.market_calendar import StrategyPhase
-    mock = AsyncMock(evaluate=AsyncMock(return_value=[]))
-    mock.name = "Gap & Go"
-    mock.active_phases = [StrategyPhase.OPENING, StrategyPhase.ENTRY_WINDOW]
+
+    mock = AsyncMock(evaluate=AsyncMock(return_value=evaluate_return or []))
+    mock.name = name
+    mock.active_phases = active_phases or [
+        StrategyPhase.OPENING,
+        StrategyPhase.ENTRY_WINDOW,
+    ]
     # reset() is synchronous on real strategies
     mock.reset = MagicMock()
     return mock
 
 
-def _make_mock_websocket():
+def make_mock_websocket():
     """Create an AsyncMock websocket with sync methods properly configured."""
     mock = AsyncMock()
     mock.reset_volume_tracking = MagicMock()
     return mock
 
 
-def _make_mock_market_data():
+def make_mock_market_data():
     """Create a MagicMock market_data with async methods that lifecycle calls."""
     mock = MagicMock()
     mock.clear_session = AsyncMock()
@@ -169,7 +177,7 @@ def _make_mock_market_data():
     return mock
 
 
-def _make_mock_historical():
+def make_mock_historical():
     """Create a properly configured mock for HistoricalDataFetcher."""
     mock = AsyncMock()
     mock.fetch_previous_day_data.return_value = {}
@@ -187,10 +195,10 @@ def make_app(db, repos, **overrides) -> SignalPilotApp:
         "metrics_calculator": repos["metrics"],
         "authenticator": AsyncMock(),
         "instruments": AsyncMock(),
-        "market_data": _make_mock_market_data(),
-        "historical": _make_mock_historical(),
-        "websocket": _make_mock_websocket(),
-        "strategy": _make_default_mock_strategy(),
+        "market_data": make_mock_market_data(),
+        "historical": make_mock_historical(),
+        "websocket": make_mock_websocket(),
+        "strategy": make_mock_strategy(),
         "ranker": MagicMock(),
         "risk_manager": MagicMock(),
         "exit_monitor": MagicMock(

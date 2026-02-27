@@ -6,6 +6,7 @@ import aiosqlite
 
 from signalpilot.db.models import HybridScoreRecord
 from signalpilot.utils.constants import IST
+from signalpilot.utils.datetime_utils import parse_ist_datetime
 
 
 class HybridScoreRepository:
@@ -99,11 +100,6 @@ class HybridScoreRepository:
     @staticmethod
     def _row_to_record(row: aiosqlite.Row) -> HybridScoreRecord:
         """Convert a database row to a HybridScoreRecord."""
-        created_at_raw = row["created_at"]
-        created_at = datetime.fromisoformat(created_at_raw) if created_at_raw else None
-        # Ensure IST-aware datetime
-        if created_at is not None and created_at.tzinfo is None:
-            created_at = created_at.replace(tzinfo=IST)
         return HybridScoreRecord(
             id=row["id"],
             signal_id=row["signal_id"],
@@ -115,5 +111,5 @@ class HybridScoreRepository:
             confirmed_by=row["confirmed_by"],
             confirmation_level=row["confirmation_level"],
             position_size_multiplier=row["position_size_multiplier"],
-            created_at=created_at,
+            created_at=parse_ist_datetime(row["created_at"]),
         )

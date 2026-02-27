@@ -8,8 +8,8 @@ from signalpilot.scheduler.lifecycle import SignalPilotApp
 from signalpilot.utils.constants import IST
 from signalpilot.utils.market_calendar import StrategyPhase
 from tests.test_integration.conftest import (
-    _make_mock_historical,
-    _make_mock_market_data,
+    make_mock_historical,
+    make_mock_market_data,
     make_signal_record,
 )
 
@@ -52,7 +52,7 @@ async def test_recovery_reloads_active_trades(db, repos):
         db=db, signal_repo=repos["signal_repo"], trade_repo=repos["trade_repo"],
         config_repo=repos["config_repo"], metrics_calculator=repos["metrics"],
         authenticator=mock_auth, instruments=mock_instruments,
-        market_data=_make_mock_market_data(), historical=_make_mock_historical(),
+        market_data=make_mock_market_data(), historical=make_mock_historical(),
         websocket=mock_websocket,
         strategy=AsyncMock(), ranker=MagicMock(), risk_manager=MagicMock(),
         exit_monitor=mock_exit_monitor, bot=mock_bot, scheduler=mock_scheduler,
@@ -114,7 +114,7 @@ async def test_recovery_during_entry_window_accepts_signals(db, repos):
         db=db, signal_repo=repos["signal_repo"], trade_repo=repos["trade_repo"],
         config_repo=repos["config_repo"], metrics_calculator=repos["metrics"],
         authenticator=AsyncMock(), instruments=AsyncMock(),
-        market_data=_make_mock_market_data(), historical=_make_mock_historical(),
+        market_data=make_mock_market_data(), historical=make_mock_historical(),
         websocket=AsyncMock(),
         strategy=AsyncMock(), ranker=MagicMock(), risk_manager=MagicMock(),
         exit_monitor=mock_exit_monitor, bot=mock_bot, scheduler=mock_scheduler,
@@ -148,7 +148,7 @@ async def test_recovery_during_wind_down_disables_signals(db, repos):
         db=db, signal_repo=repos["signal_repo"], trade_repo=repos["trade_repo"],
         config_repo=repos["config_repo"], metrics_calculator=repos["metrics"],
         authenticator=AsyncMock(), instruments=AsyncMock(),
-        market_data=_make_mock_market_data(), historical=_make_mock_historical(),
+        market_data=make_mock_market_data(), historical=make_mock_historical(),
         websocket=AsyncMock(),
         strategy=AsyncMock(), ranker=MagicMock(), risk_manager=MagicMock(),
         exit_monitor=mock_exit_monitor, bot=mock_bot, scheduler=mock_scheduler,

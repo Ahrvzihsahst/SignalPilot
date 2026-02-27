@@ -7,26 +7,19 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from signalpilot.scheduler.lifecycle import SignalPilotApp
 from signalpilot.utils.constants import IST
 from signalpilot.utils.market_calendar import StrategyPhase
-from tests.test_integration.conftest import make_final_signal_for_strategy
-
-
-def _make_mock_strategy(name, active_phases, evaluate_return=None):
-    mock = AsyncMock(evaluate=AsyncMock(return_value=evaluate_return or []))
-    mock.name = name
-    mock.active_phases = active_phases
-    return mock
+from tests.test_integration.conftest import make_final_signal_for_strategy, make_mock_strategy
 
 
 async def test_paused_orb_not_evaluated(db, repos):
     """When ORB is disabled in user config, it should not be evaluated."""
     now = datetime.now(IST)
 
-    gap_strat = _make_mock_strategy(
+    gap_strat = make_mock_strategy(
         "Gap & Go",
         [StrategyPhase.OPENING, StrategyPhase.ENTRY_WINDOW],
         ["gap_c"],
     )
-    orb_strat = _make_mock_strategy(
+    orb_strat = make_mock_strategy(
         "ORB",
         [StrategyPhase.OPENING, StrategyPhase.ENTRY_WINDOW],
         ["orb_c"],
@@ -86,12 +79,12 @@ async def test_resumed_orb_evaluated(db, repos):
     """When ORB is re-enabled, it should be evaluated again."""
     now = datetime.now(IST)
 
-    gap_strat = _make_mock_strategy(
+    gap_strat = make_mock_strategy(
         "Gap & Go",
         [StrategyPhase.OPENING, StrategyPhase.ENTRY_WINDOW],
         ["gap_c"],
     )
-    orb_strat = _make_mock_strategy(
+    orb_strat = make_mock_strategy(
         "ORB",
         [StrategyPhase.OPENING, StrategyPhase.ENTRY_WINDOW],
         ["orb_c"],
@@ -148,10 +141,10 @@ async def test_resumed_orb_evaluated(db, repos):
 
 async def test_paused_vwap_not_evaluated(db, repos):
     """When VWAP is disabled, it should not be evaluated during CONTINUOUS."""
-    vwap_strat = _make_mock_strategy(
+    vwap_strat = make_mock_strategy(
         "VWAP Reversal", [StrategyPhase.CONTINUOUS], ["vwap_c"],
     )
-    gap_strat = _make_mock_strategy(
+    gap_strat = make_mock_strategy(
         "Gap & Go", [StrategyPhase.OPENING, StrategyPhase.ENTRY_WINDOW],
     )
 

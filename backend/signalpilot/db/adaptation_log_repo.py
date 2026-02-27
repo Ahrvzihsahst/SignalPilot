@@ -6,6 +6,7 @@ import aiosqlite
 
 from signalpilot.db.models import AdaptationLogRecord
 from signalpilot.utils.constants import IST
+from signalpilot.utils.datetime_utils import parse_ist_datetime
 
 
 class AdaptationLogRepository:
@@ -114,10 +115,6 @@ class AdaptationLogRepository:
     @staticmethod
     def _row_to_record(row: aiosqlite.Row) -> AdaptationLogRecord:
         """Convert a database row to an AdaptationLogRecord."""
-        created_at_raw = row["created_at"]
-        created_at = datetime.fromisoformat(created_at_raw) if created_at_raw else None
-        if created_at is not None and created_at.tzinfo is None:
-            created_at = created_at.replace(tzinfo=IST)
         return AdaptationLogRecord(
             id=row["id"],
             date=date.fromisoformat(row["date"]),
@@ -126,5 +123,5 @@ class AdaptationLogRepository:
             details=row["details"],
             old_weight=row["old_weight"],
             new_weight=row["new_weight"],
-            created_at=created_at,
+            created_at=parse_ist_datetime(row["created_at"]),
         )

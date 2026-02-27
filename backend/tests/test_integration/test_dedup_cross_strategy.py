@@ -8,14 +8,7 @@ from signalpilot.monitor.duplicate_checker import DuplicateChecker
 from signalpilot.scheduler.lifecycle import SignalPilotApp
 from signalpilot.utils.constants import IST
 from signalpilot.utils.market_calendar import StrategyPhase
-from tests.test_integration.conftest import make_final_signal_for_strategy, make_signal_record
-
-
-def _make_mock_strategy(name, active_phases, evaluate_return=None):
-    mock = AsyncMock(evaluate=AsyncMock(return_value=evaluate_return or []))
-    mock.name = name
-    mock.active_phases = active_phases
-    return mock
+from tests.test_integration.conftest import make_final_signal_for_strategy, make_mock_strategy, make_signal_record
 
 
 async def test_duplicate_checker_blocks_same_stock_across_strategies(db, repos):
@@ -145,7 +138,7 @@ async def test_dedup_in_scan_loop_suppresses_second_strategy(db, repos):
 
     orb_signal = make_final_signal_for_strategy("ORB", symbol="TCS", generated_at=now)
 
-    orb_strat = _make_mock_strategy(
+    orb_strat = make_mock_strategy(
         "ORB",
         [StrategyPhase.OPENING, StrategyPhase.ENTRY_WINDOW],
         orb_candidates,

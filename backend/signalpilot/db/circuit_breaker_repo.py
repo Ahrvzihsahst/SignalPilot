@@ -5,7 +5,7 @@ from datetime import date, datetime
 import aiosqlite
 
 from signalpilot.db.models import CircuitBreakerRecord
-from signalpilot.utils.constants import IST
+from signalpilot.utils.datetime_utils import parse_ist_datetime
 
 
 class CircuitBreakerRepository:
@@ -98,20 +98,12 @@ class CircuitBreakerRepository:
     def _row_to_record(row: aiosqlite.Row) -> CircuitBreakerRecord:
         """Convert a database row to a CircuitBreakerRecord."""
 
-        def _parse_dt(val: str | None) -> datetime | None:
-            if val is None:
-                return None
-            dt = datetime.fromisoformat(val)
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=IST)
-            return dt
-
         return CircuitBreakerRecord(
             id=row["id"],
             date=date.fromisoformat(row["date"]),
             sl_count=row["sl_count"],
-            triggered_at=_parse_dt(row["triggered_at"]),
-            resumed_at=_parse_dt(row["resumed_at"]),
+            triggered_at=parse_ist_datetime(row["triggered_at"]),
+            resumed_at=parse_ist_datetime(row["resumed_at"]),
             manual_override=bool(row["manual_override"]),
-            override_at=_parse_dt(row["override_at"]),
+            override_at=parse_ist_datetime(row["override_at"]),
         )

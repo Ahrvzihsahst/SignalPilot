@@ -11,15 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from signalpilot.scheduler.lifecycle import SignalPilotApp
 from signalpilot.utils.constants import IST
 from signalpilot.utils.market_calendar import StrategyPhase
-from tests.test_integration.conftest import make_final_signal
-
-
-def _make_mock_strategy(evaluate_return=None, active_phases=None, name="Gap & Go"):
-    """Create a mock strategy with required attributes for the scan loop."""
-    mock = AsyncMock(evaluate=AsyncMock(return_value=evaluate_return or []))
-    mock.name = name
-    mock.active_phases = active_phases or [StrategyPhase.OPENING, StrategyPhase.ENTRY_WINDOW]
-    return mock
+from tests.test_integration.conftest import make_final_signal, make_mock_strategy
 
 
 async def test_valid_signal_stored_and_sent(db, repos):
@@ -30,7 +22,7 @@ async def test_valid_signal_stored_and_sent(db, repos):
     signal = make_final_signal(generated_at=now)
 
     mock_bot = AsyncMock()
-    mock_strategy = _make_mock_strategy(evaluate_return=["candidate"])
+    mock_strategy = make_mock_strategy(evaluate_return=["candidate"])
     mock_ranker = MagicMock(rank=MagicMock(return_value=["ranked"]))
     mock_risk = MagicMock(filter_and_size=MagicMock(return_value=[signal]))
 
@@ -87,7 +79,7 @@ async def test_valid_signal_stored_and_sent(db, repos):
 
 async def test_no_candidates_no_signal(db, repos):
     """Strategy returns empty list. Verify no signals in DB."""
-    mock_strategy = _make_mock_strategy(evaluate_return=[])
+    mock_strategy = make_mock_strategy(evaluate_return=[])
     await repos["config_repo"].initialize_default("123")
 
     app = SignalPilotApp(
@@ -137,7 +129,7 @@ async def test_multiple_signals_all_stored(db, repos):
     ]
 
     mock_bot = AsyncMock()
-    mock_strategy = _make_mock_strategy(evaluate_return=["c1", "c2", "c3"])
+    mock_strategy = make_mock_strategy(evaluate_return=["c1", "c2", "c3"])
     mock_ranker = MagicMock(rank=MagicMock(return_value=["r1", "r2", "r3"]))
     mock_risk = MagicMock(filter_and_size=MagicMock(return_value=final_signals))
 
@@ -189,7 +181,7 @@ async def test_signal_not_generated_outside_active_phases(db, repos):
     """Strategy whose active_phases don't include CONTINUOUS is not evaluated
     during CONTINUOUS phase."""
     # Strategy only active during OPENING/ENTRY_WINDOW
-    mock_strategy = _make_mock_strategy(
+    mock_strategy = make_mock_strategy(
         evaluate_return=["candidate"],
         active_phases=[StrategyPhase.OPENING, StrategyPhase.ENTRY_WINDOW],
     )

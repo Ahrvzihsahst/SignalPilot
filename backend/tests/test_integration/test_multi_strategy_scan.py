@@ -7,15 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from signalpilot.scheduler.lifecycle import SignalPilotApp
 from signalpilot.utils.constants import IST
 from signalpilot.utils.market_calendar import StrategyPhase
-from tests.test_integration.conftest import make_final_signal_for_strategy
-
-
-def _make_mock_strategy(name, active_phases, evaluate_return=None):
-    """Create a mock strategy with Phase 2 attributes."""
-    mock = AsyncMock(evaluate=AsyncMock(return_value=evaluate_return or []))
-    mock.name = name
-    mock.active_phases = active_phases
-    return mock
+from tests.test_integration.conftest import make_final_signal_for_strategy, make_mock_strategy
 
 
 async def test_multi_strategy_all_evaluated_during_opening(db, repos):
@@ -24,17 +16,17 @@ async def test_multi_strategy_all_evaluated_during_opening(db, repos):
     gap_signal = make_final_signal_for_strategy("Gap & Go", symbol="SBIN", generated_at=now)
     orb_signal = make_final_signal_for_strategy("ORB", symbol="TCS", generated_at=now)
 
-    gap_strat = _make_mock_strategy(
+    gap_strat = make_mock_strategy(
         "Gap & Go",
         [StrategyPhase.OPENING, StrategyPhase.ENTRY_WINDOW],
         ["gap_candidate"],
     )
-    orb_strat = _make_mock_strategy(
+    orb_strat = make_mock_strategy(
         "ORB",
         [StrategyPhase.OPENING, StrategyPhase.ENTRY_WINDOW],
         ["orb_candidate"],
     )
-    vwap_strat = _make_mock_strategy(
+    vwap_strat = make_mock_strategy(
         "VWAP Reversal",
         [StrategyPhase.CONTINUOUS],
         ["vwap_candidate"],
@@ -99,13 +91,13 @@ async def test_vwap_evaluated_during_continuous(db, repos):
         setup_type="uptrend_pullback",
     )
 
-    gap_strat = _make_mock_strategy(
+    gap_strat = make_mock_strategy(
         "Gap & Go", [StrategyPhase.OPENING, StrategyPhase.ENTRY_WINDOW],
     )
-    orb_strat = _make_mock_strategy(
+    orb_strat = make_mock_strategy(
         "ORB", [StrategyPhase.OPENING, StrategyPhase.ENTRY_WINDOW],
     )
-    vwap_strat = _make_mock_strategy(
+    vwap_strat = make_mock_strategy(
         "VWAP Reversal", [StrategyPhase.CONTINUOUS], ["vwap_candidate"],
     )
 
@@ -166,12 +158,12 @@ async def test_candidates_merged_across_strategies(db, repos):
         make_final_signal_for_strategy("ORB", symbol="TCS", generated_at=now),
     ]
 
-    gap_strat = _make_mock_strategy(
+    gap_strat = make_mock_strategy(
         "Gap & Go",
         [StrategyPhase.OPENING, StrategyPhase.ENTRY_WINDOW],
         ["gap_c1"],
     )
-    orb_strat = _make_mock_strategy(
+    orb_strat = make_mock_strategy(
         "ORB",
         [StrategyPhase.OPENING, StrategyPhase.ENTRY_WINDOW],
         ["orb_c1"],
