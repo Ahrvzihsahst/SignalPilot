@@ -35,11 +35,10 @@ SignalPilot is a pure intraday signal generation tool for Indian equity markets 
 git clone https://github.com/your-username/SignalPilot.git
 cd SignalPilot
 
-# Create and activate a virtual environment
+# Set up the backend
+cd backend
 python -m venv .venv
 source .venv/bin/activate
-
-# Install with dev dependencies
 pip install -e ".[dev]"
 
 # Configure environment
@@ -47,15 +46,14 @@ cp .env.example .env
 # Edit .env with your Angel One and Telegram credentials
 
 # (Optional) Install dashboard frontend
-cd dashboard
+cd ../frontend
 npm install
 npm run build
-cd ..
 ```
 
 ## Configuration
 
-All configuration is loaded from environment variables or a `.env` file. See [`.env.example`](.env.example) for the full list.
+All configuration is loaded from environment variables or a `.env` file. See [`backend/.env.example`](backend/.env.example) for the full list.
 
 **Required:**
 
@@ -103,14 +101,16 @@ All configuration is loaded from environment variables or a `.env` file. See [`.
 ## Usage
 
 ```bash
-# Run the application
+# Run the application (from backend/ directory)
+cd backend
 python -m signalpilot.main
 ```
 
 To run SignalPilot continuously on EC2 (so it survives SSH disconnection):
 
 ```bash
-# Simplest: nohup + background
+# Simplest: nohup + background (from backend/ directory)
+cd backend
 nohup python -m signalpilot.main > logs/signalpilot.log 2>&1 &
 ```
 
@@ -151,28 +151,32 @@ SignalPilot runs autonomously during market hours:
 ## Architecture
 
 ```
-signalpilot/
-├── config.py             # Pydantic settings (env vars / .env)
-├── main.py               # Entry point and signal handling
-├── data/                 # Data engine (Angel One auth, WebSocket, historical)
-├── strategy/             # Gap & Go, ORB, VWAP Reversal implementations
-├── ranking/              # Multi-factor scoring, composite scorer, confirmation detector
-├── risk/                 # Position sizing, capital allocation, risk filtering
-├── monitor/              # Exit monitor, circuit breaker, adaptive manager, duplicate checker
-├── telegram/             # Bot, message formatters, command handlers
-├── db/                   # SQLite database, repositories, metrics
-│   └── models.py         # Dataclass contracts between all components
-├── scheduler/            # APScheduler jobs and lifecycle orchestrator
-├── dashboard/            # FastAPI dashboard API + Pydantic schemas
-└── utils/                # Constants (IST), market calendar, retry, logger
+backend/
+├── signalpilot/
+│   ├── config.py             # Pydantic settings (env vars / .env)
+│   ├── main.py               # Entry point and signal handling
+│   ├── data/                 # Data engine (Angel One auth, WebSocket, historical)
+│   ├── strategy/             # Gap & Go, ORB, VWAP Reversal implementations
+│   ├── ranking/              # Multi-factor scoring, composite scorer, confirmation detector
+│   ├── risk/                 # Position sizing, capital allocation, risk filtering
+│   ├── monitor/              # Exit monitor, circuit breaker, adaptive manager, duplicate checker
+│   ├── telegram/             # Bot, message formatters, command handlers
+│   ├── db/                   # SQLite database, repositories, metrics
+│   │   └── models.py         # Dataclass contracts between all components
+│   ├── scheduler/            # APScheduler jobs and lifecycle orchestrator
+│   ├── dashboard/            # FastAPI dashboard API + Pydantic schemas
+│   └── utils/                # Constants (IST), market calendar, retry, logger
+├── tests/                    # Python test suite
+├── data/                     # CSV data files (nifty500_list.csv)
+└── pyproject.toml
 
-dashboard/                # React + TypeScript frontend (Vite, Tailwind, React Query)
+frontend/                     # React + TypeScript frontend (Vite, Tailwind, React Query)
 ├── src/
-│   ├── pages/            # LiveSignals, TradeJournal, PerformanceCharts,
-│   │                     # StrategyComparison, CapitalAllocation, Settings
-│   ├── components/       # Shared UI components
-│   ├── api/              # API client hooks
-│   └── types/            # TypeScript type definitions
+│   ├── pages/                # LiveSignals, TradeJournal, PerformanceCharts,
+│   │                         # StrategyComparison, CapitalAllocation, Settings
+│   ├── components/           # Shared UI components
+│   ├── api/                  # API client hooks
+│   └── types/                # TypeScript type definitions
 └── vite.config.ts
 ```
 
@@ -184,7 +188,11 @@ All components are dependency-injected into `SignalPilotApp` (the central orches
 
 ## Development
 
+All development commands should be run from the `backend/` directory:
+
 ```bash
+cd backend
+
 # Run all tests (1060+ tests)
 pytest tests/
 
@@ -254,7 +262,7 @@ main.py (entry point)
             ├─ SignalPilotBot (Telegram)   — delivers signals & handles 13 commands
             └─ Dashboard
                  ├─ FastAPI backend        — REST API (signalpilot/dashboard/)
-                 └─ React frontend         — Vite + Tailwind (dashboard/)
+                 └─ React frontend         — Vite + Tailwind (frontend/)
 ```
 
 ---
