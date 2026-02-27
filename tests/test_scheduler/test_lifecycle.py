@@ -292,7 +292,9 @@ async def test_scan_loop_sends_signal_when_candidates_found() -> None:
         await app._scan_loop()
 
     app._signal_repo.insert_signal.assert_awaited_once()
-    app._bot.send_signal.assert_awaited_once_with(signal, is_paper=False, signal_id=1)
+    app._bot.send_signal.assert_awaited_once_with(
+        signal, is_paper=False, signal_id=1, is_watchlisted=False,
+    )
 
 
 # -- stop_new_signals ----------------------------------------------------------

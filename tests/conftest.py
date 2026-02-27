@@ -20,9 +20,11 @@ from signalpilot.db.models import (
     HistoricalReference,
     Instrument,
     RankedSignal,
+    SignalActionRecord,
     SignalDirection,
     TickData,
     TradeRecord,
+    WatchlistRecord,
 )
 from signalpilot.db.signal_repo import SignalRepository
 from signalpilot.db.trade_repo import TradeRepository
@@ -371,4 +373,38 @@ def sample_vwap_reclaim_candidate():
         reason="VWAP Reversal: reclaim (Higher Risk)",
         generated_at=datetime(2025, 1, 15, 11, 0, tzinfo=IST),
         setup_type="vwap_reclaim",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 Sample Fixtures
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def sample_signal_action():
+    """A SignalActionRecord with realistic values."""
+    return SignalActionRecord(
+        signal_id=1,
+        action="taken",
+        reason=None,
+        response_time_ms=3500,
+        acted_at=datetime(2025, 1, 15, 9, 40, tzinfo=IST),
+        message_id=12345,
+    )
+
+
+@pytest.fixture
+def sample_watchlist_entry():
+    """A WatchlistRecord with 5-day expiry."""
+    added = datetime(2025, 1, 15, 9, 40, tzinfo=IST)
+    return WatchlistRecord(
+        symbol="SBIN",
+        signal_id=None,
+        strategy="Gap & Go",
+        entry_price=104.50,
+        added_at=added,
+        expires_at=added + timedelta(days=5),
+        triggered_count=0,
+        last_triggered_at=None,
     )

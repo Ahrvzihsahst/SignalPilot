@@ -3,13 +3,16 @@
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import datetime
 
 from signalpilot.db.models import ExitAlert, ExitType, TickData, TradeRecord
+from signalpilot.utils.constants import IST
 from signalpilot.utils.log_context import log_context
 
 logger = logging.getLogger(__name__)
 
-# Type alias for trade closer (async callable: trade_id, exit_price, pnl_amount, pnl_pct, exit_reason -> None)
+# Type alias for trade closer
+# (async callable: trade_id, exit_price, pnl_amount, pnl_pct, exit_reason -> None)
 TradeCloser = Callable[[int, float, float, float, str], Awaitable[None]]
 
 # Type alias for the market data getter (async callable: symbol -> TickData | None)
@@ -60,6 +63,8 @@ class TrailingStopState:
     breakeven_triggered: bool = False
     trailing_active: bool = False
     t1_alerted: bool = False
+    sl_approaching_alerted_at: datetime | None = None
+    near_t2_alerted: bool = False
 
 
 class ExitMonitor:
@@ -194,6 +199,7 @@ class ExitMonitor:
             # Check T2 hit (full exit)
             if current_price >= trade.target_2:
                 alert = self._build_exit_alert(trade, current_price, ExitType.T2_HIT)
+                alert.keyboard_type = "t2"
                 logger.info(
                     "T2 exit for trade %d (%s): price=%.2f", trade.id, trade.symbol, current_price,
                 )
@@ -201,6 +207,27 @@ class ExitMonitor:
                 await self._persist_exit(trade, current_price, alert.pnl_pct, ExitType.T2_HIT.value)
                 await self._alert_callback(alert)
                 return alert
+
+            # Check near-T2 (within 0.3% of T2, one-shot)
+            if not state.near_t2_alerted and trade.target_2 > 0:
+                t2_distance_pct = ((trade.target_2 - current_price) / trade.target_2) * 100
+                if 0 < t2_distance_pct <= 0.3:
+                    state.near_t2_alerted = True
+                    pnl_pct = self._calc_pnl_pct(trade.entry_price, current_price)
+                    alert = ExitAlert(
+                        trade=trade,
+                        exit_type=None,
+                        current_price=current_price,
+                        pnl_pct=pnl_pct,
+                        is_alert_only=True,
+                        keyboard_type="near_t2",
+                    )
+                    logger.info(
+                        "Near-T2 alert for trade %d (%s): price=%.2f (%.2f%% from T2)",
+                        trade.id, trade.symbol, current_price, t2_distance_pct,
+                    )
+                    await self._alert_callback(alert)
+                    return alert
 
             # Check T1 hit (advisory, once only)
             if current_price >= trade.target_1 and not state.t1_alerted:
@@ -212,6 +239,7 @@ class ExitMonitor:
                     current_price=current_price,
                     pnl_pct=pnl_pct,
                     is_alert_only=True,
+                    keyboard_type="t1",
                 )
                 logger.info(
                     "T1 advisory for trade %d (%s): price=%.2f",
@@ -224,6 +252,33 @@ class ExitMonitor:
             if trailing_alert is not None:
                 await self._alert_callback(trailing_alert)
                 return trailing_alert
+
+            # Check SL approaching (within 0.5% of current SL, 60s cooldown)
+            if state.current_sl > 0:
+                sl_distance_pct = ((current_price - state.current_sl) / state.current_sl) * 100
+                if 0 < sl_distance_pct <= 0.5:
+                    now = datetime.now(IST)
+                    cooldown_ok = (
+                        state.sl_approaching_alerted_at is None
+                        or (now - state.sl_approaching_alerted_at).total_seconds() >= 60
+                    )
+                    if cooldown_ok:
+                        state.sl_approaching_alerted_at = now
+                        pnl_pct = self._calc_pnl_pct(trade.entry_price, current_price)
+                        alert = ExitAlert(
+                            trade=trade,
+                            exit_type=None,
+                            current_price=current_price,
+                            pnl_pct=pnl_pct,
+                            is_alert_only=True,
+                            keyboard_type="sl_approaching",
+                        )
+                        logger.info(
+                            "SL-approaching alert for trade %d (%s): price=%.2f (%.2f%% from SL)",
+                            trade.id, trade.symbol, current_price, sl_distance_pct,
+                        )
+                        await self._alert_callback(alert)
+                        return alert
 
             return None
 
@@ -313,7 +368,9 @@ class ExitMonitor:
                         trade.id, trade.symbol, current_price,
                     )
                     self.stop_monitoring(trade.id)
-                    await self._persist_exit(trade, current_price, pnl_pct, ExitType.TIME_EXIT.value)
+                    await self._persist_exit(
+                        trade, current_price, pnl_pct, ExitType.TIME_EXIT.value,
+                    )
                 else:
                     alert = ExitAlert(
                         trade=trade,

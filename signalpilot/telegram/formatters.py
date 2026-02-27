@@ -31,6 +31,7 @@ def format_signal_message(
     max_positions: int = 8,
     is_paper: bool = False,
     signal_id: int | None = None,
+    is_watchlisted: bool = False,
 ) -> str:
     """Format a FinalSignal into the user-facing Telegram message (HTML)."""
     c = signal.ranked_signal.candidate
@@ -58,11 +59,14 @@ def format_signal_message(
     # Signal ID line (only when DB id is available)
     id_line = f"Signal ID: #{signal_id}\n" if signal_id is not None else ""
 
+    # Watchlisted indicator
+    watchlist_line = "(Watchlisted)\n" if is_watchlisted else ""
+
     # Footer: include signal ID in TAKEN hint when available
     if signal_id is not None:
-        taken_hint = f"Reply TAKEN {signal_id} to log this trade"
+        taken_hint = f"Tap a button below or reply TAKEN {signal_id}"
     else:
-        taken_hint = "Reply TAKEN to log this trade"
+        taken_hint = "Tap a button below or reply TAKEN"
 
     return (
         f"{prefix}"
@@ -78,6 +82,7 @@ def format_signal_message(
         f"Strategy: {strategy_display}\n"
         f"Positions open: {active_count}/{max_positions}\n"
         f"{id_line}"
+        f"{watchlist_line}"
         f"Reason: {c.reason}{warnings}\n"
         f"\n"
         f"Valid Until: {signal.expires_at.strftime('%I:%M %p')} (auto-expires)\n"
@@ -289,6 +294,43 @@ def format_strategy_report(records) -> str:
             parts.append(f"  Avg Win: +{avg_win:,.0f} | Avg Loss: -{avg_loss:,.0f}")
             parts.append(f"  Net P&L: {total_pnl:+,.0f}")
             parts.append(f"  Allocation: {alloc:.0f}%")
+
+    return "\n".join(parts)
+
+
+def format_signal_actions_summary(
+    taken_count: int,
+    skipped_count: int,
+    watched_count: int,
+    no_action_count: int,
+    avg_response_time_s: float | None,
+    skip_reasons: dict[str, int] | None = None,
+) -> str:
+    """Format Signal Actions section for the daily summary."""
+    total = taken_count + skipped_count + watched_count + no_action_count
+    if total == 0:
+        return ""
+
+    parts = ["", "<b>Signal Actions</b>"]
+    parts.append(f"  Taken: {taken_count}")
+    parts.append(f"  Skipped: {skipped_count}")
+    parts.append(f"  Watched: {watched_count}")
+    parts.append(f"  No Action: {no_action_count}")
+
+    if avg_response_time_s is not None:
+        parts.append(f"  Avg Response: {avg_response_time_s:.1f}s")
+
+    if skip_reasons:
+        reason_labels = {
+            "no_capital": "No Capital",
+            "low_confidence": "Low Confidence",
+            "sector": "Already In Sector",
+            "other": "Other",
+        }
+        parts.append("  Skip Reasons:")
+        for code, count in skip_reasons.items():
+            label = reason_labels.get(code, code)
+            parts.append(f"    {label}: {count}")
 
     return "\n".join(parts)
 

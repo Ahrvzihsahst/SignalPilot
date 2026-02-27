@@ -11,7 +11,7 @@ from signalpilot.db.models import (
     SignalRecord,
     UserConfig,
 )
-from signalpilot.telegram.formatters import format_daily_summary
+from signalpilot.telegram.formatters import format_daily_summary, format_signal_actions_summary
 from signalpilot.utils.constants import IST
 from signalpilot.utils.log_context import reset_context, set_context
 from signalpilot.utils.market_calendar import StrategyPhase, get_current_phase
@@ -46,6 +46,8 @@ class SignalPilotApp:
         capital_allocator=None,
         strategy_performance_repo=None,
         app_config=None,
+        watchlist_repo=None,
+        signal_action_repo=None,
     ) -> None:
         self._db = db
         self._signal_repo = signal_repo
@@ -74,6 +76,8 @@ class SignalPilotApp:
         self._capital_allocator = capital_allocator
         self._strategy_performance_repo = strategy_performance_repo
         self._app_config = app_config
+        self._watchlist_repo = watchlist_repo
+        self._signal_action_repo = signal_action_repo
         self._scanning = False
         self._accepting_signals = True
         self._scan_task: asyncio.Task | None = None
@@ -254,14 +258,28 @@ class SignalPilotApp:
                                     record.status = "paper"
                                 signal_id = await self._signal_repo.insert_signal(record)
                                 record.id = signal_id
+
+                                # Check if symbol is on watchlist
+                                is_watchlisted = False
+                                if self._watchlist_repo:
+                                    is_watchlisted = await self._watchlist_repo.is_on_watchlist(
+                                        record.symbol, now
+                                    )
+                                    if is_watchlisted:
+                                        await self._watchlist_repo.increment_trigger(
+                                            record.symbol, now
+                                        )
+
                                 await self._bot.send_signal(
                                     signal, is_paper=is_paper, signal_id=signal_id,
+                                    is_watchlisted=is_watchlisted,
                                 )
                                 logger.info(
-                                    "Signal %s for %s (id=%d)",
+                                    "Signal %s for %s (id=%d)%s",
                                     "paper-sent" if is_paper else "sent",
                                     record.symbol,
                                     signal_id,
+                                    " (watchlisted)" if is_watchlisted else "",
                                 )
 
                     # Periodic diagnostic: log when scanning is active but
@@ -369,10 +387,36 @@ class SignalPilotApp:
                 logger.warning("Skipping daily summary: missing metrics or bot component")
                 return
             today = datetime.now(IST).date()
+            now = datetime.now(IST)
             summary = await self._metrics.calculate_daily_summary(today)
             message = format_daily_summary(summary)
+
+            # Append button analytics if available
+            if self._signal_action_repo:
+                action_summary = await self._signal_action_repo.get_action_summary(today)
+                if action_summary:
+                    avg_ms = await self._signal_action_repo.get_average_response_time(1)
+                    avg_s = avg_ms / 1000.0 if avg_ms else None
+                    skip_reasons = await self._signal_action_repo.get_skip_reason_distribution(1)
+                    total_signals = summary.signals_sent if summary else 0
+                    taken = action_summary.get("taken", 0)
+                    skipped = action_summary.get("skip", 0)
+                    watched = action_summary.get("watch", 0)
+                    no_action = max(0, total_signals - taken - skipped - watched)
+                    actions_section = format_signal_actions_summary(
+                        taken, skipped, watched, no_action, avg_s, skip_reasons,
+                    )
+                    if actions_section:
+                        message += actions_section
+
             await self._bot.send_alert(message)
             logger.info("Daily summary sent")
+
+            # Cleanup expired watchlist entries
+            if self._watchlist_repo:
+                deleted = await self._watchlist_repo.cleanup_expired(now)
+                if deleted > 0:
+                    logger.info("Cleaned up %d expired watchlist entries", deleted)
         finally:
             reset_context()
 

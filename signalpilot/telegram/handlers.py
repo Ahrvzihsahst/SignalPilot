@@ -7,9 +7,15 @@ without depending on python-telegram-bot's Update/Context objects.
 
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 
-from signalpilot.db.models import SignalRecord, TradeRecord
+from signalpilot.db.models import (
+    CallbackResult,
+    SignalActionRecord,
+    SignalRecord,
+    TradeRecord,
+    WatchlistRecord,
+)
 from signalpilot.telegram.formatters import (
     format_journal_message,
     format_status_message,
@@ -29,6 +35,7 @@ async def handle_taken(
     exit_monitor,
     now: datetime | None = None,
     text: str | None = None,
+    signal_action_repo=None,
 ) -> str:
     """Process the TAKEN command.
 
@@ -48,6 +55,13 @@ async def handle_taken(
     if requested_id is not None:
         signal: SignalRecord | None = await signal_repo.get_active_signal_by_id(requested_id, now)
         if signal is None:
+            # Check if the signal exists but was skipped
+            cursor = await signal_repo._conn.execute(
+                "SELECT status FROM signals WHERE id = ?", (requested_id,)
+            )
+            row = await cursor.fetchone()
+            if row and row["status"] == "skipped":
+                return f"Signal #{requested_id} was already skipped."
             logger.warning("TAKEN %d: no active signal with that ID", requested_id)
             return f"No active signal with ID {requested_id}."
     else:
@@ -57,7 +71,10 @@ async def handle_taken(
             return "No active signal to log."
 
     if signal.expires_at is not None and signal.expires_at <= now:
-        logger.warning("TAKEN command received but signal %d (%s) has expired", signal.id, signal.symbol)
+        logger.warning(
+            "TAKEN command received but signal %d (%s) has expired",
+            signal.id, signal.symbol,
+        )
         return "Signal has expired and is no longer valid."
 
     # Check position limit (soft block unless FORCE)
@@ -90,7 +107,22 @@ async def handle_taken(
 
     exit_monitor.start_monitoring(trade)
 
-    logger.info("Trade logged for %s (signal_id=%d, trade_id=%d)", signal.symbol, signal.id, trade_id)
+    # Record action in signal_actions table (Phase 4)
+    if signal_action_repo is not None:
+        response_time_ms = None
+        if signal.created_at:
+            response_time_ms = int((now - signal.created_at).total_seconds() * 1000)
+        await signal_action_repo.insert_action(SignalActionRecord(
+            signal_id=signal.id,
+            action="taken",
+            response_time_ms=response_time_ms,
+            acted_at=now,
+        ))
+
+    logger.info(
+        "Trade logged for %s (signal_id=%d, trade_id=%d)",
+        signal.symbol, signal.id, trade_id,
+    )
     return f"Trade logged. Tracking {signal.symbol}."
 
 
@@ -290,5 +322,392 @@ async def handle_help() -> str:
         "<b>RESUME &lt;strategy&gt;</b> - Resume a strategy\n"
         "<b>ALLOCATE</b> - View/set capital allocation\n"
         "<b>STRATEGY</b> - View per-strategy performance\n"
-        "<b>HELP</b> - Show this help message"
+        "<b>WATCHLIST</b> - View stocks on your watchlist\n"
+        "<b>UNWATCH &lt;symbol&gt;</b> - Remove a stock from your watchlist\n"
+        "<b>HELP</b> - Show this help message\n"
+        "\n"
+        "Tap buttons below signals for quick actions."
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 4: Signal Action Callback Handlers
+# ---------------------------------------------------------------------------
+
+_WATCHLIST_EXPIRY_DAYS = 5
+
+
+async def handle_taken_callback(
+    signal_repo,
+    trade_repo,
+    config_repo,
+    exit_monitor,
+    signal_action_repo,
+    signal_id: int,
+    callback_timestamp: datetime | None = None,
+) -> CallbackResult:
+    """Handle TAKEN button press on a signal."""
+    from signalpilot.telegram.keyboards import build_taken_followup_keyboard
+
+    now = callback_timestamp or datetime.now(IST)
+
+    # Fetch signal by ID (raw query, not filtered by active)
+    cursor = await signal_repo._conn.execute(
+        "SELECT * FROM signals WHERE id = ?", (signal_id,)
+    )
+    row = await cursor.fetchone()
+    if row is None:
+        return CallbackResult(answer_text="Signal not found.", success=False)
+
+    signal = signal_repo._row_to_record(row)
+
+    if signal.status == "taken":
+        return CallbackResult(answer_text="Already taken.", success=False)
+    if signal.status == "skipped":
+        return CallbackResult(answer_text="Already skipped.", success=False)
+    if signal.expires_at is not None and signal.expires_at <= now:
+        return CallbackResult(answer_text="Signal expired.", success=False)
+
+    # Check position limit
+    user_config = await config_repo.get_user_config()
+    active_count = await trade_repo.get_active_trade_count()
+    if user_config and active_count >= user_config.max_positions:
+        return CallbackResult(
+            answer_text=f"Position limit ({active_count}/{user_config.max_positions})."
+            " Use TAKEN FORCE.",
+            success=False,
+        )
+
+    # Create trade
+    trade = TradeRecord(
+        signal_id=signal.id,
+        date=signal.date,
+        symbol=signal.symbol,
+        strategy=signal.strategy,
+        entry_price=signal.entry_price,
+        stop_loss=signal.stop_loss,
+        target_1=signal.target_1,
+        target_2=signal.target_2,
+        quantity=signal.quantity,
+        taken_at=now,
+    )
+    trade_id = await trade_repo.insert_trade(trade)
+    trade.id = trade_id
+
+    await signal_repo.update_status(signal.id, "taken")
+    exit_monitor.start_monitoring(trade)
+
+    # Record action
+    response_time_ms = None
+    if signal.created_at:
+        response_time_ms = int((now - signal.created_at).total_seconds() * 1000)
+
+    if signal_action_repo:
+        await signal_action_repo.insert_action(SignalActionRecord(
+            signal_id=signal.id,
+            action="taken",
+            response_time_ms=response_time_ms,
+            acted_at=now,
+        ))
+
+    logger.info("TAKEN via button: %s (signal=%d, trade=%d)", signal.symbol, signal.id, trade_id)
+
+    return CallbackResult(
+        answer_text=f"Trade logged: {signal.symbol}",
+        success=True,
+        status_line=f"TAKEN -- Tracking {signal.symbol}",
+        new_keyboard=build_taken_followup_keyboard(signal.id),
+    )
+
+
+async def handle_skip_callback(
+    signal_repo,
+    signal_action_repo,
+    signal_id: int,
+    callback_timestamp: datetime | None = None,
+) -> CallbackResult:
+    """Handle SKIP button press — show reason keyboard."""
+    from signalpilot.telegram.keyboards import build_skip_reason_keyboard
+
+    cursor = await signal_repo._conn.execute(
+        "SELECT * FROM signals WHERE id = ?", (signal_id,)
+    )
+    row = await cursor.fetchone()
+    if row is None:
+        return CallbackResult(answer_text="Signal not found.", success=False)
+
+    signal = signal_repo._row_to_record(row)
+    if signal.status not in ("sent", "paper"):
+        return CallbackResult(answer_text=f"Already {signal.status}.", success=False)
+
+    return CallbackResult(
+        answer_text="Select skip reason:",
+        success=True,
+        new_keyboard=build_skip_reason_keyboard(signal_id),
+    )
+
+
+async def handle_skip_reason_callback(
+    signal_repo,
+    signal_action_repo,
+    signal_id: int,
+    reason_code: str,
+    callback_timestamp: datetime | None = None,
+) -> CallbackResult:
+    """Handle skip reason selection."""
+    now = callback_timestamp or datetime.now(IST)
+
+    cursor = await signal_repo._conn.execute(
+        "SELECT * FROM signals WHERE id = ?", (signal_id,)
+    )
+    row = await cursor.fetchone()
+    if row is None:
+        return CallbackResult(answer_text="Signal not found.", success=False)
+
+    signal = signal_repo._row_to_record(row)
+
+    await signal_repo.update_status(signal.id, "skipped")
+
+    reason_labels = {
+        "no_capital": "No Capital",
+        "low_confidence": "Low Confidence",
+        "sector": "Already In Sector",
+        "other": "Other",
+    }
+    label = reason_labels.get(reason_code, reason_code)
+
+    # Record action
+    response_time_ms = None
+    if signal.created_at:
+        response_time_ms = int((now - signal.created_at).total_seconds() * 1000)
+
+    if signal_action_repo:
+        await signal_action_repo.insert_action(SignalActionRecord(
+            signal_id=signal.id,
+            action="skip",
+            reason=reason_code,
+            response_time_ms=response_time_ms,
+            acted_at=now,
+        ))
+
+    logger.info("SKIP via button: %s reason=%s (signal=%d)", signal.symbol, reason_code, signal.id)
+
+    return CallbackResult(
+        answer_text=f"Skipped: {label}",
+        success=True,
+        status_line=f"SKIPPED -- {signal.symbol} ({label})",
+    )
+
+
+async def handle_watch_callback(
+    signal_repo,
+    signal_action_repo,
+    watchlist_repo,
+    signal_id: int,
+    callback_timestamp: datetime | None = None,
+) -> CallbackResult:
+    """Handle WATCH button press — add signal stock to watchlist."""
+    now = callback_timestamp or datetime.now(IST)
+
+    cursor = await signal_repo._conn.execute(
+        "SELECT * FROM signals WHERE id = ?", (signal_id,)
+    )
+    row = await cursor.fetchone()
+    if row is None:
+        return CallbackResult(answer_text="Signal not found.", success=False)
+
+    signal = signal_repo._row_to_record(row)
+
+    if signal.expires_at is not None and signal.expires_at <= now:
+        return CallbackResult(answer_text="Signal expired.", success=False)
+
+    # Check if already on watchlist
+    if await watchlist_repo.is_on_watchlist(signal.symbol, now):
+        return CallbackResult(answer_text=f"{signal.symbol} already on watchlist.", success=False)
+
+    # Add to watchlist
+    entry = WatchlistRecord(
+        symbol=signal.symbol,
+        signal_id=signal.id,
+        strategy=signal.strategy,
+        entry_price=signal.entry_price,
+        added_at=now,
+        expires_at=now + timedelta(days=_WATCHLIST_EXPIRY_DAYS),
+    )
+    await watchlist_repo.add_to_watchlist(entry)
+
+    # Record action
+    response_time_ms = None
+    if signal.created_at:
+        response_time_ms = int((now - signal.created_at).total_seconds() * 1000)
+
+    if signal_action_repo:
+        await signal_action_repo.insert_action(SignalActionRecord(
+            signal_id=signal.id,
+            action="watch",
+            response_time_ms=response_time_ms,
+            acted_at=now,
+        ))
+
+    logger.info("WATCH via button: %s (signal=%d)", signal.symbol, signal.id)
+
+    return CallbackResult(
+        answer_text=f"{signal.symbol} added to watchlist",
+        success=True,
+        status_line=f"WATCHING -- {signal.symbol} (5 day alert)",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Phase 4: Trade Management Callback Handlers
+# ---------------------------------------------------------------------------
+
+
+async def handle_partial_exit_callback(
+    trade_repo,
+    trade_id: int,
+    level: str,
+) -> CallbackResult:
+    """Handle partial exit at T1 or full exit at T2."""
+    trades = await trade_repo.get_active_trades()
+    trade = next((t for t in trades if t.id == trade_id), None)
+
+    if trade is None:
+        return CallbackResult(answer_text="Trade already closed.", success=False)
+
+    if level == "t1":
+        return CallbackResult(
+            answer_text=f"Partial exit noted for {trade.symbol} at T1.",
+            success=True,
+            status_line=f"PARTIAL EXIT -- {trade.symbol} at T1",
+        )
+    elif level == "t2":
+        return CallbackResult(
+            answer_text=f"Full exit noted for {trade.symbol} at T2.",
+            success=True,
+            status_line=f"FULL EXIT -- {trade.symbol} at T2",
+        )
+
+    return CallbackResult(answer_text="Unknown exit level.", success=False)
+
+
+async def handle_exit_now_callback(
+    trade_repo,
+    exit_monitor,
+    get_current_prices,
+    trade_id: int,
+) -> CallbackResult:
+    """Handle Exit Now button — close trade at market price."""
+    trades = await trade_repo.get_active_trades()
+    trade = next((t for t in trades if t.id == trade_id), None)
+
+    if trade is None:
+        return CallbackResult(answer_text="Trade already closed.", success=False)
+
+    prices = await get_current_prices([trade.symbol])
+    price = prices.get(trade.symbol)
+    if price is None:
+        return CallbackResult(answer_text="Could not get current price.", success=False)
+
+    pnl_amount = (price - trade.entry_price) * trade.quantity
+    pnl_pct = ((price - trade.entry_price) / trade.entry_price) * 100
+    await trade_repo.close_trade(trade.id, price, pnl_amount, pnl_pct, "manual_exit")
+    exit_monitor.stop_monitoring(trade.id)
+
+    sign = "+" if pnl_pct >= 0 else ""
+    return CallbackResult(
+        answer_text=f"Exited {trade.symbol} at {price:,.2f}",
+        success=True,
+        status_line=f"EXITED -- {trade.symbol} at {price:,.2f} ({sign}{pnl_pct:.1f}%)",
+    )
+
+
+async def handle_take_profit_callback(
+    trade_repo,
+    exit_monitor,
+    get_current_prices,
+    trade_id: int,
+) -> CallbackResult:
+    """Handle Take Profit button — close trade at current price."""
+    trades = await trade_repo.get_active_trades()
+    trade = next((t for t in trades if t.id == trade_id), None)
+
+    if trade is None:
+        return CallbackResult(answer_text="Trade already closed.", success=False)
+
+    prices = await get_current_prices([trade.symbol])
+    price = prices.get(trade.symbol)
+    if price is None:
+        return CallbackResult(answer_text="Could not get current price.", success=False)
+
+    pnl_amount = (price - trade.entry_price) * trade.quantity
+    pnl_pct = ((price - trade.entry_price) / trade.entry_price) * 100
+    await trade_repo.close_trade(trade.id, price, pnl_amount, pnl_pct, "t2_hit")
+    exit_monitor.stop_monitoring(trade.id)
+
+    sign = "+" if pnl_pct >= 0 else ""
+    return CallbackResult(
+        answer_text=f"Profit taken: {trade.symbol}",
+        success=True,
+        status_line=f"PROFIT TAKEN -- {trade.symbol} ({sign}{pnl_pct:.1f}%)",
+    )
+
+
+async def handle_hold_callback(trade_id: int) -> CallbackResult:
+    """Handle Hold button — dismiss SL-approaching alert."""
+    return CallbackResult(
+        answer_text="Holding position.",
+        success=True,
+        status_line="HOLDING -- Alert dismissed",
+    )
+
+
+async def handle_let_run_callback(trade_id: int) -> CallbackResult:
+    """Handle Let It Run button — dismiss near-T2 alert."""
+    return CallbackResult(
+        answer_text="Letting it run.",
+        success=True,
+        status_line="RUNNING -- Trailing stop active",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Phase 4: WATCHLIST / UNWATCH Text Commands
+# ---------------------------------------------------------------------------
+
+_UNWATCH_PATTERN = re.compile(r"(?i)^unwatch\s+(\w+)$")
+
+
+async def handle_watchlist_command(watchlist_repo) -> str:
+    """Process the WATCHLIST command — show active watchlist entries."""
+    now = datetime.now(IST)
+    entries = await watchlist_repo.get_active_watchlist(now)
+
+    if not entries:
+        return "No stocks on your watchlist."
+
+    parts = [f"<b>Watchlist ({len(entries)} stocks)</b>"]
+    for e in entries:
+        days_left = max(0, (e.expires_at - now).days) if e.expires_at else 0
+        trigger_info = f", triggered {e.triggered_count}x" if e.triggered_count > 0 else ""
+        parts.append(
+            f"  {e.symbol} ({e.strategy}) - Entry: {e.entry_price:,.2f}, "
+            f"{days_left}d left{trigger_info}"
+        )
+
+    return "\n".join(parts)
+
+
+async def handle_unwatch_command(watchlist_repo, text: str) -> str:
+    """Process the UNWATCH command — remove a stock from the watchlist."""
+    match = _UNWATCH_PATTERN.match(text.strip())
+    if not match:
+        return "Usage: UNWATCH <symbol>\nExample: UNWATCH SBIN"
+
+    symbol = match.group(1).upper()
+    count = await watchlist_repo.remove_from_watchlist(symbol)
+
+    if count == 0:
+        return f"{symbol} is not on your watchlist."
+
+    return f"{symbol} removed from watchlist."
