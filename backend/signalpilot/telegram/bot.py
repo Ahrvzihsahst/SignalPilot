@@ -21,11 +21,13 @@ from signalpilot.telegram.handlers import (
     handle_adapt,
     handle_allocate,
     handle_capital,
+    handle_earnings_command,
     handle_exit_now_callback,
     handle_help,
     handle_hold_callback,
     handle_journal,
     handle_let_run_callback,
+    handle_news_command,
     handle_override_circuit,
     handle_override_confirm,
     handle_partial_exit_callback,
@@ -40,6 +42,7 @@ from signalpilot.telegram.handlers import (
     handle_take_profit_callback,
     handle_taken,
     handle_taken_callback,
+    handle_unsuppress_command,
     handle_unwatch_command,
     handle_watch_callback,
     handle_watchlist_command,
@@ -84,6 +87,9 @@ class SignalPilotBot:
         hybrid_score_repo=None,
         adaptation_log_repo=None,
         app=None,
+        # Phase 4: News Sentiment Filter
+        news_sentiment_service=None,
+        earnings_repo=None,
     ) -> None:
         self._bot_token = bot_token
         self._chat_id = chat_id
@@ -103,6 +109,9 @@ class SignalPilotBot:
         self._hybrid_score_repo = hybrid_score_repo
         self._adaptation_log_repo = adaptation_log_repo
         self._app = app
+        # Phase 4: News Sentiment Filter
+        self._news_sentiment_service = news_sentiment_service
+        self._earnings_repo = earnings_repo
         self._application: Application | None = None
         self._pending_entry_edits: dict[int, int] = {}  # chat_message_id -> signal_id
         self._awaiting_override_confirm = False
@@ -216,6 +225,25 @@ class SignalPilotBot:
                 self._handle_unwatch,
             )
         )
+        # Phase 4: News Sentiment Filter commands
+        self._application.add_handler(
+            MessageHandler(
+                chat_filter & filters.TEXT & filters.Regex(r"(?i)^news(?:\s+\S+)?$"),
+                self._handle_news,
+            )
+        )
+        self._application.add_handler(
+            MessageHandler(
+                chat_filter & filters.TEXT & filters.Regex(r"(?i)^earnings$"),
+                self._handle_earnings,
+            )
+        )
+        self._application.add_handler(
+            MessageHandler(
+                chat_filter & filters.TEXT & filters.Regex(r"(?i)^unsuppress\s+\S+$"),
+                self._handle_unsuppress,
+            )
+        )
         self._application.add_handler(CallbackQueryHandler(self._handle_callback))
 
         await self._application.initialize()
@@ -237,6 +265,10 @@ class SignalPilotBot:
         confirmation_level: str | None = None,
         confirmed_by: str | None = None,
         boosted_stars: int | None = None,
+        news_sentiment_label: str | None = None,
+        news_top_headline: str | None = None,
+        news_sentiment_score: float | None = None,
+        original_star_rating: int | None = None,
     ) -> int | None:
         """Format and send a signal message to the user's chat.
 
@@ -248,6 +280,10 @@ class SignalPilotBot:
             confirmation_level=confirmation_level,
             confirmed_by=confirmed_by,
             boosted_stars=boosted_stars,
+            news_sentiment_label=news_sentiment_label,
+            news_top_headline=news_top_headline,
+            news_sentiment_score=news_sentiment_score,
+            original_star_rating=original_star_rating,
         )
         keyboard = None
         if signal_id is not None:
@@ -450,6 +486,42 @@ class SignalPilotBot:
                 await update.message.reply_text("Watchlist not configured.")
                 return
             response = await handle_unwatch_command(self._watchlist_repo, update.message.text)
+            await update.message.reply_text(response)
+
+    # -- Phase 4: News Sentiment Filter command wrappers
+
+    async def _handle_news(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        async with log_context(command="NEWS"):
+            if self._news_sentiment_service is None:
+                await update.message.reply_text("News sentiment not configured.")
+                return
+            response = await handle_news_command(
+                self._news_sentiment_service, update.message.text,
+            )
+            await update.message.reply_text(response, parse_mode="HTML")
+
+    async def _handle_earnings(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        async with log_context(command="EARNINGS"):
+            if self._earnings_repo is None:
+                await update.message.reply_text("Earnings calendar not configured.")
+                return
+            response = await handle_earnings_command(self._earnings_repo)
+            await update.message.reply_text(response, parse_mode="HTML")
+
+    async def _handle_unsuppress(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        async with log_context(command="UNSUPPRESS"):
+            if self._news_sentiment_service is None:
+                await update.message.reply_text("News sentiment not configured.")
+                return
+            response = await handle_unsuppress_command(
+                self._news_sentiment_service, update.message.text,
+            )
             await update.message.reply_text(response)
 
     # -- Callback query handler (Phase 4: Quick Action Buttons)

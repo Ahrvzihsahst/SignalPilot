@@ -108,7 +108,7 @@ class TestAppConfig:
 
         # Dashboard
         assert config.dashboard_enabled is True
-        assert config.dashboard_port == 8000
+        assert config.dashboard_port == 9000
         assert config.dashboard_host == "127.0.0.1"
 
     def test_composite_weights_must_sum_to_one(self, required_env, monkeypatch):

@@ -26,9 +26,11 @@ class SignalRepository:
                  gap_pct, volume_ratio, reason, created_at, expires_at, status,
                  setup_type, strategy_specific_score,
                  composite_score, confirmation_level, confirmed_by,
-                 position_size_multiplier, adaptation_status)
+                 position_size_multiplier, adaptation_status,
+                 news_sentiment_score, news_sentiment_label,
+                 news_top_headline, news_action, original_star_rating)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                    ?, ?, ?, ?, ?)
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 signal.date.isoformat(),
@@ -54,6 +56,11 @@ class SignalRepository:
                 signal.confirmed_by,
                 signal.position_size_multiplier,
                 signal.adaptation_status,
+                signal.news_sentiment_score,
+                signal.news_sentiment_label,
+                signal.news_top_headline,
+                signal.news_action,
+                signal.original_star_rating,
             ),
         )
         await self._conn.commit()
@@ -221,4 +228,10 @@ class SignalRepository:
                 if "adaptation_status" in keys and row["adaptation_status"] is not None
                 else "normal"
             ),
+            # Phase 4: News Sentiment Filter fields
+            news_sentiment_score=row["news_sentiment_score"] if "news_sentiment_score" in keys else None,
+            news_sentiment_label=row["news_sentiment_label"] if "news_sentiment_label" in keys else None,
+            news_top_headline=row["news_top_headline"] if "news_top_headline" in keys else None,
+            news_action=row["news_action"] if "news_action" in keys else None,
+            original_star_rating=row["original_star_rating"] if "original_star_rating" in keys else None,
         )

@@ -1,0 +1,6 @@
+stock_code,earnings_date,quarter,is_confirmed
+RELIANCE,2026-04-15,Q4FY26,true
+TCS,2026-04-10,Q4FY26,true
+INFY,2026-04-12,Q4FY26,true
+HDFCBANK,2026-04-20,Q4FY26,false
+SBIN,2026-05-15,Q4FY26,false

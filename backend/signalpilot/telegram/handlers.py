@@ -27,6 +27,8 @@ logger = logging.getLogger(__name__)
 _CAPITAL_PATTERN = re.compile(r"(?i)^capital\s+(\d+(?:\.\d+)?)$")
 _TAKEN_PATTERN = re.compile(r"(?i)^/?taken(?:\s+(force))?(?:\s+(\d+))?$")
 _SCORE_PATTERN = re.compile(r"(?i)^score\s+(\S+)$")
+_NEWS_PATTERN = re.compile(r"(?i)^news(?:\s+(\S+))?$")
+_UNSUPPRESS_PATTERN = re.compile(r"(?i)^unsuppress\s+(\S+)$")
 
 
 async def handle_taken(
@@ -978,3 +980,92 @@ async def handle_unwatch_command(watchlist_repo, text: str) -> str:
         return f"{symbol} is not on your watchlist."
 
     return f"{symbol} removed from watchlist."
+
+
+async def handle_news_command(news_sentiment_service, text: str) -> str:
+    """Process the NEWS command — show sentiment for a stock or all stocks.
+
+    Usage: NEWS <STOCK> or NEWS ALL or NEWS (for summary).
+    """
+    match = _NEWS_PATTERN.match(text.strip())
+    if not match:
+        return "Usage: NEWS <STOCK>\nExample: NEWS SBIN\nOr: NEWS ALL"
+
+    stock = match.group(1)
+
+    if stock is None or stock.upper() == "ALL":
+        # Summary of all stocks
+        all_sentiments = await news_sentiment_service._news_sentiment_repo.get_all_stock_sentiments()
+        if not all_sentiments:
+            return "No news sentiment data available. Data is fetched at 8:30 AM."
+
+        parts = ["<b>News Sentiment Summary</b>"]
+        label_icons = {
+            "STRONG_NEGATIVE": "\u274c",
+            "MILD_NEGATIVE": "\u26a0\ufe0f",
+            "NEUTRAL": "\u2796",
+            "POSITIVE": "\u2705",
+        }
+        for code, (score, label, count) in sorted(all_sentiments.items()):
+            icon = label_icons.get(label, "\u2796")
+            parts.append(f"  {icon} {code}: {score:+.2f} ({label}, {count} headlines)")
+        return "\n".join(parts)
+
+    stock_code = stock.upper()
+    result = await news_sentiment_service.get_sentiment_for_stock(stock_code)
+
+    parts = [f"<b>News Sentiment: {stock_code}</b>"]
+    parts.append(f"Score: {result.score:+.2f}")
+    parts.append(f"Label: {result.label}")
+    parts.append(f"Action: {result.action}")
+    parts.append(f"Headlines: {result.headline_count}")
+    parts.append(f"Model: {result.model_used}")
+
+    if result.headline:
+        parts.append(f"\nTop: {result.headline}")
+    if result.top_negative_headline and result.top_negative_headline != result.headline:
+        parts.append(f"Most Negative: {result.top_negative_headline}")
+
+    return "\n".join(parts)
+
+
+async def handle_earnings_command(earnings_repo, days: int = 7) -> str:
+    """Process the EARNINGS command — show upcoming earnings calendar."""
+    upcoming = await earnings_repo.get_upcoming_earnings(days)
+
+    if not upcoming:
+        return "No upcoming earnings in the next 7 days."
+
+    # Group by date
+    by_date: dict[str, list] = {}
+    for e in upcoming:
+        date_str = e.earnings_date.isoformat() if e.earnings_date else "Unknown"
+        by_date.setdefault(date_str, []).append(e)
+
+    parts = [f"<b>Upcoming Earnings (next {days} days)</b>"]
+    for dt, entries in sorted(by_date.items()):
+        parts.append(f"\n<b>{dt}</b>")
+        for e in entries:
+            status = "Confirmed" if e.is_confirmed else "Tentative"
+            parts.append(f"  {e.stock_code} - {e.quarter} ({status})")
+
+    return "\n".join(parts)
+
+
+async def handle_unsuppress_command(news_sentiment_service, text: str) -> str:
+    """Process the UNSUPPRESS command — override suppression for a stock."""
+    match = _UNSUPPRESS_PATTERN.match(text.strip())
+    if not match:
+        return "Usage: UNSUPPRESS <STOCK>\nExample: UNSUPPRESS SBIN"
+
+    stock_code = match.group(1).upper()
+
+    # Get current sentiment before adding override
+    result = await news_sentiment_service.get_sentiment_for_stock(stock_code)
+    news_sentiment_service.add_unsuppress_override(stock_code)
+
+    return (
+        f"Override added for {stock_code}\n"
+        f"Current sentiment: {result.label} ({result.score:+.2f})\n"
+        f"Signals for {stock_code} will pass through until end of day."
+    )

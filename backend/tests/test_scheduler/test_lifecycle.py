@@ -228,6 +228,8 @@ async def test_scan_loop_sends_signal_when_candidates_found() -> None:
     app._bot.send_signal.assert_awaited_once_with(
         signal, is_paper=False, signal_id=1,
         confirmation_level=None, confirmed_by=None, boosted_stars=None,
+        news_sentiment_label=None, news_top_headline=None,
+        news_sentiment_score=None, original_star_rating=None,
     )
 
 

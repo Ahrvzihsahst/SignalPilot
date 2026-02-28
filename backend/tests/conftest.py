@@ -20,8 +20,10 @@ from signalpilot.db.models import (
     HistoricalReference,
     Instrument,
     RankedSignal,
+    SentimentResult,
     SignalActionRecord,
     SignalDirection,
+    SuppressedSignal,
     TickData,
     TradeRecord,
     WatchlistRecord,
@@ -408,3 +410,53 @@ def sample_watchlist_entry():
         triggered_count=0,
         last_triggered_at=None,
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 4: News Sentiment Filter Fixtures
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def sample_sentiment_result():
+    """A SentimentResult with MILD_NEGATIVE values for testing."""
+    return SentimentResult(
+        score=-0.35,
+        label="MILD_NEGATIVE",
+        headline="SBIN faces regulatory scrutiny over lending practices",
+        action="DOWNGRADED",
+        headline_count=3,
+        top_negative_headline="SEBI investigating SBIN for compliance violations",
+        model_used="vader",
+    )
+
+
+@pytest.fixture
+def sample_suppressed_signal():
+    """A SuppressedSignal with STRONG_NEGATIVE values for testing."""
+    return SuppressedSignal(
+        symbol="SBIN",
+        strategy="Gap & Go",
+        original_stars=4,
+        sentiment_score=-0.72,
+        sentiment_label="STRONG_NEGATIVE",
+        top_headline="SBIN reports massive fraud in lending division",
+        reason="Strong negative sentiment (score: -0.72)",
+        entry_price=104.50,
+        stop_loss=100.0,
+        target_1=109.73,
+    )
+
+
+@pytest.fixture
+async def news_sentiment_repo(db):
+    """NewsSentimentRepository backed by the in-memory database."""
+    from signalpilot.db.news_sentiment_repo import NewsSentimentRepository
+    return NewsSentimentRepository(db.connection)
+
+
+@pytest.fixture
+async def earnings_repo(db):
+    """EarningsCalendarRepository backed by the in-memory database."""
+    from signalpilot.db.earnings_repo import EarningsCalendarRepository
+    return EarningsCalendarRepository(db.connection)

@@ -7,6 +7,7 @@ from signalpilot.db.models import (
     FinalSignal,
     PerformanceMetrics,
     SignalRecord,
+    SuppressedSignal,
     TradeRecord,
 )
 
@@ -49,6 +50,25 @@ def _confirmation_badge(confirmation_level: str | None, confirmed_by: str | None
     return "\n".join(lines)
 
 
+def format_suppression_notification(suppressed: SuppressedSignal) -> str:
+    """Format a suppression notification for a signal blocked by news sentiment."""
+    return (
+        f"<b>SIGNAL SUPPRESSED -- {suppressed.symbol}</b>\n"
+        f"\n"
+        f"Strategy: {suppressed.strategy}\n"
+        f"Reason: {suppressed.reason}\n"
+        f"Sentiment: {suppressed.sentiment_label} ({suppressed.sentiment_score:+.2f})\n"
+        f"Original Rating: {star_rating(suppressed.original_stars)}\n"
+        f"\n"
+        f"Entry: {suppressed.entry_price:,.2f}\n"
+        f"SL: {suppressed.stop_loss:,.2f}\n"
+        f"Target: {suppressed.target_1:,.2f}\n"
+        f"{f'Headline: {suppressed.top_headline}' if suppressed.top_headline else ''}\n"
+        f"\n"
+        f"Use NEWS {suppressed.symbol} for details"
+    )
+
+
 def format_signal_message(
     signal: FinalSignal,
     active_count: int = 0,
@@ -59,6 +79,10 @@ def format_signal_message(
     confirmation_level: str | None = None,
     confirmed_by: str | None = None,
     boosted_stars: int | None = None,
+    news_sentiment_label: str | None = None,
+    news_top_headline: str | None = None,
+    news_sentiment_score: float | None = None,
+    original_star_rating: int | None = None,
 ) -> str:
     """Format a FinalSignal into the user-facing Telegram message (HTML).
 
@@ -93,6 +117,25 @@ def format_signal_message(
     if badge:
         prefix = prefix + badge + "\n"
 
+    # News sentiment blocks
+    news_warning = ""
+    news_badge = ""
+    if news_sentiment_label == "MILD_NEGATIVE":
+        score_str = f"{news_sentiment_score:+.2f}" if news_sentiment_score is not None else "N/A"
+        headline_str = f"\n{news_top_headline}" if news_top_headline else ""
+        original_str = ""
+        if original_star_rating is not None:
+            original_str = f" (Downgraded from {original_star_rating}/5 due to news)"
+        news_warning = (
+            f"\n<b>NEWS WARNING</b>\n"
+            f"Sentiment: {score_str}{headline_str}\n"
+            f"Rating{original_str}\n"
+        )
+    elif news_sentiment_label == "POSITIVE":
+        news_badge = "\nNews: Positive sentiment"
+    elif news_sentiment_label == "NO_NEWS":
+        news_badge = "\nNo recent news"
+
     warnings = ""
     if c.setup_type == "vwap_reclaim":
         warnings = "\n\u26a0\ufe0f Higher Risk setup"
@@ -111,6 +154,7 @@ def format_signal_message(
 
     return (
         f"{prefix}"
+        f"{news_warning}"
         f"<b>{direction} SIGNAL -- {c.symbol}</b>\n"
         f"\n"
         f"Entry Price: {c.entry_price:,.2f}\n"
@@ -124,7 +168,7 @@ def format_signal_message(
         f"Positions open: {active_count}/{max_positions}\n"
         f"{id_line}"
         f"{watchlist_line}"
-        f"Reason: {c.reason}{warnings}\n"
+        f"Reason: {c.reason}{warnings}{news_badge}\n"
         f"\n"
         f"Valid Until: {signal.expires_at.strftime('%I:%M %p')} (auto-expires)\n"
         f"{'=' * 30}\n"

@@ -20,6 +20,9 @@ def _make_mock_app():
     app.send_daily_summary = AsyncMock()
     app.shutdown = AsyncMock()
     app.run_weekly_rebalance = AsyncMock()
+    # Phase 4: News Sentiment Filter
+    app.fetch_pre_market_news = AsyncMock()
+    app.refresh_news_cache = AsyncMock()
     return app
 
 
@@ -34,7 +37,13 @@ DAILY_JOBS = {
     "shutdown": (15, 35),
 }
 
-ALL_EXPECTED_JOB_IDS = set(DAILY_JOBS.keys()) | {"weekly_rebalance"}
+NEWS_JOBS = {
+    "pre_market_news": (8, 30),
+    "news_cache_refresh_1": (11, 15),
+    "news_cache_refresh_2": (13, 15),
+}
+
+ALL_EXPECTED_JOB_IDS = set(DAILY_JOBS.keys()) | {"weekly_rebalance"} | set(NEWS_JOBS.keys())
 
 
 def test_all_jobs_registered() -> None:
@@ -44,7 +53,7 @@ def test_all_jobs_registered() -> None:
 
     job_ids = {job.id for job in scheduler.jobs}
     assert job_ids == ALL_EXPECTED_JOB_IDS
-    assert len(scheduler.jobs) == 9
+    assert len(scheduler.jobs) == 12
 
 
 @pytest.mark.parametrize("job_id,expected_time", list(DAILY_JOBS.items()))
@@ -88,7 +97,7 @@ async def test_start_and_shutdown() -> None:
     app = _make_mock_app()
     scheduler.configure_jobs(app)
     scheduler.start()
-    assert len(scheduler.jobs) == 9
+    assert len(scheduler.jobs) == 12
     scheduler.shutdown()
 
 
@@ -97,7 +106,7 @@ def test_configure_without_start() -> None:
     scheduler = MarketScheduler()
     app = _make_mock_app()
     scheduler.configure_jobs(app)
-    assert len(scheduler.jobs) == 9
+    assert len(scheduler.jobs) == 12
 
 
 def test_shutdown_without_start_does_not_raise() -> None:

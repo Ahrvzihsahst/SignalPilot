@@ -166,6 +166,8 @@ class TestScanLoopPaperMode:
         app._bot.send_signal.assert_awaited_once_with(
             signal, is_paper=True, signal_id=1,
             confirmation_level=None, confirmed_by=None, boosted_stars=None,
+            news_sentiment_label=None, news_top_headline=None,
+            news_sentiment_score=None, original_star_rating=None,
         )
 
     async def test_gap_go_signal_gets_sent_status(self):
@@ -203,6 +205,8 @@ class TestScanLoopPaperMode:
         app._bot.send_signal.assert_awaited_once_with(
             signal, is_paper=False, signal_id=1,
             confirmation_level=None, confirmed_by=None, boosted_stars=None,
+            news_sentiment_label=None, news_top_headline=None,
+            news_sentiment_score=None, original_star_rating=None,
         )
 
     async def test_orb_paper_mode_false_gets_sent_status(self):
@@ -237,6 +241,8 @@ class TestScanLoopPaperMode:
         app._bot.send_signal.assert_awaited_once_with(
             signal, is_paper=False, signal_id=1,
             confirmation_level=None, confirmed_by=None, boosted_stars=None,
+            news_sentiment_label=None, news_top_headline=None,
+            news_sentiment_score=None, original_star_rating=None,
         )
 
     async def test_vwap_paper_signal_gets_paper_status(self):
@@ -271,4 +277,6 @@ class TestScanLoopPaperMode:
         app._bot.send_signal.assert_awaited_once_with(
             signal, is_paper=True, signal_id=1,
             confirmation_level=None, confirmed_by=None, boosted_stars=None,
+            news_sentiment_label=None, news_top_headline=None,
+            news_sentiment_score=None, original_star_rating=None,
         )

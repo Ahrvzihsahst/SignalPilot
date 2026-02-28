@@ -21,6 +21,7 @@ from signalpilot.pipeline.stages.deduplication import DeduplicationStage
 from signalpilot.pipeline.stages.diagnostic import DiagnosticStage
 from signalpilot.pipeline.stages.exit_monitoring import ExitMonitoringStage
 from signalpilot.pipeline.stages.gap_stock_marking import GapStockMarkingStage
+from signalpilot.pipeline.stages.news_sentiment import NewsSentimentStage
 from signalpilot.pipeline.stages.persist_and_deliver import PersistAndDeliverStage
 from signalpilot.pipeline.stages.ranking import RankingStage
 from signalpilot.pipeline.stages.risk_sizing import RiskSizingStage
@@ -71,6 +72,11 @@ class SignalPilotApp:
         circuit_breaker_repo=None,
         adaptation_log_repo=None,
         dashboard_app=None,
+        # Phase 4: News Sentiment Filter
+        news_sentiment_service=None,
+        earnings_repo=None,
+        earnings_calendar=None,
+        news_sentiment_repo=None,
     ) -> None:
         self._db = db
         self._signal_repo = signal_repo
@@ -110,6 +116,11 @@ class SignalPilotApp:
         self._circuit_breaker_repo = circuit_breaker_repo
         self._adaptation_log_repo = adaptation_log_repo
         self._dashboard_app = dashboard_app
+        # Phase 4: News Sentiment Filter
+        self._news_sentiment_service = news_sentiment_service
+        self._earnings_repo = earnings_repo
+        self._earnings_calendar = earnings_calendar
+        self._news_sentiment_repo = news_sentiment_repo
         # Internal state
         self._scanning = False
         self._accepting_signals = True
@@ -251,6 +262,11 @@ class SignalPilotApp:
             CompositeScoringStage(self._composite_scorer),
             AdaptiveFilterStage(self._adaptive_manager),
             RankingStage(self._ranker),
+            NewsSentimentStage(
+                self._news_sentiment_service,
+                self._earnings_repo,
+                self._app_config,
+            ),
             RiskSizingStage(self._risk_manager, self._trade_repo),
             PersistAndDeliverStage(
                 self._signal_repo,
@@ -403,6 +419,16 @@ class SignalPilotApp:
             await self._bot.send_alert(message)
             logger.info("Daily summary sent")
 
+            # Phase 4: End-of-day news cleanup
+            if self._news_sentiment_service is not None:
+                try:
+                    purged = await self._news_sentiment_service.purge_old_entries(48)
+                    self._news_sentiment_service.clear_unsuppress_overrides()
+                    if purged > 0:
+                        logger.info("Purged %d old news entries", purged)
+                except Exception:
+                    logger.exception("Failed to purge news entries")
+
             # Cleanup expired watchlist entries
             if self._watchlist_repo:
                 deleted = await self._watchlist_repo.cleanup_expired(now)
@@ -485,6 +511,40 @@ class SignalPilotApp:
         finally:
             reset_context()
 
+    async def fetch_pre_market_news(self) -> None:
+        """Fetch and analyze news for all stocks (called at 8:30 AM)."""
+        set_context(job_name="fetch_pre_market_news")
+        try:
+            if not self._app_config or not getattr(self._app_config, "news_enabled", False):
+                logger.info("News sentiment disabled, skipping pre-market fetch")
+                return
+            if self._news_sentiment_service is None:
+                logger.warning("Skipping pre-market news: service not configured")
+                return
+            try:
+                count = await self._news_sentiment_service.fetch_and_analyze_all()
+                logger.info("Pre-market news fetch complete: %d headlines", count)
+            except Exception:
+                logger.exception("Pre-market news fetch failed; proceeding with NO_NEWS defaults")
+        finally:
+            reset_context()
+
+    async def refresh_news_cache(self) -> None:
+        """Refresh news cache for active symbols (called at 11:15 and 13:15)."""
+        set_context(job_name="refresh_news_cache")
+        try:
+            if not self._app_config or not getattr(self._app_config, "news_enabled", False):
+                return
+            if self._news_sentiment_service is None:
+                return
+            try:
+                count = await self._news_sentiment_service.fetch_and_analyze_stocks()
+                logger.info("News cache refresh complete: %d headlines", count)
+            except Exception:
+                logger.exception("News cache refresh failed")
+        finally:
+            reset_context()
+
     async def run_weekly_rebalance(self) -> None:
         """Weekly capital rebalancing (called Sunday 18:00 IST)."""
         set_context(job_name="weekly_rebalance")
@@ -523,6 +583,14 @@ class SignalPilotApp:
                     await self._bot.send_alert(pause_msg)
 
             logger.info("Weekly rebalance complete: %d strategies allocated", len(allocations))
+
+            # Phase 4: Refresh earnings calendar
+            if self._earnings_calendar is not None:
+                try:
+                    count = await self._earnings_calendar.refresh()
+                    logger.info("Earnings calendar refreshed: %d entries", count)
+                except Exception:
+                    logger.exception("Failed to refresh earnings calendar")
         finally:
             reset_context()
 

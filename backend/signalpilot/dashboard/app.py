@@ -58,6 +58,7 @@ def create_dashboard_app(
         adaptation,
         allocation,
         circuit_breaker,
+        news,
         performance,
         settings,
         signals,
@@ -75,5 +76,7 @@ def create_dashboard_app(
         circuit_breaker.router, prefix="/api/circuit-breaker", tags=["circuit-breaker"]
     )
     app.include_router(adaptation.router, prefix="/api/adaptation", tags=["adaptation"])
+    app.include_router(news.router, prefix="/api/news", tags=["news"])
+    app.include_router(news.earnings_router, prefix="/api/earnings", tags=["earnings"])
 
     return app

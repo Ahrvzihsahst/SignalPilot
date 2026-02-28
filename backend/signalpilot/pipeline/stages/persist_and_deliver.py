@@ -6,6 +6,7 @@ import logging
 
 from signalpilot.db.models import FinalSignal, HybridScoreRecord, SignalRecord
 from signalpilot.pipeline.context import ScanContext
+from signalpilot.telegram.formatters import format_suppression_notification
 from signalpilot.utils.log_context import set_context
 
 logger = logging.getLogger(__name__)
@@ -33,6 +34,20 @@ class PersistAndDeliverStage:
         return "persist_and_deliver"
 
     async def process(self, ctx: ScanContext) -> ScanContext:
+        if not ctx.final_signals and not ctx.suppressed_signals:
+            return ctx
+
+        # Phase 4: Send suppression notifications
+        for suppressed in ctx.suppressed_signals:
+            try:
+                msg = format_suppression_notification(suppressed)
+                await self._bot.send_alert(msg)
+            except Exception:
+                logger.warning(
+                    "Failed to send suppression notification for %s",
+                    suppressed.symbol,
+                )
+
         if not ctx.final_signals:
             return ctx
 
@@ -42,11 +57,32 @@ class PersistAndDeliverStage:
             if is_paper:
                 record.status = "paper"
 
+            # Phase 4: Persist news sentiment metadata
+            sym = signal.ranked_signal.candidate.symbol
+            news_sentiment_label = None
+            news_sentiment_score = None
+            news_top_headline = None
+            news_action = None
+            original_star_rating = None
+            if ctx.sentiment_results and sym in ctx.sentiment_results:
+                sr = ctx.sentiment_results[sym]
+                record.news_sentiment_score = sr.score
+                record.news_sentiment_label = sr.label
+                record.news_top_headline = sr.top_negative_headline or sr.headline
+                record.news_action = sr.action
+                news_sentiment_label = sr.label
+                news_sentiment_score = sr.score
+                news_top_headline = sr.top_negative_headline or sr.headline
+                news_action = sr.action
+                # Track original star rating for downgraded signals
+                if sr.action == "DOWNGRADED":
+                    record.original_star_rating = signal.ranked_signal.signal_strength + 1
+                    original_star_rating = record.original_star_rating
+
             # Phase 3: Persist composite score and confirmation fields
             conf_level = None
             conf_by = None
             boosted_stars = None
-            sym = signal.ranked_signal.candidate.symbol
 
             if ctx.composite_scores and sym in ctx.composite_scores:
                 cs = ctx.composite_scores[sym]
@@ -117,6 +153,10 @@ class PersistAndDeliverStage:
                 confirmation_level=conf_level,
                 confirmed_by=conf_by,
                 boosted_stars=boosted_stars,
+                news_sentiment_label=news_sentiment_label,
+                news_top_headline=news_top_headline,
+                news_sentiment_score=news_sentiment_score,
+                original_star_rating=original_star_rating,
             )
             logger.info(
                 "Signal %s for %s (id=%d, composite_score=%s, confirmation=%s)",

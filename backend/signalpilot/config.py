@@ -131,6 +131,30 @@ class AppConfig(BaseSettings):
     dashboard_port: int = Field(default=9000, description="Dashboard port")
     dashboard_host: str = Field(default="127.0.0.1", description="Dashboard host")
 
+    # Phase 4: News Sentiment Filter
+    news_enabled: bool = Field(default=True, description="Kill switch for news sentiment feature")
+    sentiment_model: str = Field(default="vader", description="Sentiment engine: 'vader' or 'finbert'")
+    news_lookback_hours: int = Field(default=24, description="How far back to look for news headlines")
+    news_cache_ttl_hours: int = Field(default=2, description="Cache refresh interval in hours")
+    strong_negative_threshold: float = Field(default=-0.5, description="Score below which signals are suppressed")
+    mild_negative_threshold: float = Field(default=-0.2, description="Score below which signals are downgraded")
+    positive_threshold: float = Field(default=0.3, description="Score above which positive badge is shown")
+    earnings_blackout_enabled: bool = Field(default=True, description="Enable earnings day signal suppression")
+    news_pre_market_fetch_time: str = Field(default="08:30", description="Pre-market news fetch time")
+    news_max_headlines_per_stock: int = Field(default=10, description="Cap on cached headlines per stock")
+    news_rss_feeds: str = Field(
+        default="https://www.moneycontrol.com/rss/latestnews.xml,https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms,https://www.livemint.com/rss/markets",
+        description="Comma-separated RSS feed URLs",
+    )
+    news_financial_lexicon_path: str = Field(
+        default="signalpilot/intelligence/financial_lexicon.json",
+        description="Path to VADER financial lexicon overlay JSON",
+    )
+    news_earnings_csv_path: str = Field(
+        default="data/earnings_calendar.csv",
+        description="Path to earnings calendar CSV",
+    )
+
     model_config = {
         "env_file": ".env",
         "env_file_encoding": "utf-8",
@@ -162,5 +186,10 @@ class AppConfig(BaseSettings):
         if abs(composite_sum - 1.0) > tolerance:
             raise ValueError(
                 f"Composite scoring weights must sum to 1.0, got {composite_sum:.3f}"
+            )
+        # Validate sentiment model
+        if self.sentiment_model not in ("vader", "finbert"):
+            raise ValueError(
+                f"sentiment_model must be 'vader' or 'finbert', got {self.sentiment_model!r}"
             )
         return self

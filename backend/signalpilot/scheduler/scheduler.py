@@ -71,6 +71,26 @@ class MarketScheduler:
             )
             logger.info("Registered job %s at %02d:%02d IST (mon-fri)", job_id, hour, minute)
 
+        # Phase 4: News Sentiment Filter jobs
+        news_jobs = [
+            ("pre_market_news", 8, 30, "fetch_pre_market_news"),
+            ("news_cache_refresh_1", 11, 15, "refresh_news_cache"),
+            ("news_cache_refresh_2", 13, 15, "refresh_news_cache"),
+        ]
+        for job_id, hour, minute, method_name in news_jobs:
+            if hasattr(app, method_name):
+                callback = getattr(app, method_name)
+                guarded = _trading_day_guard(callback)
+                self._scheduler.add_job(
+                    guarded,
+                    CronTrigger(
+                        day_of_week="mon-fri", hour=hour, minute=minute, timezone=IST,
+                    ),
+                    id=job_id,
+                    replace_existing=True,
+                )
+                logger.info("Registered job %s at %02d:%02d IST (mon-fri)", job_id, hour, minute)
+
         # Weekly capital rebalancing — Sunday 18:00 IST (before next trading week)
         if hasattr(app, "run_weekly_rebalance"):
             self._scheduler.add_job(

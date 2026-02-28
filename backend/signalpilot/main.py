@@ -72,6 +72,13 @@ async def create_app(config: AppConfig) -> SignalPilotApp:
     circuit_breaker_repo = CircuitBreakerRepository(connection)
     adaptation_log_repo = AdaptationLogRepository(connection)
 
+    # --- Phase 4: News Sentiment Filter Repositories ---
+    from signalpilot.db.earnings_repo import EarningsCalendarRepository
+    from signalpilot.db.news_sentiment_repo import NewsSentimentRepository
+
+    news_sentiment_repo = NewsSentimentRepository(connection)
+    earnings_repo = EarningsCalendarRepository(connection)
+
     # --- Data layer (no DB deps) ---
     authenticator = SmartAPIAuthenticator(config)
     instruments = InstrumentManager(config.nifty500_csv_path)
@@ -124,6 +131,32 @@ async def create_app(config: AppConfig) -> SignalPilotApp:
         strategy_performance_repo, config_repo,
         adaptation_log_repo=adaptation_log_repo,
     )
+
+    # --- Phase 4: News Sentiment Intelligence ---
+    from signalpilot.intelligence.earnings import EarningsCalendar
+    from signalpilot.intelligence.news_fetcher import NewsFetcher
+    from signalpilot.intelligence.news_sentiment import NewsSentimentService
+    from signalpilot.intelligence.sentiment_engine import (
+        VADERSentimentEngine,
+    )
+
+    if config.sentiment_model == "vader":
+        sentiment_engine = VADERSentimentEngine(
+            lexicon_path=config.news_financial_lexicon_path,
+        )
+    else:
+        from signalpilot.intelligence.sentiment_engine import FinBERTSentimentEngine
+        sentiment_engine = FinBERTSentimentEngine()
+
+    news_fetcher = NewsFetcher(config)
+    news_sentiment_service = NewsSentimentService(
+        news_fetcher=news_fetcher,
+        sentiment_engine=sentiment_engine,
+        news_sentiment_repo=news_sentiment_repo,
+        earnings_repo=earnings_repo,
+        config=config,
+    )
+    earnings_calendar = EarningsCalendar(earnings_repo, config)
 
     # --- Risk ---
     position_sizer = PositionSizer()
@@ -233,6 +266,9 @@ async def create_app(config: AppConfig) -> SignalPilotApp:
         adaptive_manager=adaptive_manager,
         hybrid_score_repo=hybrid_score_repo,
         adaptation_log_repo=adaptation_log_repo,
+        # Phase 4: News Sentiment Filter
+        news_sentiment_service=news_sentiment_service,
+        earnings_repo=earnings_repo,
     )
 
     # --- Wire event bus subscriptions (after all components exist) ---
@@ -310,6 +346,11 @@ async def create_app(config: AppConfig) -> SignalPilotApp:
         circuit_breaker_repo=circuit_breaker_repo,
         adaptation_log_repo=adaptation_log_repo,
         dashboard_app=dashboard_app,
+        # Phase 4: News Sentiment Filter
+        news_sentiment_service=news_sentiment_service,
+        earnings_repo=earnings_repo,
+        earnings_calendar=earnings_calendar,
+        news_sentiment_repo=news_sentiment_repo,
     )
 
     # Wire app reference back to bot for OVERRIDE CIRCUIT command

@@ -74,6 +74,8 @@ async def test_valid_signal_stored_and_sent(db, repos):
     mock_bot.send_signal.assert_awaited_once_with(
         signal, is_paper=False, signal_id=signals[0].id,
         confirmation_level=None, confirmed_by=None, boosted_stars=None,
+        news_sentiment_label=None, news_top_headline=None,
+        news_sentiment_score=None, original_star_rating=None,
     )
 
 
