@@ -24,6 +24,7 @@ from signalpilot.pipeline.stages.gap_stock_marking import GapStockMarkingStage
 from signalpilot.pipeline.stages.news_sentiment import NewsSentimentStage
 from signalpilot.pipeline.stages.persist_and_deliver import PersistAndDeliverStage
 from signalpilot.pipeline.stages.ranking import RankingStage
+from signalpilot.pipeline.stages.regime_context import RegimeContextStage
 from signalpilot.pipeline.stages.risk_sizing import RiskSizingStage
 from signalpilot.pipeline.stages.strategy_eval import StrategyEvalStage
 from signalpilot.telegram.formatters import format_daily_summary, format_signal_actions_summary
@@ -77,6 +78,12 @@ class SignalPilotApp:
         earnings_repo=None,
         earnings_calendar=None,
         news_sentiment_repo=None,
+        # Phase 4: Market Regime Detection
+        regime_classifier=None,
+        regime_data_collector=None,
+        regime_repo=None,
+        regime_performance_repo=None,
+        morning_brief_generator=None,
     ) -> None:
         self._db = db
         self._signal_repo = signal_repo
@@ -121,6 +128,12 @@ class SignalPilotApp:
         self._earnings_repo = earnings_repo
         self._earnings_calendar = earnings_calendar
         self._news_sentiment_repo = news_sentiment_repo
+        # Phase 4: Market Regime Detection
+        self._regime_classifier = regime_classifier
+        self._regime_data_collector = regime_data_collector
+        self._regime_repo = regime_repo
+        self._regime_performance_repo = regime_performance_repo
+        self._morning_brief_generator = morning_brief_generator
         # Internal state
         self._scanning = False
         self._accepting_signals = True
@@ -205,6 +218,11 @@ class SignalPilotApp:
                 self._adaptive_manager.reset_daily()
                 logger.info("Adaptive manager daily reset")
 
+            # Phase 4: Regime detection daily reset
+            if self._regime_classifier is not None:
+                self._regime_classifier.reset_daily()
+                logger.info("Regime classifier daily reset")
+
             logger.info("Starting market scanning")
             await self._websocket.connect()
             self._scanning = True
@@ -251,10 +269,15 @@ class SignalPilotApp:
         if self._websocket and hasattr(self._websocket, "reset_volume_tracking"):
             self._websocket.reset_volume_tracking()
 
+        # Phase 4: Reset regime data collector session
+        if self._regime_data_collector and hasattr(self._regime_data_collector, "reset_session"):
+            self._regime_data_collector.reset_session()
+
     def _build_pipeline(self) -> ScanPipeline:
         """Construct the composable scan pipeline from injected components."""
         signal_stages = [
             CircuitBreakerGateStage(self._circuit_breaker),
+            RegimeContextStage(self._regime_classifier, self._app_config),
             StrategyEvalStage(self._strategies, self._config_repo, self._market_data),
             GapStockMarkingStage(),
             DeduplicationStage(self._duplicate_checker),
@@ -429,6 +452,16 @@ class SignalPilotApp:
                 except Exception:
                     logger.exception("Failed to purge news entries")
 
+            # Phase 4: End-of-day regime performance tracking
+            if self._regime_classifier is not None:
+                classification = self._regime_classifier.get_cached_regime()
+                if classification is not None:
+                    regime_line = (
+                        f"\nMarket Regime: {classification.regime}"
+                        f" (confidence: {classification.confidence:.0%})"
+                    )
+                    message += regime_line
+
             # Cleanup expired watchlist entries
             if self._watchlist_repo:
                 deleted = await self._watchlist_repo.cleanup_expired(now)
@@ -542,6 +575,101 @@ class SignalPilotApp:
                 logger.info("News cache refresh complete: %d headlines", count)
             except Exception:
                 logger.exception("News cache refresh failed")
+        finally:
+            reset_context()
+
+    # -- Phase 4: Market Regime Detection lifecycle methods
+
+    async def send_morning_brief(self) -> None:
+        """Generate and send the morning brief (called at 8:45 AM)."""
+        set_context(job_name="send_morning_brief")
+        try:
+            if self._morning_brief_generator is None:
+                logger.info("Morning brief generator not configured, skipping")
+                return
+            if not self._app_config or not getattr(self._app_config, "regime_enabled", False):
+                logger.info("Regime detection disabled, skipping morning brief")
+                return
+            try:
+                brief = await self._morning_brief_generator.generate()
+                if self._bot:
+                    await self._bot.send_alert(brief)
+                logger.info("Morning brief sent")
+            except Exception:
+                logger.exception("Failed to generate/send morning brief")
+        finally:
+            reset_context()
+
+    async def classify_regime(self) -> None:
+        """Classify the market regime (called at 9:30 AM)."""
+        set_context(job_name="classify_regime")
+        try:
+            if self._regime_classifier is None or self._regime_data_collector is None:
+                logger.info("Regime classifier not configured, skipping")
+                return
+            if not self._app_config or not getattr(self._app_config, "regime_enabled", False):
+                logger.info("Regime detection disabled, skipping classification")
+                return
+            try:
+                classification = await self._regime_classifier.classify()
+
+                # Send notification
+                if self._bot:
+                    from signalpilot.telegram.formatters import format_classification_notification
+                    msg = format_classification_notification(classification)
+                    await self._bot.send_alert(msg)
+
+                logger.info(
+                    "Regime classified: %s (confidence=%.2f)",
+                    classification.regime, classification.confidence,
+                )
+            except Exception:
+                logger.exception("Regime classification failed")
+        finally:
+            reset_context()
+
+    async def check_regime_reclassify_11(self) -> None:
+        """Check for regime re-classification (called at 11:00 AM)."""
+        await self._check_regime_reclassify("regime_reclass_11")
+
+    async def check_regime_reclassify_13(self) -> None:
+        """Check for regime re-classification (called at 1:00 PM)."""
+        await self._check_regime_reclassify("regime_reclass_13")
+
+    async def check_regime_reclassify_1430(self) -> None:
+        """Check for regime re-classification (called at 2:30 PM)."""
+        await self._check_regime_reclassify("regime_reclass_1430")
+
+    async def _check_regime_reclassify(self, job_name: str) -> None:
+        """Internal helper for regime re-classification checks."""
+        set_context(job_name=job_name)
+        try:
+            if self._regime_classifier is None or self._regime_data_collector is None:
+                return
+            if not self._app_config or not getattr(self._app_config, "regime_enabled", False):
+                return
+            try:
+                checkpoint_map = {
+                    "regime_reclass_11": "11:00",
+                    "regime_reclass_13": "13:00",
+                    "regime_reclass_1430": "14:30",
+                }
+                checkpoint = checkpoint_map.get(job_name, "")
+                new_classification = await self._regime_classifier.check_reclassify(checkpoint)
+                if new_classification is not None:
+                    # Send notification
+                    if self._bot:
+                        from signalpilot.telegram.formatters import format_reclass_notification
+                        msg = format_reclass_notification(new_classification)
+                        await self._bot.send_alert(msg)
+
+                    logger.info(
+                        "Regime re-classified: %s -> %s",
+                        new_classification.previous_regime,
+                        new_classification.regime,
+                    )
+            except Exception:
+                logger.exception("Regime re-classification check failed")
         finally:
             reset_context()
 

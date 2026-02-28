@@ -28,20 +28,21 @@
 14. [Step 10.5 — Circuit Breaker Gate (Phase 3)](#14-step-105--circuit-breaker-gate-phase-3)
 15. [Step 10.6 — Adaptive Strategy Management (Phase 3)](#15-step-106--adaptive-strategy-management-phase-3)
 16. [Step 10.7 — News Sentiment Filter (Phase 4 NSF)](#16-step-107--news-sentiment-filter-phase-4-nsf)
-17. [Step 11 — Capital Allocation](#17-step-11--capital-allocation)
-18. [Step 12 — Database Persistence](#18-step-12--database-persistence)
-19. [Step 13 — Telegram Delivery](#19-step-13--telegram-delivery)
-20. [Step 14 — Exit Monitoring](#20-step-14--exit-monitoring)
-21. [Step 15 — Telegram Commands (User Interaction)](#21-step-15--telegram-commands-user-interaction)
-22. [Step 15.5 — Inline Button Callbacks & Quick Actions (Phase 4)](#22-step-155--inline-button-callbacks--quick-actions-phase-4)
-23. [Step 16 — Daily Wind-Down & Summary](#23-step-16--daily-wind-down--summary)
-24. [Step 17 — Shutdown & Crash Recovery](#24-step-17--shutdown--crash-recovery)
-25. [Step 18 — Dashboard (Phase 3)](#25-step-18--dashboard-phase-3)
-26. [Data Model Chain](#26-data-model-chain)
-27. [Logging & Observability](#27-logging--observability)
-28. [Rate Limiting & Retry](#28-rate-limiting--retry)
-29. [Complete Scan Loop Iteration](#29-complete-scan-loop-iteration)
-30. [Summary: A Complete Trading Day](#30-summary-a-complete-trading-day)
+17. [Step 10.8 — Market Regime Detection (Phase 4 MRD)](#17-step-108--market-regime-detection-phase-4-mrd)
+18. [Step 11 — Capital Allocation](#18-step-11--capital-allocation)
+19. [Step 12 — Database Persistence](#19-step-12--database-persistence)
+20. [Step 13 — Telegram Delivery](#20-step-13--telegram-delivery)
+21. [Step 14 — Exit Monitoring](#21-step-14--exit-monitoring)
+22. [Step 15 — Telegram Commands (User Interaction)](#22-step-15--telegram-commands-user-interaction)
+23. [Step 15.5 — Inline Button Callbacks & Quick Actions (Phase 4)](#23-step-155--inline-button-callbacks--quick-actions-phase-4)
+24. [Step 16 — Daily Wind-Down & Summary](#24-step-16--daily-wind-down--summary)
+25. [Step 17 — Shutdown & Crash Recovery](#25-step-17--shutdown--crash-recovery)
+26. [Step 18 — Dashboard (Phase 3)](#26-step-18--dashboard-phase-3)
+27. [Data Model Chain](#27-data-model-chain)
+28. [Logging & Observability](#28-logging--observability)
+29. [Rate Limiting & Retry](#29-rate-limiting--retry)
+30. [Complete Scan Loop Iteration](#30-complete-scan-loop-iteration)
+31. [Summary: A Complete Trading Day](#31-summary-a-complete-trading-day)
 
 ---
 
@@ -59,7 +60,7 @@ its dependencies via constructor parameters.
    AppConfig (pydantic-settings)
         |
         v
-   create_app()          <-- wires 35+ components in dependency order
+   create_app()          <-- wires 40+ components in dependency order
         |
         |-- DatabaseManager --> SignalRepository
         |                   --> TradeRepository
@@ -70,6 +71,8 @@ its dependencies via constructor parameters.
         |                   --> WatchlistRepository          (Phase 4)
         |                   --> NewsSentimentRepository      (Phase 4 NSF)
         |                   --> EarningsCalendarRepository   (Phase 4 NSF)
+        |                   --> MarketRegimeRepository       (Phase 4 MRD)
+        |                   --> RegimePerformanceRepository  (Phase 4 MRD)
         |                   --> HybridScoreRepository       (Phase 3)
         |                   --> CircuitBreakerRepository     (Phase 3)
         |                   --> AdaptationLogRepository      (Phase 3)
@@ -103,14 +106,15 @@ its dependencies via constructor parameters.
         |-- VWAPReversalStrategy |
         |       |-- VWAPCooldownTracker (max 2/stock/day, 60-min cooldown)
         |
-        |-- ScanPipeline (composable 12-stage signal pipeline + 1 always stage)
+        |-- ScanPipeline (composable 13-stage signal pipeline + 1 always stage)
         |       |-- Signal stages (run when accepting_signals=True):
-        |       |     CircuitBreakerGateStage --> StrategyEvalStage -->
-        |       |     GapStockMarkingStage --> DeduplicationStage -->
-        |       |     ConfidenceStage --> CompositeScoringStage -->
-        |       |     AdaptiveFilterStage --> RankingStage -->
-        |       |     NewsSentimentStage --> RiskSizingStage -->
-        |       |     PersistAndDeliverStage --> DiagnosticStage
+        |       |     CircuitBreakerGateStage --> RegimeContextStage -->
+        |       |     StrategyEvalStage --> GapStockMarkingStage -->
+        |       |     DeduplicationStage --> ConfidenceStage -->
+        |       |     CompositeScoringStage --> AdaptiveFilterStage -->
+        |       |     RankingStage --> NewsSentimentStage -->
+        |       |     RiskSizingStage --> PersistAndDeliverStage -->
+        |       |     DiagnosticStage
         |       |-- Always stages (run every cycle):
         |       |     ExitMonitoringStage
         |       +-- ScanContext (mutable state bag passed through all stages)
@@ -141,25 +145,31 @@ its dependencies via constructor parameters.
         |       |   +-- Labels: STRONG_NEGATIVE / MILD_NEGATIVE / NEUTRAL / POSITIVE / NO_NEWS
         |       |-- EarningsCalendar         — CSV + optional screener API ingest
         |
+        |-- Intelligence Module (Phase 4 MRD) — signalpilot/intelligence/
+        |       |-- RegimeDataCollector      — VIX, gap, range, alignment data gathering
+        |       |-- MarketRegimeClassifier   — composite scoring, classify/reclassify, modifiers
+        |       |-- MorningBriefGenerator    — pre-market brief with global cues + regime prediction
+        |
         |-- ExitMonitor --> reads MarketDataStore, emits events via EventBus
         |       |-- Per-strategy TrailingStopConfig
         |       |-- close_trade callback --> TradeRepository
         |       |-- emits ExitAlertEvent, StopLossHitEvent, TradeExitedEvent
         |
         |-- SignalPilotBot (Telegram, python-telegram-bot)
-        |       |-- 16 text commands: TAKEN, STATUS, JOURNAL, CAPITAL, PAUSE,
+        |       |-- 21 text commands: TAKEN, STATUS, JOURNAL, CAPITAL, PAUSE,
         |       |   RESUME, ALLOCATE, STRATEGY, OVERRIDE, SCORE, ADAPT,
-        |       |   REBALANCE, NEWS, EARNINGS, UNSUPPRESS, HELP
+        |       |   REBALANCE, NEWS, EARNINGS, UNSUPPRESS, REGIME,
+        |       |   REGIME HISTORY, REGIME OVERRIDE, VIX, MORNING, HELP
         |       |-- 7 inline keyboards (Phase 4): signal actions, skip reasons,
         |       |   T1/T2 targets, SL approaching, near-T2
         |       |-- 9 callback handlers (Phase 4): taken, skip, skip_reason,
         |       |   watch, partial_exit, exit_now, take_profit, hold, let_run
         |
         |-- Dashboard (Phase 3)
-        |       |-- FastAPI backend          — 8 route modules (/api/signals, /trades, etc.)
+        |       |-- FastAPI backend          — 10 route modules (/api/signals, /trades, etc.)
         |       |-- React frontend/          — Vite + TypeScript + Tailwind + React Query
         |
-        +-- MarketScheduler (APScheduler 3.x, 12 IST cron jobs)
+        +-- MarketScheduler (APScheduler 3.x, 17 IST cron jobs)
                 |
                 +-- SignalPilotApp._scan_loop()  <-- runs every 1 second
                         via ScanPipeline.run(ctx)
@@ -374,7 +384,7 @@ A `@model_validator` enforces that each of the three scoring weight groups
 async def main() -> None:
     config = AppConfig()                     # load .env
     configure_logging(level=config.log_level, log_file=config.log_file)
-    app = await create_app(config)           # wire 35+ components
+    app = await create_app(config)           # wire 40+ components
 
     # Setup SIGINT/SIGTERM handlers (once via shutting_down flag)
     now = datetime.now(IST)
@@ -387,10 +397,10 @@ async def main() -> None:
         await asyncio.sleep(1)               # keep event loop alive
 ```
 
-#### `create_app()` Wiring Order (26 stages)
+#### `create_app()` Wiring Order (31 stages)
 
-1. **Database** — `DatabaseManager(db_path)` + `initialize()` (WAL mode, foreign keys, phase 2 migration, phase 3 migration, phase 4 NSF migration)
-2. **Repositories** — `SignalRepository`, `TradeRepository`, `ConfigRepository`, `MetricsCalculator`, `StrategyPerformanceRepository`, `SignalActionRepository`, `WatchlistRepository`, `NewsSentimentRepository`, `EarningsCalendarRepository`, `HybridScoreRepository`, `CircuitBreakerRepository`, `AdaptationLogRepository` (all sharing the same `aiosqlite.Connection`)
+1. **Database** — `DatabaseManager(db_path)` + `initialize()` (WAL mode, foreign keys, phase 2 migration, phase 3 migration, phase 4 NSF migration, phase 4 MRD migration)
+2. **Repositories** — `SignalRepository`, `TradeRepository`, `ConfigRepository`, `MetricsCalculator`, `StrategyPerformanceRepository`, `SignalActionRepository`, `WatchlistRepository`, `NewsSentimentRepository`, `EarningsCalendarRepository`, `HybridScoreRepository`, `CircuitBreakerRepository`, `AdaptationLogRepository`, `MarketRegimeRepository`, `RegimePerformanceRepository` (all sharing the same `aiosqlite.Connection`)
 3. **Event Bus** — `EventBus()` (in-process async event dispatch for decoupled cross-component communication)
 4. **Auth** — `SmartAPIAuthenticator(config)`
 5. **Data** — `InstrumentManager(csv_path)`, `MarketDataStore()`, `HistoricalDataFetcher(authenticator, instruments, rate_limit)`
@@ -404,21 +414,24 @@ async def main() -> None:
 13. **News Fetcher** (Phase 4 NSF) — `RSSNewsFetcher(config.news_rss_feeds)` — Google News + MoneyControl RSS feeds
 14. **News Sentiment Service** (Phase 4 NSF) — `NewsSentimentService(fetcher, engine, news_sentiment_repo, config)` — orchestrates batch processing, labeling, caching
 15. **Earnings Calendar** (Phase 4 NSF) — `EarningsCalendar(earnings_repo, csv_path="data/earnings_calendar.csv")` — optional screener API ingest
-16. **Telegram Bot** — `SignalPilotBot(...)` with `_get_current_prices` wrapper, `news_sentiment_service`, and `earnings_repo` injected for NEWS/EARNINGS/UNSUPPRESS commands
-17. **WebSocket** — `WebSocketClient(authenticator, instruments, market_data_store, on_disconnect_alert, max_reconnect_attempts)`
-18. **Scheduler** — `MarketScheduler()`
-19. **Confidence Detector** (Phase 3) — `ConfidenceDetector(signal_repo, confirmation_window_minutes=15)`
-20. **Composite Scorer** (Phase 3) — `CompositeScorer(strategy_performance_repo, config)` with 4 weighted factors
-21. **Circuit Breaker** (Phase 3) — `CircuitBreaker(circuit_breaker_repo, config_repo, event_bus, sl_limit=3)`
-22. **Adaptive Manager** (Phase 3) — `AdaptiveManager(adaptation_log_repo, config_repo, strategy_performance_repo, event_bus)`
-23. **Event Bus Subscriptions** — wires all cross-component events:
+16. **Regime Data Collector** (Phase 4 MRD) — `RegimeDataCollector(config)` — gathers VIX, gap, range, alignment data
+17. **Regime Classifier** (Phase 4 MRD) — `MarketRegimeClassifier(config)` — composite scoring and classification engine
+18. **Morning Brief** (Phase 4 MRD) — `MorningBriefGenerator(regime_data_collector, watchlist_repo, config)` — pre-market briefing
+19. **Telegram Bot** — `SignalPilotBot(...)` with `_get_current_prices` wrapper, `news_sentiment_service`, `earnings_repo`, `regime_classifier`, `regime_repo`, `regime_perf_repo`, `regime_data_collector`, `morning_brief` injected
+20. **WebSocket** — `WebSocketClient(authenticator, instruments, market_data_store, on_disconnect_alert, max_reconnect_attempts)`
+21. **Scheduler** — `MarketScheduler()`
+22. **Confidence Detector** (Phase 3) — `ConfidenceDetector(signal_repo, confirmation_window_minutes=15)`
+23. **Composite Scorer** (Phase 3) — `CompositeScorer(strategy_performance_repo, config)` with 4 weighted factors
+24. **Circuit Breaker** (Phase 3) — `CircuitBreaker(circuit_breaker_repo, config_repo, event_bus, sl_limit=3)`
+25. **Adaptive Manager** (Phase 3) — `AdaptiveManager(adaptation_log_repo, config_repo, strategy_performance_repo, event_bus)`
+26. **Event Bus Subscriptions** — wires all cross-component events:
     - `ExitAlertEvent` → `bot.send_exit_alert()`
     - `StopLossHitEvent` → `circuit_breaker.on_sl_hit()`
     - `TradeExitedEvent` → `adaptive_manager.on_trade_exit()`
     - `AlertMessageEvent` → `bot.send_alert()`
-24. **Pipeline** — `ScanPipeline(signal_stages=[12 stages], always_stages=[ExitMonitoringStage])`
-25. **Dashboard** (Phase 3) — `create_dashboard_app(db_path, write_connection)` (if `dashboard_enabled`)
-26. **SignalPilotApp** — orchestrator wired with all components + pipeline (includes `news_sentiment_service` and `earnings_calendar` for scheduled jobs)
+27. **Pipeline** — `ScanPipeline(signal_stages=[13 stages], always_stages=[ExitMonitoringStage])`
+28. **Dashboard** (Phase 3) — `create_dashboard_app(db_path, write_connection)` (if `dashboard_enabled`)
+29. **SignalPilotApp** — orchestrator wired with all components + pipeline (includes `news_sentiment_service`, `earnings_calendar`, `regime_classifier`, `regime_data_collector`, `morning_brief` for scheduled jobs)
 
 The bot and exit monitor have a circular dependency (exit alerts are sent via
 the bot). The `EventBus` eliminates this: the exit monitor emits
@@ -583,17 +596,22 @@ missing either prev-day or ADV data are excluded with a logged warning.
 
 ### File: `signalpilot/scheduler/scheduler.py`
 
-`MarketScheduler` wraps **APScheduler 3.x** with **12 IST cron jobs** registered
+`MarketScheduler` wraps **APScheduler 3.x** with **17 IST cron jobs** registered
 against `SignalPilotApp` methods:
 
 | Time (IST) | Job ID | Action |
 |-----------|--------|--------|
 | 08:30 Mon-Fri | `pre_market_news` | Batch-fetch news sentiment for watchlist + Nifty 500 (Phase 4 NSF) |
+| 08:45 Mon-Fri | `morning_brief` | Generate & send pre-market morning brief with global cues, India context, regime prediction, watchlist alerts (Phase 4 MRD) |
 | 09:00 Mon-Fri | `pre_market_alert` | Send "Signals coming at 9:15" Telegram alert |
 | 09:15 Mon-Fri | `start_scanning` | Open WebSocket, reset session, begin 1-second scan loop |
+| 09:30 Mon-Fri | `regime_classify` | Initial market regime classification for the day (Phase 4 MRD) |
 | 09:45 Mon-Fri | `lock_opening_ranges` | Finalize 30-min opening range for ORB detection |
+| 11:00 Mon-Fri | `regime_reclass_11` | Re-classification check: VIX spike (Phase 4 MRD) |
 | 11:15 Mon-Fri | `news_cache_refresh_1` | Refresh stale news sentiment cache entries (Phase 4 NSF) |
+| 13:00 Mon-Fri | `regime_reclass_13` | Re-classification check: direction reversal (Phase 4 MRD) |
 | 13:15 Mon-Fri | `news_cache_refresh_2` | Refresh stale news sentiment cache entries (Phase 4 NSF) |
+| 14:30 Mon-Fri | `regime_reclass_1430` | Re-classification check: round-trip (Phase 4 MRD) |
 | 14:30 Mon-Fri | `stop_new_signals` | Set `_accepting_signals = False` |
 | 15:00 Mon-Fri | `exit_reminder` | Advisory exit alerts for open positions |
 | 15:15 Mon-Fri | `mandatory_exit` | Forced exit for all remaining open trades |
@@ -847,6 +865,14 @@ class ScanContext:
     # Set by RankingStage
     ranked_signals: list[RankedSignal] = field(default_factory=list)
 
+    # Set by RegimeContextStage (Phase 4 MRD)
+    regime: str | None = None
+    regime_confidence: float = 0.0
+    regime_min_stars: int = 3
+    regime_position_modifier: float = 1.0
+    regime_max_positions: int | None = None
+    regime_strategy_weights: dict | None = None
+
     # Set by NewsSentimentStage (Phase 4 NSF)
     sentiment_results: dict[str, SentimentResult] = field(default_factory=dict)
     suppressed_signals: list[SuppressedSignal] = field(default_factory=list)
@@ -872,22 +898,23 @@ class ScanPipeline:
         return ctx
 ```
 
-#### 12 Signal Stages (in order)
+#### 13 Signal Stages (in order)
 
 | # | Stage | File | Purpose |
 |---|-------|------|---------|
 | 1 | `CircuitBreakerGateStage` | `circuit_breaker_gate.py` | Sets `ctx.accepting_signals = False` if circuit breaker is active |
-| 2 | `StrategyEvalStage` | `strategy_eval.py` | Loads user config, filters enabled strategies, runs `evaluate()` on each |
-| 3 | `GapStockMarkingStage` | `gap_stock_marking.py` | Marks Gap & Go symbols for ORB/VWAP exclusion via `mark_gap_stock()` |
-| 4 | `DeduplicationStage` | `deduplication.py` | Filters active-trade and same-day signal duplicates |
-| 5 | `ConfidenceStage` | `confidence.py` | Detects multi-strategy confirmations (Phase 3) |
-| 6 | `CompositeScoringStage` | `composite_scoring.py` | 4-factor hybrid scoring (Phase 3) |
-| 7 | `AdaptiveFilterStage` | `adaptive_filter.py` | Removes signals from paused/throttled strategies (Phase 3) |
-| 8 | `RankingStage` | `ranking.py` | Top-K selection by composite score, assigns 1-5 stars |
-| 9 | `NewsSentimentStage` | `news_sentiment.py` | News sentiment filter: suppress, downgrade, or badge signals (Phase 4 NSF) |
-| 10 | `RiskSizingStage` | `risk_sizing.py` | Position sizing, capital allocation, position slot availability |
-| 11 | `PersistAndDeliverStage` | `persist_and_deliver.py` | Save signals to DB, deliver via Telegram with inline keyboards; send suppression notifications |
-| 12 | `DiagnosticStage` | `diagnostic.py` | Heartbeat logging, WebSocket health checks |
+| 2 | `RegimeContextStage` | `regime_context.py` | Reads cached regime classification, sets strategy weights and position modifiers on ScanContext (Phase 4 MRD) |
+| 3 | `StrategyEvalStage` | `strategy_eval.py` | Loads user config, filters enabled strategies, runs `evaluate()` on each |
+| 4 | `GapStockMarkingStage` | `gap_stock_marking.py` | Marks Gap & Go symbols for ORB/VWAP exclusion via `mark_gap_stock()` |
+| 5 | `DeduplicationStage` | `deduplication.py` | Filters active-trade and same-day signal duplicates |
+| 6 | `ConfidenceStage` | `confidence.py` | Detects multi-strategy confirmations (Phase 3) |
+| 7 | `CompositeScoringStage` | `composite_scoring.py` | 4-factor hybrid scoring (Phase 3) |
+| 8 | `AdaptiveFilterStage` | `adaptive_filter.py` | Removes signals from paused/throttled strategies (Phase 3) |
+| 9 | `RankingStage` | `ranking.py` | Top-K selection by composite score, assigns 1-5 stars + regime min-stars filter (Phase 4 MRD) |
+| 10 | `NewsSentimentStage` | `news_sentiment.py` | News sentiment filter: suppress, downgrade, or badge signals (Phase 4 NSF) |
+| 11 | `RiskSizingStage` | `risk_sizing.py` | Position sizing, capital allocation + regime position modifier (Phase 4 MRD) |
+| 12 | `PersistAndDeliverStage` | `persist_and_deliver.py` | Save signals to DB with regime metadata, deliver via Telegram with inline keyboards + regime badge; send suppression notifications (Phase 4 MRD) |
+| 13 | `DiagnosticStage` | `diagnostic.py` | Heartbeat logging, WebSocket health checks |
 
 #### 1 Always Stage (runs every cycle, regardless of signal acceptance)
 
@@ -895,7 +922,7 @@ class ScanPipeline:
 |---|-------|------|---------|
 | 1 | `ExitMonitoringStage` | `exit_monitoring.py` | Check all active trades for SL/target/time exits |
 
-### Strategy Evaluation (Stage 2 Detail)
+### Strategy Evaluation (Stage 3 Detail)
 
 Each strategy implements `BaseStrategy` (abstract class with `name`, `active_phases`,
 and `evaluate()`) and declares which phases it is active in.
@@ -1532,7 +1559,7 @@ old weight, new weight, and details.
 
 The News Sentiment Filter (NSF) is an intelligence module that evaluates news
 headlines for each ranked signal and takes action based on the sentiment score.
-It runs as **pipeline stage 9**, after `RankingStage` and before `RiskSizingStage`,
+It runs as **pipeline stage 10**, after `RankingStage` and before `RiskSizingStage`,
 operating on the `ctx.ranked_signals` list produced by ranking.
 
 ### Intelligence Module Architecture
@@ -1614,7 +1641,7 @@ class EarningsCalendar:
 Earnings dates are stored in the `earnings_calendar` database table. The
 calendar is refreshed during the weekly rebalance job (Sunday 18:00).
 
-### NewsSentimentStage — Pipeline Stage 9
+### NewsSentimentStage — Pipeline Stage 10
 
 **File:** `signalpilot/pipeline/stages/news_sentiment.py`
 
@@ -1682,9 +1709,9 @@ async def process(self, ctx: ScanContext) -> ScanContext:
 
 #### Impact on Downstream Stages
 
-- **RiskSizingStage (stage 10):** Receives only signals that survived
+- **RiskSizingStage (stage 11):** Receives only signals that survived
   sentiment filtering. Suppressed signals never reach position sizing.
-- **PersistAndDeliverStage (stage 11):** Persists sentiment metadata
+- **PersistAndDeliverStage (stage 12):** Persists sentiment metadata
   (`news_sentiment_score`, `news_sentiment_label`, `news_top_headline`,
   `news_action`, `original_star_rating`) on the `SignalRecord` before DB
   insert. Sends suppression notifications via `bot.send_alert()` for each
@@ -1747,7 +1774,756 @@ Additionally, two existing jobs are enhanced:
 
 ---
 
-## 17. Step 11 — Capital Allocation
+## 17. Step 10.8 — Market Regime Detection (Phase 4 MRD)
+
+### Files: `signalpilot/intelligence/regime_data.py`, `regime_classifier.py`, `morning_brief.py`
+### Pipeline Stage: `signalpilot/pipeline/stages/regime_context.py`
+
+Market Regime Detection (MRD) classifies each trading day as **TRENDING**,
+**RANGING**, or **VOLATILE** at 9:30 AM IST. It uses composite scoring from
+four inputs — India VIX, Nifty gap %, first-15-minute range %, and directional
+alignment — to determine the prevailing market condition. Once classified, the
+regime adjusts strategy weights, position sizing, signal filtering, and
+minimum star thresholds for the remainder of the session.
+
+The system supports **shadow mode** (classify and log without applying
+modifiers) for safe rollout, and allows up to **2 re-classifications per day**
+at 11:00, 13:00, and 14:30 IST. Re-classifications are severity-only
+upgrades: TRENDING can escalate to RANGING, and RANGING can escalate to
+VOLATILE, but never the reverse.
+
+### Intelligence Module Architecture
+
+The `signalpilot/intelligence/` package contains three components for regime
+detection:
+
+#### 1. RegimeDataCollector (`signalpilot/intelligence/regime_data.py`)
+
+`RegimeDataCollector` gathers market-wide data needed for both regime
+classification and the morning brief. It exposes two primary dataclasses and
+multiple data-fetching methods.
+
+**Dataclasses:**
+
+```python
+@dataclass
+class RegimeInputs:
+    """Inputs for regime classification at 9:30 AM."""
+    india_vix: float | None
+    nifty_gap_pct: float | None
+    nifty_first_15_range_pct: float | None
+    nifty_first_15_direction: str | None      # "up", "down", or "flat"
+    directional_alignment: float | None       # -1.0 to 1.0
+    sp500_change_pct: float | None
+    sgx_nifty_change_pct: float | None
+
+@dataclass
+class PreMarketData:
+    """Inputs for 8:45 AM morning brief."""
+    sp500_close: float | None
+    sp500_change_pct: float | None
+    nasdaq_change_pct: float | None
+    dow_change_pct: float | None
+    sgx_nifty: float | None
+    sgx_nifty_change_pct: float | None
+    asia_markets: dict | None
+    india_vix: float | None
+    india_vix_change_pct: float | None
+    fii_net: float | None
+    dii_net: float | None
+    crude_oil: float | None
+    usd_inr: float | None
+```
+
+**Methods:**
+
+```python
+class RegimeDataCollector:
+    async def collect_regime_inputs(self) -> RegimeInputs:
+        """Gather VIX, gap, range, alignment for 9:30 AM classification."""
+        ...
+
+    async def collect_pre_market_data(self) -> PreMarketData:
+        """Gather global cues, FII/DII for 8:45 AM morning brief."""
+        ...
+
+    async def fetch_current_vix(self) -> float | None:
+        """Fetch current India VIX value."""
+        ...
+
+    async def fetch_global_cues(self) -> dict | None:
+        """Fetch S&P 500, NASDAQ, Dow, SGX Nifty, Asia markets."""
+        ...
+
+    async def fetch_fii_dii(self) -> dict | None:
+        """Fetch FII/DII net flow data."""
+        ...
+
+    async def get_current_nifty_data(self) -> dict | None:
+        """Fetch current Nifty 50 index data (open, high, low, close)."""
+        ...
+
+    def set_prev_day_data(self, data: dict) -> None:
+        """Cache previous day close for gap calculation."""
+        ...
+
+    def set_global_cues(self, cues: dict) -> None:
+        """Cache global cues for session reuse."""
+        ...
+
+    def reset_session(self) -> None:
+        """Clear all session-scoped caches at start of day."""
+        ...
+```
+
+Each data source has **independent error handling** with `None` fallback.
+If India VIX cannot be fetched, for example, the VIX score defaults to a
+neutral value rather than blocking the entire classification.
+
+#### 2. MarketRegimeClassifier (`signalpilot/intelligence/regime_classifier.py`)
+
+`MarketRegimeClassifier` is the core classification engine. It uses a
+composite scoring algorithm with four weighted factors to determine the
+market regime.
+
+**Scoring Algorithm — Four Static Methods:**
+
+```python
+@staticmethod
+def _compute_vix_score(vix: float) -> float:
+    """0.0 (VIX <= 12) to 1.0 (VIX >= 22), linear interpolation."""
+    ...
+
+@staticmethod
+def _compute_gap_score(gap_pct: float) -> float:
+    """0.0 (gap <= 0.3%) to 1.0 (gap >= 1.5%), linear interpolation."""
+    ...
+
+@staticmethod
+def _compute_range_score(range_pct: float) -> float:
+    """0.0 (range <= 0.5%) to 1.0 (range >= 2.0%), linear interpolation."""
+    ...
+
+@staticmethod
+def _compute_alignment(direction: str, sp500: float | None,
+                        sgx: float | None) -> float:
+    """
+    -1.0 to 1.0 based on directional agreement between
+    Nifty first-15-min direction, S&P 500 change, and SGX Nifty change.
+    """
+    ...
+```
+
+**Composite Scoring Formula:**
+
+Three regime scores are computed from the four input scores:
+
+```
+trending_score = gap * 0.35 + alignment * 0.30 + range * 0.20 + (1 - vix) * 0.15
+ranging_score  = (1 - gap) * 0.30 + (1 - range) * 0.30 + (1 - vix) * 0.25 + (1 - |alignment|) * 0.15
+volatile_score = vix * 0.40 + range * 0.25 + gap * 0.20 + (1 - |alignment|) * 0.15
+```
+
+The regime with the highest score wins (**winner-takes-all**). Confidence is
+calculated as `winner_score / sum_of_all_scores`, producing a value between
+0.33 (equal three-way split) and 1.0 (single dominant regime).
+
+**Classification Methods:**
+
+```python
+class MarketRegimeClassifier:
+    def classify(self, inputs: RegimeInputs) -> RegimeClassification:
+        """
+        Initial 9:30 AM classification. Computes all three regime scores,
+        selects the winner, looks up per-regime modifiers based on
+        confidence level, and returns a complete RegimeClassification.
+        """
+        ...
+
+    def check_reclassify(self, inputs: RegimeInputs) -> RegimeClassification | None:
+        """
+        Mid-day re-classification (11:00, 13:00, 14:30). Checks three
+        triggers and only reclassifies if severity increases.
+        Returns None if no reclassification warranted.
+        """
+        ...
+
+    def apply_override(self, regime: str) -> RegimeClassification:
+        """Manual override via Telegram REGIME OVERRIDE command."""
+        ...
+
+    def reset_daily(self) -> None:
+        """Clear daily state: cache, reclassification counter, morning VIX."""
+        ...
+
+    def get_cached_regime(self) -> RegimeClassification | None:
+        """O(1) dict lookup for pipeline reads. Returns None before 9:30 AM."""
+        ...
+```
+
+**Re-classification Triggers:**
+
+The `check_reclassify()` method checks three conditions, any of which can
+trigger a re-classification:
+
+1. **VIX spike** — India VIX has increased by >= 3 points since the morning
+   classification (configurable via `regime_vix_spike_threshold`)
+2. **Direction reversal** — Nifty first-15-min direction has flipped from
+   the morning reading (e.g., "up" at 9:30 became "down" at 11:00)
+3. **Round-trip** — Nifty is currently within 0.3% of its open price
+   (configurable via `regime_roundtrip_threshold`), indicating failed
+   directional conviction
+
+**Severity-Only Upgrades:**
+
+Re-classifications can only increase severity, never decrease it:
+
+```python
+_SEVERITY_ORDER = {"TRENDING": 0, "RANGING": 1, "VOLATILE": 2}
+```
+
+A TRENDING day can be upgraded to RANGING or VOLATILE. A RANGING day can be
+upgraded to VOLATILE. But a VOLATILE day cannot be downgraded back to
+RANGING or TRENDING. This prevents the system from oscillating between
+regimes and provides a conservative approach to risk management.
+
+**Per-Regime Modifiers:**
+
+The `_get_regime_modifiers()` method returns regime-specific parameters that
+control downstream pipeline behavior. Modifiers differ based on confidence
+level (high >= `regime_confidence_threshold`, default 0.55):
+
+| Regime | Strategy Weights (GapGo / ORB / VWAP) | Min Stars | Position Modifier | Max Positions |
+|--------|----------------------------------------|-----------|-------------------|---------------|
+| **TRENDING** (high conf.) | 45% / 35% / 20% | 3 | 1.0 | 8 |
+| **RANGING** (high conf.) | 20% / 30% / 50% | 3-4 | 0.85 | 6 |
+| **VOLATILE** (high conf.) | 25% / 25% / 25% | 4-5 | 0.65 | 4 |
+
+- **TRENDING**: Favors Gap & Go (momentum strategies thrive in trending
+  markets). Full position sizes, standard star threshold.
+- **RANGING**: Favors VWAP Reversal (mean-reversion strategies suit
+  range-bound markets). Slightly reduced position sizes, moderate filtering.
+- **VOLATILE**: Equal strategy weights (no single strategy dominates in
+  volatile conditions). Significantly reduced position sizes, strict star
+  filtering, fewer positions.
+
+#### 3. MorningBriefGenerator (`signalpilot/intelligence/morning_brief.py`)
+
+`MorningBriefGenerator` produces a pre-market briefing sent to Telegram at
+8:45 AM, before market open. It collects global cues, India context, and
+generates a regime prediction to help the user prepare for the trading day.
+
+```python
+class MorningBriefGenerator:
+    async def generate(self) -> str:
+        """
+        Generate the morning brief. Collects pre-market data,
+        predicts the likely regime, checks watchlist alerts,
+        and formats the complete brief message.
+        """
+        ...
+
+    def _predict_regime(self, data: PreMarketData) -> str:
+        """
+        Simple pre-market heuristic based on VIX level, SGX Nifty
+        change, and S&P 500 overnight change. Returns a regime
+        prediction string ("Likely TRENDING", "Possibly VOLATILE", etc.)
+        This is a heuristic prediction; the actual classification
+        occurs at 9:30 AM with real market data.
+        """
+        ...
+
+    def _format_brief(self, data: PreMarketData, prediction: str,
+                       watchlist_alerts: list) -> str:
+        """
+        Compose the Telegram message with four sections:
+        GLOBAL CUES, INDIA CONTEXT, REGIME PREDICTION, WATCHLIST ALERTS.
+        """
+        ...
+
+    def get_cached_brief(self) -> str | None:
+        """Returns last generated brief for the MORNING command."""
+        ...
+```
+
+**Morning Brief Telegram Format:**
+
+```
+MORNING BRIEF -- 28 Feb 2026
+
+GLOBAL CUES
+  S&P 500: +0.45%  |  NASDAQ: +0.62%  |  Dow: +0.31%
+  SGX Nifty: +0.28%  |  Asia: Mixed
+  Crude: $74.20  |  USD/INR: 83.45
+
+INDIA CONTEXT
+  India VIX: 14.2 (+0.8)
+  FII: -1,245 Cr  |  DII: +2,310 Cr
+
+REGIME PREDICTION
+  Likely TRENDING -- Positive global cues, low VIX,
+  directional SGX Nifty signal.
+
+WATCHLIST ALERTS
+  RELIANCE -- Gap & Go setup, added 2 days ago
+  INFY -- VWAP Reversal setup, added 1 day ago
+```
+
+### RegimeContextStage — Pipeline Stage 2
+
+**File:** `signalpilot/pipeline/stages/regime_context.py`
+
+`RegimeContextStage` is the lightest pipeline stage, positioned after
+`CircuitBreakerGateStage` (stage 1) and before `StrategyEvalStage` (stage 3).
+Its purpose is to read the cached regime classification and set the
+corresponding modifier fields on the `ScanContext` so that downstream stages
+can adapt their behavior.
+
+**Cost:** Less than 1ms per cycle (single dictionary lookup + 6 attribute
+assignments). No I/O, no async calls, no external dependencies.
+
+```python
+class RegimeContextStage:
+    @property
+    def name(self) -> str:
+        return "RegimeContextStage"
+
+    async def process(self, ctx: ScanContext) -> ScanContext:
+        # Pass-through when classifier is None or regime disabled
+        if self._classifier is None or not self._config.regime_enabled:
+            return ctx
+
+        classification = self._classifier.get_cached_regime()
+
+        # Before 9:30 AM (no cached regime yet): neutral defaults
+        if classification is None:
+            return ctx
+
+        # Shadow mode: set regime/confidence for logging only
+        if self._config.regime_shadow_mode:
+            ctx.regime = classification.regime
+            ctx.regime_confidence = classification.confidence
+            return ctx
+
+        # Active mode: set all 6 ScanContext fields
+        ctx.regime = classification.regime
+        ctx.regime_confidence = classification.confidence
+        ctx.regime_min_stars = classification.min_stars
+        ctx.regime_position_modifier = classification.position_modifier
+        ctx.regime_max_positions = classification.max_positions
+        ctx.regime_strategy_weights = classification.strategy_weights
+        return ctx
+```
+
+**Behavioral Modes:**
+
+| Condition | Behavior |
+|-----------|----------|
+| Classifier is `None` or `regime_enabled=False` | Pass-through (no-op) |
+| No cached regime (before 9:30 AM) | Return context with neutral defaults |
+| Shadow mode (`regime_shadow_mode=True`) | Set `regime` and `regime_confidence` for logging; leave modifier fields at defaults |
+| Active mode (`regime_shadow_mode=False`) | Set all 6 ScanContext fields from `RegimeClassification` |
+
+### Impact on Downstream Stages
+
+The regime classification set by `RegimeContextStage` affects three
+downstream pipeline stages:
+
+- **RankingStage (stage 9):** After ranking and assigning star ratings, the
+  stage applies `ctx.regime_min_stars` as a filter. Signals with star ratings
+  below the threshold are dropped from `ctx.ranked_signals`. In a VOLATILE
+  regime with high confidence, only 4-5 star signals survive.
+
+- **RiskSizingStage (stage 11):** If `ctx.regime_max_positions` is set, it
+  overrides the `max_positions` value from `UserConfig`. The
+  `ctx.regime_position_modifier` is applied as a multiplier to the
+  calculated quantity (e.g., 0.65 in VOLATILE regime reduces each position
+  by 35%), with a minimum of 1 share.
+
+- **PersistAndDeliverStage (stage 12):** Attaches `market_regime`,
+  `regime_confidence`, and `regime_weight_modifier` to the `SignalRecord`
+  before database insertion. Passes regime information to `send_signal()`
+  for display as a regime badge in the Telegram message (e.g.,
+  `[TRENDING 78%]` or `[VOLATILE 65%]`).
+
+### Data Models
+
+**`RegimeClassification` dataclass** — Full classification result with 22
+fields, used as the return type from `classify()` and `check_reclassify()`:
+
+```python
+@dataclass
+class RegimeClassification:
+    regime: str                           # "TRENDING", "RANGING", "VOLATILE"
+    confidence: float                     # 0.0-1.0
+    trending_score: float
+    ranging_score: float
+    volatile_score: float
+    vix_score: float
+    gap_score: float
+    range_score: float
+    alignment_score: float
+    india_vix: float | None
+    nifty_gap_pct: float | None
+    nifty_range_pct: float | None
+    nifty_direction: str | None
+    sp500_change_pct: float | None
+    strategy_weights: dict[str, float]    # {"gap_go": 0.45, "orb": 0.35, "vwap": 0.20}
+    min_stars: int
+    position_modifier: float
+    max_positions: int
+    classified_at: datetime
+    classification_type: str              # "initial", "reclassification", "override"
+    reclassification_trigger: str | None  # "vix_spike", "direction_reversal", "round_trip"
+    previous_regime: str | None
+```
+
+**`RegimePerformanceRecord` dataclass** — Daily per-regime per-strategy
+performance tracking:
+
+```python
+@dataclass
+class RegimePerformanceRecord:
+    date: str
+    regime: str
+    strategy: str
+    signals_generated: int
+    signals_taken: int
+    wins: int
+    losses: int
+    total_pnl: float
+    win_rate: float               # auto-calculated on insert
+    avg_pnl: float
+    created_at: str
+```
+
+**`SignalRecord` — 3 new fields** for regime metadata (nullable, added by
+Phase 4 MRD migration):
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `market_regime` | `TEXT` | Regime at time of signal: "TRENDING", "RANGING", "VOLATILE" |
+| `regime_confidence` | `REAL` | Regime confidence at time of signal: 0.0-1.0 |
+| `regime_weight_modifier` | `REAL` | Position weight modifier applied: 1.0, 0.85, or 0.65 |
+
+### Database Tables & Migration
+
+Two new tables and three new columns are added by the Phase 4 MRD migration.
+
+#### `market_regimes` table (24 columns)
+
+```sql
+CREATE TABLE market_regimes (
+    id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+    date                    TEXT    NOT NULL,
+    regime                  TEXT    NOT NULL,   -- "TRENDING", "RANGING", "VOLATILE"
+    confidence              REAL    NOT NULL,
+    trending_score          REAL    NOT NULL,
+    ranging_score           REAL    NOT NULL,
+    volatile_score          REAL    NOT NULL,
+    vix_score               REAL    NOT NULL,
+    gap_score               REAL    NOT NULL,
+    range_score             REAL    NOT NULL,
+    alignment_score         REAL    NOT NULL,
+    india_vix               REAL,
+    nifty_gap_pct           REAL,
+    nifty_range_pct         REAL,
+    nifty_direction         TEXT,
+    sp500_change_pct        REAL,
+    strategy_weights        TEXT,              -- JSON: {"gap_go": 0.45, "orb": 0.35, "vwap": 0.20}
+    min_stars               INTEGER NOT NULL,
+    position_modifier       REAL    NOT NULL,
+    max_positions           INTEGER NOT NULL,
+    classified_at           TEXT    NOT NULL,
+    classification_type     TEXT    NOT NULL,   -- "initial", "reclassification", "override"
+    reclassification_trigger TEXT,
+    previous_regime         TEXT
+);
+-- Indexes: idx_market_regimes_date, idx_market_regimes_regime
+```
+
+#### `regime_performance` table (11 columns)
+
+```sql
+CREATE TABLE regime_performance (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    date                TEXT    NOT NULL,
+    regime              TEXT    NOT NULL,
+    strategy            TEXT    NOT NULL,
+    signals_generated   INTEGER NOT NULL DEFAULT 0,
+    signals_taken       INTEGER NOT NULL DEFAULT 0,
+    wins                INTEGER NOT NULL DEFAULT 0,
+    losses              INTEGER NOT NULL DEFAULT 0,
+    total_pnl           REAL    NOT NULL DEFAULT 0.0,
+    win_rate            REAL    NOT NULL DEFAULT 0.0,
+    avg_pnl             REAL    NOT NULL DEFAULT 0.0
+);
+-- Index: idx_regime_performance_date
+```
+
+#### Columns added to `signals` table
+
+Three nullable columns are added to the existing `signals` table:
+
+```sql
+ALTER TABLE signals ADD COLUMN market_regime TEXT;
+ALTER TABLE signals ADD COLUMN regime_confidence REAL;
+ALTER TABLE signals ADD COLUMN regime_weight_modifier REAL;
+```
+
+#### Phase 4 MRD Migration
+
+`DatabaseManager._run_phase4_mrd_migration()` is idempotent, following the
+same pattern as earlier migrations. It uses `PRAGMA table_info()` to check
+column existence before adding new columns to the `signals` table
+(`market_regime`, `regime_confidence`, `regime_weight_modifier`) and creates
+the `market_regimes` and `regime_performance` tables with their indexes.
+
+### Repository Layer
+
+Two new repository classes provide database access for regime data:
+
+#### MarketRegimeRepository (`signalpilot/db/regime_repo.py`)
+
+```python
+class MarketRegimeRepository:
+    def __init__(self, connection: aiosqlite.Connection) -> None: ...
+
+    async def insert_classification(self, classification: RegimeClassification) -> int:
+        """
+        Persist a regime classification. JSON-serializes strategy_weights
+        before INSERT. Returns the row ID.
+        """
+        ...
+
+    async def get_today_classifications(self) -> list[RegimeClassification]:
+        """
+        Returns all classifications for today (IST), ordered by
+        classified_at ascending. Includes initial, reclassifications,
+        and overrides.
+        """
+        ...
+
+    async def get_regime_history(self, days: int = 7) -> list[RegimeClassification]:
+        """
+        Returns the latest classification per day for the last N days.
+        Uses a subquery to select MAX(classified_at) per date.
+        """
+        ...
+```
+
+#### RegimePerformanceRepository (`signalpilot/db/regime_performance_repo.py`)
+
+```python
+class RegimePerformanceRepository:
+    def __init__(self, connection: aiosqlite.Connection) -> None: ...
+
+    async def insert_daily_performance(self, record: RegimePerformanceRecord) -> int:
+        """
+        Persist daily performance record. Auto-calculates win_rate
+        as wins / (wins + losses) if denominator > 0.
+        """
+        ...
+
+    async def get_performance_by_regime(self, regime: str,
+                                         days: int = 30) -> list[RegimePerformanceRecord]:
+        """
+        Returns performance records filtered by regime type
+        for the last N days.
+        """
+        ...
+
+    async def get_performance_summary(self, days: int = 30) -> list[dict]:
+        """
+        Returns grouped aggregate statistics: total signals, total trades,
+        win rate, total P&L, and avg P&L per regime for the last N days.
+        """
+        ...
+```
+
+### Scheduled Jobs
+
+Five new cron jobs support the Market Regime Detection system:
+
+| Time (IST) | Job ID | Method | Purpose |
+|------------|--------|--------|---------|
+| 08:45 Mon-Fri | `morning_brief` | `app.send_morning_brief()` | Generate and send pre-market morning brief with global cues, India context, regime prediction, and watchlist alerts |
+| 09:30 Mon-Fri | `regime_classify` | `app.classify_regime()` | Initial regime classification for the day using VIX, gap, range, and alignment data |
+| 11:00 Mon-Fri | `regime_reclass_11` | `app.check_regime_reclassify_11()` | First re-classification check: VIX spike trigger |
+| 13:00 Mon-Fri | `regime_reclass_13` | `app.check_regime_reclassify_13()` | Second re-classification check: direction reversal trigger |
+| 14:30 Mon-Fri | `regime_reclass_1430` | `app.check_regime_reclassify_1430()` | Third re-classification check: round-trip trigger |
+
+The re-classification jobs call `RegimeDataCollector.collect_regime_inputs()`
+to gather fresh data, then `MarketRegimeClassifier.check_reclassify()` to
+determine whether conditions warrant a severity upgrade. If the regime
+changes, the new classification is persisted via `MarketRegimeRepository`
+and a notification is sent to Telegram.
+
+### Telegram Commands
+
+Five new Telegram commands provide regime visibility and control:
+
+| Command | Handler | Description |
+|---------|---------|-------------|
+| `REGIME` | `handle_regime_command()` | Show current regime classification with scores, confidence, strategy weights, and modifier values |
+| `REGIME HISTORY` | `handle_regime_history_command()` | Show last 7 days of regime classifications with daily summaries |
+| `REGIME OVERRIDE <type>` | `handle_regime_override_command()` | Manual override to force a specific regime (TRENDING, RANGING, or VOLATILE) for the remainder of the session |
+| `VIX` | `handle_vix_command()` | Show current India VIX value with interpretation (low/moderate/high/extreme) |
+| `MORNING` | `handle_morning_command()` | Show cached morning brief (the same brief sent at 8:45 AM) |
+
+**REGIME command output example:**
+
+```
+MARKET REGIME -- 28 Feb 2026
+
+Classification: TRENDING (78% confidence)
+Type: initial (classified at 09:30)
+
+SCORES
+  Trending: 0.72  |  Ranging: 0.41  |  Volatile: 0.35
+
+INPUTS
+  India VIX: 13.8  |  Nifty Gap: +0.82%
+  First-15 Range: 0.95%  |  Direction: UP
+  S&P 500: +0.45%  |  Alignment: 0.78
+
+MODIFIERS (Active)
+  Strategy Weights: GapGo 45% / ORB 35% / VWAP 20%
+  Min Stars: 3  |  Position Modifier: 1.00x
+  Max Positions: 8
+
+Reclassifications today: 0/2
+```
+
+### Dashboard API Routes (Phase 4 MRD)
+
+**File:** `signalpilot/dashboard/routes/regime.py`
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/regime/current` | Current regime classification with full details (scores, inputs, modifiers, confidence) |
+| `GET` | `/api/regime/history?days=7` | Classification history for the last N days (one entry per day, latest classification) |
+| `GET` | `/api/regime/performance?days=30` | Performance breakdown by regime (signals, trades, win rate, P&L per regime) |
+| `GET` | `/api/regime/morning-brief` | Morning brief status (cached brief text, generation timestamp) |
+
+### Configuration
+
+Twenty-six new `AppConfig` fields control regime detection behavior. All are
+prefixed with `regime_` and have sensible defaults for safe rollout:
+
+**Feature Flags:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `regime_enabled` | `bool` | `True` | Kill switch — disables all regime detection |
+| `regime_shadow_mode` | `bool` | `True` | Classify and log but do not apply modifiers to pipeline |
+
+**Classification Thresholds:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `regime_confidence_threshold` | `float` | `0.55` | Score above this = high confidence modifiers; below = low confidence |
+| `regime_max_reclassifications` | `int` | `2` | Maximum re-classifications allowed per trading day |
+| `regime_vix_spike_threshold` | `float` | `3.0` | VIX point increase required to trigger re-classification |
+| `regime_roundtrip_threshold` | `float` | `0.003` | Nifty distance from open (as decimal) to trigger round-trip re-classification |
+
+**Strategy Weight Matrices (JSON strings):**
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `regime_trending_high_weights` | `'{"gap_go":0.45,"orb":0.35,"vwap":0.20}'` | Strategy weights for TRENDING + high confidence |
+| `regime_trending_low_weights` | `'{"gap_go":0.40,"orb":0.35,"vwap":0.25}'` | Strategy weights for TRENDING + low confidence |
+| `regime_ranging_high_weights` | `'{"gap_go":0.20,"orb":0.30,"vwap":0.50}'` | Strategy weights for RANGING + high confidence |
+| `regime_ranging_low_weights` | `'{"gap_go":0.25,"orb":0.30,"vwap":0.45}'` | Strategy weights for RANGING + low confidence |
+| `regime_volatile_high_weights` | `'{"gap_go":0.25,"orb":0.25,"vwap":0.25}'` | Strategy weights for VOLATILE + high confidence |
+| `regime_volatile_low_weights` | `'{"gap_go":0.30,"orb":0.30,"vwap":0.30}'` | Strategy weights for VOLATILE + low confidence |
+
+**Position Modifiers:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `regime_trending_position_modifier` | `float` | `1.0` | Full position size in trending markets |
+| `regime_ranging_position_modifier` | `float` | `0.85` | 15% reduction in ranging markets |
+| `regime_volatile_position_modifier` | `float` | `0.65` | 35% reduction in volatile markets |
+
+**Max Positions:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `regime_trending_max_positions` | `int` | `8` | Max simultaneous positions in trending markets |
+| `regime_ranging_max_positions` | `int` | `6` | Max simultaneous positions in ranging markets |
+| `regime_volatile_max_positions` | `int` | `4` | Max simultaneous positions in volatile markets |
+
+**Minimum Star Ratings:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `regime_trending_min_stars` | `int` | `3` | Min stars required for TRENDING (high confidence) |
+| `regime_ranging_high_min_stars` | `int` | `4` | Min stars required for RANGING (high confidence) |
+| `regime_ranging_low_min_stars` | `int` | `3` | Min stars required for RANGING (low confidence) |
+| `regime_volatile_high_min_stars` | `int` | `5` | Min stars required for VOLATILE (high confidence) |
+| `regime_volatile_low_min_stars` | `int` | `4` | Min stars required for VOLATILE (low confidence) |
+
+### Wiring in `create_app()`
+
+The regime detection components are created and injected in `main.py` as part
+of the `create_app()` dependency wiring:
+
+```python
+# 1. Repositories
+regime_repo = MarketRegimeRepository(connection)
+regime_perf_repo = RegimePerformanceRepository(connection)
+
+# 2. Data collector
+regime_data_collector = RegimeDataCollector(config)
+
+# 3. Classifier
+regime_classifier = MarketRegimeClassifier(config)
+
+# 4. Morning brief generator
+morning_brief = MorningBriefGenerator(regime_data_collector, watchlist_repo, config)
+
+# 5. Inject into SignalPilotBot
+bot = SignalPilotBot(
+    ...,
+    regime_classifier=regime_classifier,
+    regime_repo=regime_repo,
+    regime_perf_repo=regime_perf_repo,
+    regime_data_collector=regime_data_collector,
+    morning_brief=morning_brief,
+)
+
+# 6. Inject into SignalPilotApp
+app = SignalPilotApp(
+    ...,
+    regime_classifier=regime_classifier,
+    regime_repo=regime_repo,
+    regime_perf_repo=regime_perf_repo,
+    regime_data_collector=regime_data_collector,
+    morning_brief=morning_brief,
+)
+
+# 7. Insert RegimeContextStage at position 2 in pipeline
+signal_stages = [
+    CircuitBreakerGateStage(...),
+    RegimeContextStage(regime_classifier, config),   # <-- new, position 2
+    StrategyEvalStage(...),
+    GapStockMarkingStage(...),
+    DeduplicationStage(...),
+    ConfidenceStage(...),
+    CompositeScoringStage(...),
+    AdaptiveFilterStage(...),
+    RankingStage(...),
+    NewsSentimentStage(...),
+    RiskSizingStage(...),
+    PersistAndDeliverStage(...),
+    DiagnosticStage(...),
+]
+```
+
+---
+
+## 18. Step 11 — Capital Allocation
 
 ### File: `signalpilot/risk/capital_allocator.py`
 
@@ -1797,14 +2573,14 @@ recommendations to Telegram.
 
 ---
 
-## 18. Step 12 — Database Persistence
+## 19. Step 12 — Database Persistence
 
 ### File: `signalpilot/db/database.py`
 
 SQLite with **WAL mode** and **foreign keys** enabled via pragma. Uses
 `aiosqlite` with `Row` factory for named column access.
 
-### Twelve Tables (5 core + 3 Phase 3 + 2 Phase 4 + 2 Phase 4 NSF)
+### Fourteen Tables (5 core + 3 Phase 3 + 2 Phase 4 + 2 Phase 4 NSF + 2 Phase 4 MRD)
 
 #### `signals` table
 
@@ -1833,7 +2609,10 @@ CREATE TABLE signals (
     news_sentiment_label    TEXT,              -- Phase 4 NSF: STRONG_NEGATIVE / MILD_NEGATIVE / NEUTRAL / POSITIVE / NO_NEWS
     news_top_headline       TEXT,              -- Phase 4 NSF: most relevant headline
     news_action             TEXT,              -- Phase 4 NSF: suppress / downgrade / pass / badge / unsuppressed
-    original_star_rating    INTEGER            -- Phase 4 NSF: star rating before downgrade (NULL if not downgraded)
+    original_star_rating    INTEGER,           -- Phase 4 NSF: star rating before downgrade (NULL if not downgraded)
+    market_regime           TEXT,              -- Phase 4 MRD: "TRENDING" / "RANGING" / "VOLATILE"
+    regime_confidence       REAL,              -- Phase 4 MRD: regime confidence 0.0-1.0
+    regime_weight_modifier  REAL               -- Phase 4 MRD: position weight modifier applied
 );
 -- Indexes: idx_signals_date, idx_signals_status, idx_signals_date_status
 ```
@@ -2057,6 +2836,71 @@ to the `signals` table (`news_sentiment_score`, `news_sentiment_label`,
 `news_top_headline`, `news_action`, `original_star_rating`) and creates
 the `news_sentiment_cache` and `earnings_calendar` tables.
 
+#### `market_regimes` table (Phase 4 MRD)
+
+```sql
+CREATE TABLE market_regimes (
+    id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+    date                    TEXT    NOT NULL,
+    regime                  TEXT    NOT NULL,
+    confidence              REAL    NOT NULL,
+    trending_score          REAL    NOT NULL,
+    ranging_score           REAL    NOT NULL,
+    volatile_score          REAL    NOT NULL,
+    vix_score               REAL    NOT NULL,
+    gap_score               REAL    NOT NULL,
+    range_score             REAL    NOT NULL,
+    alignment_score         REAL    NOT NULL,
+    india_vix               REAL,
+    nifty_gap_pct           REAL,
+    nifty_range_pct         REAL,
+    nifty_direction         TEXT,
+    sp500_change_pct        REAL,
+    strategy_weights        TEXT,
+    min_stars               INTEGER NOT NULL,
+    position_modifier       REAL    NOT NULL,
+    max_positions           INTEGER NOT NULL,
+    classified_at           TEXT    NOT NULL,
+    classification_type     TEXT    NOT NULL,
+    reclassification_trigger TEXT,
+    previous_regime         TEXT
+);
+-- Indexes: idx_market_regimes_date, idx_market_regimes_regime
+```
+
+#### `regime_performance` table (Phase 4 MRD)
+
+```sql
+CREATE TABLE regime_performance (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    date                TEXT    NOT NULL,
+    regime              TEXT    NOT NULL,
+    strategy            TEXT    NOT NULL,
+    signals_generated   INTEGER NOT NULL DEFAULT 0,
+    signals_taken       INTEGER NOT NULL DEFAULT 0,
+    wins                INTEGER NOT NULL DEFAULT 0,
+    losses              INTEGER NOT NULL DEFAULT 0,
+    total_pnl           REAL    NOT NULL DEFAULT 0.0,
+    win_rate            REAL    NOT NULL DEFAULT 0.0,
+    avg_pnl             REAL    NOT NULL DEFAULT 0.0
+);
+-- Index: idx_regime_performance_date
+```
+
+#### Phase 4 MRD Columns Added to Existing Tables
+
+The Phase 4 MRD migration adds three nullable columns to the `signals` table:
+
+- **`signals` table:** `market_regime`, `regime_confidence`, `regime_weight_modifier`
+
+#### Phase 4 MRD Migration
+
+`DatabaseManager._run_phase4_mrd_migration()` is idempotent, following the
+same pattern as earlier migrations. It uses `PRAGMA table_info()` to check
+column existence before adding new columns to the `signals` table
+(`market_regime`, `regime_confidence`, `regime_weight_modifier`) and creates
+the `market_regimes` and `regime_performance` tables with their indexes.
+
 ### Signal Status Lifecycle
 
 Valid statuses: `frozenset({"sent", "taken", "expired", "paper", "position_full"})`
@@ -2161,7 +3005,7 @@ Valid statuses: `frozenset({"sent", "taken", "expired", "paper", "position_full"
 
 ---
 
-## 19. Step 13 — Telegram Delivery
+## 20. Step 13 — Telegram Delivery
 
 ### Files: `signalpilot/telegram/bot.py`, `formatters.py`, `keyboards.py`
 
@@ -2237,7 +3081,7 @@ from signal generation time.
 
 ---
 
-## 20. Step 14 — Exit Monitoring
+## 21. Step 14 — Exit Monitoring
 
 ### File: `signalpilot/monitor/exit_monitor.py`
 
@@ -2379,7 +3223,7 @@ if move_pct >= trail_trigger_pct:
 
 ---
 
-## 21. Step 15 — Telegram Commands (User Interaction)
+## 22. Step 15 — Telegram Commands (User Interaction)
 
 ### File: `signalpilot/telegram/handlers.py`
 
@@ -2403,6 +3247,11 @@ handler functions. All commands are case-insensitive.
 | `NEWS [STOCK\|ALL]` | `(?i)^news(?:\s+\w+)?$` | Show news sentiment for a specific stock or all cached results (Phase 4 NSF) |
 | `EARNINGS` | `(?i)^earnings$` | Show upcoming earnings dates for Nifty 500 stocks (Phase 4 NSF) |
 | `UNSUPPRESS <STOCK>` | `(?i)^unsuppress\s+\w+$` | Override news sentiment suppression for a stock for the current session (Phase 4 NSF) |
+| `REGIME` | `(?i)^regime$` | Show current regime classification with scores, confidence, and modifiers (Phase 4 MRD) |
+| `REGIME HISTORY` | `(?i)^regime\s+history$` | Show last 7 days of regime classifications (Phase 4 MRD) |
+| `REGIME OVERRIDE <type>` | `(?i)^regime\s+override\s+(trending\|ranging\|volatile)$` | Manual regime override for the session (Phase 4 MRD) |
+| `VIX` | `(?i)^vix$` | Show current India VIX with interpretation (Phase 4 MRD) |
+| `MORNING` | `(?i)^morning$` | Show cached morning brief from 8:45 AM (Phase 4 MRD) |
 | `HELP` | `(?i)^help$` | List all commands |
 
 #### TAKEN Flow
@@ -2538,9 +3387,47 @@ during the daily summary job at 15:30. Example: `UNSUPPRESS RELIANCE` allows
 RELIANCE signals through even with strong negative sentiment. The signal
 will be tagged with the `UNSUPPRESSED` action in the database.
 
+#### Phase 4 MRD Commands
+
+**REGIME** — Current Regime Classification
+
+Shows the current market regime classification including all three regime
+scores, confidence level, input values (VIX, gap, range, direction,
+alignment), and the active modifiers (strategy weights, min stars, position
+modifier, max positions). Also displays the number of re-classifications
+performed today and whether the system is in shadow mode or active mode.
+
+**REGIME HISTORY** — Regime History
+
+Shows the last 7 days of regime classifications. For each day, displays the
+final regime (after any re-classifications), confidence, key inputs, and
+whether any re-classifications occurred during the session.
+
+**REGIME OVERRIDE \<type\>** — Manual Regime Override
+
+Forces the market regime to a specific type (TRENDING, RANGING, or VOLATILE)
+for the remainder of the trading session. The override is applied immediately
+and all pipeline modifiers are updated accordingly. The override is recorded
+in the `market_regimes` table with `classification_type = "override"`. The
+override persists until end of day; the `reset_daily()` method clears it at
+the start of the next session.
+
+**VIX** — India VIX Display
+
+Shows the current India VIX value along with an interpretation: low (< 14),
+moderate (14-18), high (18-24), or extreme (> 24). Also shows the VIX change
+from the previous close and the VIX score used in regime classification.
+
+**MORNING** — Cached Morning Brief
+
+Displays the morning brief that was generated and sent at 8:45 AM. Includes
+global cues (S&P 500, NASDAQ, Dow, SGX Nifty, Asia markets, crude, USD/INR),
+India context (VIX, FII/DII flows), regime prediction, and watchlist alerts.
+Returns "No morning brief available" if accessed before 8:45 AM.
+
 ---
 
-## 22. Step 15.5 — Inline Button Callbacks & Quick Actions (Phase 4)
+## 23. Step 15.5 — Inline Button Callbacks & Quick Actions (Phase 4)
 
 ### Files: `signalpilot/telegram/keyboards.py`, `handlers.py`, `db/signal_action_repo.py`, `db/watchlist_repo.py`
 
@@ -2679,7 +3566,7 @@ removes a stock.
 
 ---
 
-## 23. Step 16 — Daily Wind-Down & Summary
+## 24. Step 16 — Daily Wind-Down & Summary
 
 ### Wind-Down Phase (14:30-15:35)
 
@@ -2720,7 +3607,7 @@ Cumulative P&L is calculated as:
 
 ---
 
-## 24. Step 17 — Shutdown & Crash Recovery
+## 25. Step 17 — Shutdown & Crash Recovery
 
 ### Graceful Shutdown
 
@@ -2777,7 +3664,7 @@ signal generation after a mid-day crash.
 
 ---
 
-## 25. Step 18 — Dashboard (Phase 3)
+## 26. Step 18 — Dashboard (Phase 3)
 
 ### Files: `signalpilot/dashboard/` (backend), `frontend/` (React app)
 
@@ -2807,6 +3694,7 @@ is `True` in configuration.
 | `/api/adaptation` | `adaptation.py` | GET /status, GET /log |
 | `/api/v1/news` | `news.py` | GET /{stock_code}, GET /suppressed/list (Phase 4 NSF) |
 | `/api/v1/earnings` | `news.py` | GET /upcoming (Phase 4 NSF) |
+| `/api/regime` | `regime.py` | GET /current, GET /history, GET /performance, GET /morning-brief (Phase 4 MRD) |
 
 ### Frontend — React + TypeScript
 
@@ -2828,7 +3716,7 @@ is `True` in configuration.
 
 ---
 
-## 26. Data Model Chain
+## 27. Data Model Chain
 
 The journey of a signal from detection to database:
 
@@ -2848,6 +3736,11 @@ CandidateSignal          <-- produced by GapAndGoStrategy / ORBStrategy / VWAPRe
     v
 RankedSignal             <-- produced by SignalRanker
     | candidate, composite_score, rank (1-N), signal_strength (1-5 stars)
+    v
+  [RegimeContextStage]   <-- (Phase 4 MRD) sets regime modifiers on ScanContext
+    | regime_min_stars filter applied in RankingStage
+    | regime_position_modifier applied in RiskSizingStage
+    | regime_max_positions override in RiskSizingStage
     v
   [CircuitBreaker]       <-- (Phase 3) gate: blocks signals if SL limit exceeded
     v
@@ -2871,6 +3764,7 @@ SignalRecord             <-- persisted to `signals` table
     |   position_size_multiplier, adaptation_status
     | + Phase 4 NSF: news_sentiment_score, news_sentiment_label,
     |   news_top_headline, news_action, original_star_rating
+    | + Phase 4 MRD: market_regime, regime_confidence, regime_weight_modifier
     v
 HybridScoreRecord        <-- (Phase 3) persisted to `hybrid_scores` table
     | signal_id, composite_score, strategy_strength_score, win_rate_score,
@@ -2907,6 +3801,25 @@ SuppressedSignal         <-- (Phase 4 NSF) produced by NewsSentimentStage
 
 EarningsRecord           <-- (Phase 4 NSF) stored in earnings_calendar table
     | stock_code, earnings_date, quarter, is_confirmed, source, updated_at
+
+RegimeClassification     <-- (Phase 4 MRD) produced by MarketRegimeClassifier
+    | regime, confidence, trending/ranging/volatile scores, vix/gap/range/alignment scores,
+    | india_vix, nifty_gap_pct, nifty_range_pct, nifty_direction, sp500_change_pct,
+    | strategy_weights, min_stars, position_modifier, max_positions,
+    | classified_at, classification_type, reclassification_trigger, previous_regime
+
+RegimePerformanceRecord  <-- (Phase 4 MRD) persisted to regime_performance table
+    | date, regime, strategy, signals_generated, signals_taken,
+    | wins, losses, total_pnl, win_rate, avg_pnl
+
+RegimeInputs             <-- (Phase 4 MRD) input to MarketRegimeClassifier
+    | india_vix, nifty_gap_pct, nifty_first_15_range_pct, nifty_first_15_direction,
+    | directional_alignment, sp500_change_pct, sgx_nifty_change_pct
+
+PreMarketData            <-- (Phase 4 MRD) input to MorningBriefGenerator
+    | sp500_close, sp500_change_pct, nasdaq_change_pct, dow_change_pct,
+    | sgx_nifty, sgx_nifty_change_pct, asia_markets, india_vix,
+    | india_vix_change_pct, fii_net, dii_net, crude_oil, usd_inr
 ```
 
 ### All Dataclasses
@@ -2922,7 +3835,7 @@ EarningsRecord           <-- (Phase 4 NSF) stored in earnings_calendar table
 | `RankedSignal` | `db/models.py` | candidate, composite_score, rank, signal_strength |
 | `PositionSize` | `db/models.py` | quantity, capital_required, per_trade_capital |
 | `FinalSignal` | `db/models.py` | ranked_signal, quantity, capital_required, expires_at |
-| `SignalRecord` | `db/models.py` | 23 fields matching signals table (incl. 5 NSF fields) |
+| `SignalRecord` | `db/models.py` | 26 fields matching signals table (incl. 5 NSF + 3 MRD fields) |
 | `TradeRecord` | `db/models.py` | 15 fields matching trades table |
 | `UserConfig` | `db/models.py` | total_capital, max_positions, strategy enable flags |
 | `ExitAlert` | `db/models.py` | trade, exit_type, current_price, pnl_pct, is_alert_only, trailing_sl_update |
@@ -2946,7 +3859,11 @@ EarningsRecord           <-- (Phase 4 NSF) stored in earnings_calendar table
 | `SentimentResult` | `db/models.py` | score, label, headline, action, headline_count, top_negative_headline, model_used |
 | `SuppressedSignal` | `db/models.py` | symbol, strategy, original_stars, sentiment_score, sentiment_label, top_headline, reason, entry_price, stop_loss, target_1 |
 | `EarningsRecord` | `db/models.py` | stock_code, earnings_date, quarter, is_confirmed, source, updated_at |
-| `ScanContext` | `pipeline/context.py` | cycle_id, now, phase, accepting_signals, all_candidates, ranked_signals, final_signals, sentiment_results, suppressed_signals |
+| `RegimeClassification` | `db/models.py` | regime, confidence, 4 regime scores, 4 input scores, strategy_weights, min_stars, position_modifier, max_positions, classified_at, classification_type |
+| `RegimePerformanceRecord` | `db/models.py` | date, regime, strategy, signals_generated, signals_taken, wins, losses, total_pnl, win_rate, avg_pnl |
+| `RegimeInputs` | `intelligence/regime_data.py` | india_vix, nifty_gap_pct, nifty_first_15_range_pct, nifty_first_15_direction, directional_alignment, sp500_change_pct, sgx_nifty_change_pct |
+| `PreMarketData` | `intelligence/regime_data.py` | sp500_close, sp500_change_pct, nasdaq_change_pct, dow_change_pct, sgx_nifty, india_vix, fii_net, dii_net, crude_oil, usd_inr |
+| `ScanContext` | `pipeline/context.py` | cycle_id, now, phase, accepting_signals, all_candidates, ranked_signals, final_signals, sentiment_results, suppressed_signals, regime, regime_confidence, regime_min_stars, regime_position_modifier, regime_max_positions, regime_strategy_weights |
 
 ### Enums
 
@@ -2962,7 +3879,7 @@ EarningsRecord           <-- (Phase 4 NSF) stored in earnings_calendar table
 
 ---
 
-## 27. Logging & Observability
+## 28. Logging & Observability
 
 ### Files: `signalpilot/utils/logger.py`, `log_context.py`
 
@@ -3028,7 +3945,7 @@ enabled strategy count, WebSocket connection status, and candidate count.
 
 ---
 
-## 28. Rate Limiting & Retry
+## 29. Rate Limiting & Retry
 
 ### Token Bucket Rate Limiter
 
@@ -3082,7 +3999,7 @@ async def some_api_call():
 
 ---
 
-## 29. Complete Scan Loop Iteration
+## 30. Complete Scan Loop Iteration
 
 ### File: `signalpilot/scheduler/lifecycle.py` — `_scan_loop()`
 
@@ -3102,33 +4019,44 @@ WHILE scanning == True:
   |   |   |
   |   |   1. CircuitBreakerGateStage
   |   |       IF circuit_breaker.is_active: ctx.accepting_signals = False → skip rest
-  |   |   2. StrategyEvalStage
+  |   |   2. RegimeContextStage (Phase 4 MRD)
+  |   |       Read cached regime classification (O(1) dict lookup)
+  |   |       IF no classifier or disabled: pass-through
+  |   |       IF shadow mode: set regime/confidence only (for logging)
+  |   |       IF active mode: set all 6 ctx fields (regime, confidence,
+  |   |       min_stars, position_modifier, max_positions, strategy_weights)
+  |   |   3. StrategyEvalStage
   |   |       Fetch user_config, filter enabled strategies, evaluate each
   |   |       --> ctx.all_candidates
-  |   |   3. GapStockMarkingStage
+  |   |   4. GapStockMarkingStage
   |   |       Mark Gap & Go symbols for ORB/VWAP exclusion
-  |   |   4. DeduplicationStage
+  |   |   5. DeduplicationStage
   |   |       Filter active-trade + same-day signal duplicates
-  |   |   5. ConfidenceStage (Phase 3)
+  |   |   6. ConfidenceStage (Phase 3)
   |   |       Detect multi-strategy confirmations --> ctx.confirmation_map
-  |   |   6. CompositeScoringStage (Phase 3)
+  |   |   7. CompositeScoringStage (Phase 3)
   |   |       4-factor hybrid scoring --> ctx.composite_scores
-  |   |   7. AdaptiveFilterStage (Phase 3)
+  |   |   8. AdaptiveFilterStage (Phase 3)
   |   |       Remove signals from paused strategies
-  |   |   8. RankingStage
+  |   |   9. RankingStage
   |   |       Score + rank --> ctx.ranked_signals (1-5 stars)
-  |   |   9. NewsSentimentStage (Phase 4 NSF)
+  |   |       Apply ctx.regime_min_stars filter (Phase 4 MRD)
+  |   |   10. NewsSentimentStage (Phase 4 NSF)
   |   |       Fetch/cache sentiment per symbol, apply action matrix:
   |   |       STRONG_NEGATIVE/earnings --> suppress --> ctx.suppressed_signals
   |   |       MILD_NEGATIVE --> downgrade star rating by 1
   |   |       POSITIVE --> badge, NEUTRAL/NO_NEWS --> pass through
-  |   |   10. RiskSizingStage
+  |   |   11. RiskSizingStage
   |   |       Position sizing + capital checks --> ctx.final_signals
-  |   |   11. PersistAndDeliverStage
-  |   |       INSERT signals + hybrid_scores + sentiment metadata,
-  |   |       send via Telegram with keyboards,
+  |   |       Apply ctx.regime_position_modifier (Phase 4 MRD)
+  |   |       Override max_positions with ctx.regime_max_positions (Phase 4 MRD)
+  |   |   12. PersistAndDeliverStage
+  |   |       INSERT signals + hybrid_scores + sentiment metadata
+  |   |       + regime metadata (market_regime, regime_confidence,
+  |   |       regime_weight_modifier) (Phase 4 MRD),
+  |   |       send via Telegram with keyboards + regime badge,
   |   |       send suppression notifications for ctx.suppressed_signals
-  |   |   12. DiagnosticStage
+  |   |   13. DiagnosticStage
   |   |       Heartbeat every 60 cycles (~1 min)
   |   |
   |   +-- ALWAYS STAGES (run every cycle):
@@ -3154,30 +4082,41 @@ WHILE scanning == True:
 
 ---
 
-## 30. Summary: A Complete Trading Day
+## 31. Summary: A Complete Trading Day
 
 ```
 08:00  App boots --> AppConfig loaded, logging configured
-08:00  create_app() wires 35+ components:
+08:00  create_app() wires 40+ components:
          |-- EventBus + subscriptions (ExitAlert, StopLossHit, TradeExited, AlertMessage)
-         |-- ScanPipeline (12 signal stages + 1 always stage)
+         |-- ScanPipeline (13 signal stages + 1 always stage)
          |-- Phase 3 intelligence layer (CircuitBreaker, AdaptiveManager, CompositeScorer)
          |-- Phase 4 quick actions (SignalActionRepo, WatchlistRepo, inline keyboards)
-         +-- Phase 4 NSF intelligence module (SentimentEngine, NewsFetcher,
-             NewsSentimentService, EarningsCalendar, NewsSentimentRepo, EarningsRepo)
+         |-- Phase 4 NSF intelligence module (SentimentEngine, NewsFetcher,
+         |   NewsSentimentService, EarningsCalendar, NewsSentimentRepo, EarningsRepo)
+         +-- Phase 4 MRD intelligence module (RegimeDataCollector,
+             MarketRegimeClassifier, MorningBriefGenerator,
+             MarketRegimeRepo, RegimePerformanceRepo)
 08:00  SmartAPIAuthenticator.authenticate() (TOTP-based 2FA)
 08:01  InstrumentManager.load() (Nifty 500 from CSV)
 08:01  historical.fetch_previous_day_data()    <-- 499 stocks, batches of 3
 08:10  (5s cooldown between API passes)
 08:10  historical.fetch_average_daily_volume() <-- 20-day ADV
 08:20  ConfigRepository.initialize_default()
-08:20  bot.start() --> Telegram polling begins (16 commands + 9 callback handlers)
-08:20  MarketScheduler.start() --> 12 cron jobs registered
+08:20  bot.start() --> Telegram polling begins (21 commands + 9 callback handlers)
+08:20  MarketScheduler.start() --> 17 cron jobs registered
 08:20  (Phase 3) Dashboard starts on configured port if dashboard_enabled
 
 08:30  [CRON] fetch_pre_market_news() (Phase 4 NSF)
          --> Batch-fetch news sentiment for watchlist + Nifty 500 stocks
          --> Cache results in news_sentiment_cache table with TTL
+
+08:45  [CRON] send_morning_brief() (Phase 4 MRD)
+         --> MorningBriefGenerator.generate()
+         --> Collect global cues (S&P 500, NASDAQ, Dow, SGX Nifty, Asia, crude, USD/INR)
+         --> Collect India context (VIX, FII/DII flows)
+         --> Predict likely regime (heuristic based on VIX + SGX + S&P 500)
+         --> Check watchlist for potential setups
+         --> Send formatted brief to Telegram
 
 09:00  [CRON] send_pre_market_alert()
          --> "Signals coming shortly after 9:15 AM"
@@ -3187,6 +4126,8 @@ WHILE scanning == True:
          |   (Phase 3) circuit_breaker.reset() --> daily SL counter reset
          |   (Phase 3) adaptive_manager daily state refresh
          |   (Phase 4) watchlist_repo.cleanup_expired()
+         |   (Phase 4 MRD) regime_classifier.reset_daily() --> clear cache, reset counter
+         |   (Phase 4 MRD) regime_data_collector.reset_session() --> clear caches
          |   websocket.connect() --> subscribe all 500 tokens (Mode 3)
          +-> _scan_loop() starts (every 1 second, via ScanPipeline.run())
                |
@@ -3194,6 +4135,15 @@ WHILE scanning == True:
                |    +-- GapAndGoStrategy: detect gaps [3%-5%], open > prev_high,
                |        volume >= 50% ADV --> _gap_candidates, _volume_validated
                |    +-- ORB: opening range building (update_opening_range per tick)
+               |
+               |-- [9:30 CRON] classify_regime() (Phase 4 MRD)
+               |    +-- RegimeDataCollector.collect_regime_inputs()
+               |        (VIX, gap%, first-15-min range%, directional alignment)
+               |    +-- MarketRegimeClassifier.classify(inputs)
+               |        --> RegimeClassification (TRENDING/RANGING/VOLATILE + confidence)
+               |    +-- Persist to market_regimes table
+               |    +-- Send regime notification to Telegram
+               |    +-- Pipeline now reads cached regime via RegimeContextStage
                |
                |-- phase = ENTRY_WINDOW (9:30-9:45)
                |    +-- GapAndGoStrategy: validate ltp > open_price
@@ -3213,23 +4163,28 @@ WHILE scanning == True:
                |
                +-- SIGNAL STAGES (pipeline, all active phases):
                |    1.  CircuitBreakerGateStage: block if SL limit exceeded
-               |    2.  StrategyEvalStage: run enabled strategies
-               |    3.  GapStockMarkingStage: mark Gap & Go symbols for exclusion
-               |    4.  DeduplicationStage: filter active trades + same-day signals
-               |    5.  ConfidenceStage (Phase 3): multi-strategy confirmation
-               |    6.  CompositeScoringStage (Phase 3): 4-factor hybrid scoring
-               |    7.  AdaptiveFilterStage (Phase 3): block paused strategies
-               |    8.  RankingStage: score + rank --> RankedSignal (1-5 stars)
-               |    9.  NewsSentimentStage (Phase 4 NSF): sentiment filter
+               |    2.  RegimeContextStage (Phase 4 MRD): read cached regime,
+               |        set strategy weights, min stars, position modifier
+               |    3.  StrategyEvalStage: run enabled strategies
+               |    4.  GapStockMarkingStage: mark Gap & Go symbols for exclusion
+               |    5.  DeduplicationStage: filter active trades + same-day signals
+               |    6.  ConfidenceStage (Phase 3): multi-strategy confirmation
+               |    7.  CompositeScoringStage (Phase 3): 4-factor hybrid scoring
+               |    8.  AdaptiveFilterStage (Phase 3): block paused strategies
+               |    9.  RankingStage: score + rank --> RankedSignal (1-5 stars)
+               |        + regime min-stars filter (Phase 4 MRD)
+               |    10. NewsSentimentStage (Phase 4 NSF): sentiment filter
                |        STRONG_NEGATIVE/earnings --> suppress signal
                |        MILD_NEGATIVE --> downgrade star rating by 1
                |        POSITIVE --> badge, NEUTRAL/NO_NEWS --> pass through
-               |    10. RiskSizingStage: position limits + sizing --> FinalSignal
-               |    11. PersistAndDeliverStage: INSERT signals + hybrid_scores
-               |        + sentiment metadata, send via Telegram with keyboards
+               |    11. RiskSizingStage: position limits + sizing --> FinalSignal
+               |        + regime position modifier + max positions (Phase 4 MRD)
+               |    12. PersistAndDeliverStage: INSERT signals + hybrid_scores
+               |        + sentiment metadata + regime metadata,
+               |        send via Telegram with keyboards + regime badge
                |        [ TAKEN ]  [ SKIP ]  [ WATCH ]
                |        + send suppression notifications for suppressed signals
-               |    12. DiagnosticStage: heartbeat every 60 cycles
+               |    13. DiagnosticStage: heartbeat every 60 cycles
                |
                +-- ALWAYS STAGE (every tick, all phases 9:15-15:15):
                     ExitMonitoringStage:
@@ -3251,14 +4206,29 @@ WHILE scanning == True:
                |-- WATCH --> handle_watch_callback() --> add to watchlist (5-day expiry)
                +-- Exit buttons (Book T1 / Exit Now / Hold / Let Run) --> manage trade
 
+11:00  [CRON] check_regime_reclassify_11() (Phase 4 MRD)
+         --> Collect fresh regime inputs
+         --> Check re-classification triggers: VIX spike (>= 3pt increase)
+         --> Severity-only upgrade: TRENDING --> RANGING or VOLATILE
+         --> Persist + notify if regime changes
+
 11:15  [CRON] refresh_news_cache() (Phase 4 NSF)
          --> Refresh stale sentiment cache entries (re-fetch headlines)
+
+13:00  [CRON] check_regime_reclassify_13() (Phase 4 MRD)
+         --> Collect fresh regime inputs
+         --> Check re-classification triggers: direction reversal
+         --> Severity-only upgrade if warranted
+         --> Persist + notify if regime changes
 
 13:15  [CRON] refresh_news_cache() (Phase 4 NSF)
          --> Second mid-day sentiment cache refresh
 
-14:30  [CRON] stop_new_signals()
+14:30  [CRON] stop_new_signals() + check_regime_reclassify_1430() (Phase 4 MRD)
          --> _accepting_signals = False (scan loop continues for exits)
+         --> Final re-classification check: round-trip trigger
+             (Nifty within 0.3% of open price)
+         --> Severity-only upgrade if warranted
 
 15:00  [CRON] trigger_exit_reminder()
          --> advisory alerts per open trade (TIME_EXIT, is_alert_only=True)

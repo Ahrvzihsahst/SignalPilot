@@ -60,6 +60,7 @@ def create_dashboard_app(
         circuit_breaker,
         news,
         performance,
+        regime,
         settings,
         signals,
         strategies,
@@ -78,5 +79,6 @@ def create_dashboard_app(
     app.include_router(adaptation.router, prefix="/api/adaptation", tags=["adaptation"])
     app.include_router(news.router, prefix="/api/news", tags=["news"])
     app.include_router(news.earnings_router, prefix="/api/earnings", tags=["earnings"])
+    app.include_router(regime.router, prefix="/api/regime", tags=["regime"])
 
     return app

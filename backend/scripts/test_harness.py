@@ -124,7 +124,18 @@ _MODULES_TO_PATCH = [
     "signalpilot.db.watchlist_repo",
     "signalpilot.db.adaptation_log_repo",
     "signalpilot.db.hybrid_score_repo",
+    "signalpilot.db.regime_repo",
+    "signalpilot.db.regime_performance_repo",
     "signalpilot.telegram.handlers",
+    "signalpilot.intelligence.regime_data",
+    "signalpilot.intelligence.regime_classifier",
+    "signalpilot.intelligence.morning_brief",
+    "signalpilot.pipeline.stages.regime_context",
+    "signalpilot.intelligence.news_sentiment",
+    "signalpilot.intelligence.news_fetcher",
+    "signalpilot.db.news_sentiment_repo",
+    "signalpilot.db.earnings_repo",
+    "signalpilot.pipeline.stages.news_sentiment",
 ]
 
 
@@ -333,6 +344,31 @@ class WIPROScenario(StockScenario):
         return round(ltp, 2), min(volume, 5_000_000)
 
 
+class Nifty50Scenario(StockScenario):
+    """Nifty 50 index (not traded): provides data for regime classification."""
+
+    def __init__(self):
+        super().__init__(
+            symbol="Nifty 50", prev_close=22500.0, prev_high=22600.0,
+            adv=0, open_price=22610.0,
+            description="Index (regime classification input, not traded)",
+        )
+
+    def state_at(self, t: int) -> tuple[float, int]:
+        import math
+        if t < 900:          # 9:15-9:30: gap up, first 15-min range ~0.5%
+            ltp = 22610 + (t / 900) * 50 + 15 * math.sin(t * math.pi / 200)
+        elif t < 1800:       # 9:30-9:45: consolidate
+            ltp = 22660 + ((t - 900) / 900) * 10
+        elif t < 7200:       # 9:45-11:15: uptrend
+            ltp = 22670 + ((t - 1800) / 5400) * 80
+        elif t < 13500:      # 11:15-12:45: range-bound
+            ltp = 22750 + 20 * math.sin((t - 7200) * math.pi / 3000)
+        else:                # 12:45 onward: slow drift
+            ltp = 22750 + ((t - 13500) / 6300) * 30
+        return round(ltp, 2), 0  # volume not meaningful for index
+
+
 ALL_SCENARIOS: list[StockScenario] = [
     SBINScenario(),
     INFYScenario(),
@@ -343,6 +379,89 @@ ALL_SCENARIOS: list[StockScenario] = [
     ITCScenario(),
     WIPROScenario(),
 ]
+
+# Nifty 50 scenario for regime classification (separate from tradeable stocks)
+_NIFTY_SCENARIO = Nifty50Scenario()
+
+
+# ===========================================================================
+#  Fake News Fetcher — synthetic headlines for NSF testing
+# ===========================================================================
+
+# Synthetic headlines: some positive, some negative, to exercise the NSF pipeline
+_SYNTHETIC_HEADLINES: dict[str, list[dict]] = {
+    "SBIN": [
+        {"title": "SBI reports strong Q3 earnings, NII grows 18% YoY",
+         "source": "Moneycontrol", "sentiment": "positive"},
+        {"title": "SBI bad loan ratio declines to 4-year low",
+         "source": "Economic Times", "sentiment": "positive"},
+    ],
+    "INFY": [
+        {"title": "Infosys faces US visa scrutiny, may impact margins",
+         "source": "Livemint", "sentiment": "negative"},
+        {"title": "Infosys wins $500M deal from European bank",
+         "source": "Business Standard", "sentiment": "positive"},
+    ],
+    "TATAMOTORS": [
+        {"title": "Tata Motors JLR sales disappoint in February, miss estimates",
+         "source": "NDTV Profit", "sentiment": "negative"},
+        {"title": "Tata Motors EV division reports heavy losses, cash burn concerns",
+         "source": "Reuters", "sentiment": "strong_negative"},
+    ],
+    "RELIANCE": [
+        {"title": "Reliance Jio adds 12M subscribers in January",
+         "source": "Moneycontrol", "sentiment": "positive"},
+    ],
+}
+
+
+class FakeNewsFetcher:
+    """Drop-in replacement for NewsFetcher that returns synthetic headlines."""
+
+    def __init__(self, headlines: dict[str, list[dict]]) -> None:
+        self._headlines = headlines
+        self._symbol_index: dict[str, str] = {}
+
+    def initialize(self, symbols: list[str]) -> None:
+        for sym in symbols:
+            self._symbol_index[sym.lower()] = sym
+
+    async def fetch_all_stocks(self) -> dict:
+        from signalpilot.intelligence.news_fetcher import RawHeadline
+        result: dict[str, list] = {}
+        for stock, entries in self._headlines.items():
+            result[stock] = [
+                RawHeadline(
+                    title=e["title"],
+                    source=e["source"],
+                    published_at=_clock.now,
+                    link="",
+                    stock_codes=[stock],
+                )
+                for e in entries
+            ]
+        return result
+
+    async def fetch_stocks(self, symbols: list[str]) -> dict:
+        from signalpilot.intelligence.news_fetcher import RawHeadline
+        result: dict[str, list] = {}
+        for sym in symbols:
+            entries = self._headlines.get(sym, [])
+            if entries:
+                result[sym] = [
+                    RawHeadline(
+                        title=e["title"],
+                        source=e["source"],
+                        published_at=_clock.now,
+                        link="",
+                        stock_codes=[sym],
+                    )
+                    for e in entries
+                ]
+        return result
+
+    async def close(self) -> None:
+        pass
 
 
 # ===========================================================================
@@ -375,6 +494,8 @@ class ConsolBot:
         mode = " [PAPER]" if is_paper else ""
         stars = signal.ranked_signal.signal_strength
         conf = f" [{confirmation_level}]" if confirmation_level else ""
+        regime = kwargs.get("market_regime")
+        regime_tag = f"  Regime: {regime}\n" if regime else ""
         print(_signal_line(
             f"\n  {'='*60}\n"
             f"  SIGNAL #{signal_id}{mode}{conf}  {'*' * stars}\n"
@@ -383,6 +504,7 @@ class ConsolBot:
             f"  T1: {c.target_1:.2f}  T2: {c.target_2:.2f}\n"
             f"  Qty: {signal.quantity}  Capital: Rs {signal.capital_required:,.0f}\n"
             f"  Reason: {c.reason}\n"
+            f"{regime_tag}"
             f"  {'='*60}"
         ))
         return signal_id
@@ -483,9 +605,13 @@ async def create_test_app(
     from signalpilot.db.circuit_breaker_repo import CircuitBreakerRepository
     from signalpilot.db.config_repo import ConfigRepository
     from signalpilot.db.database import DatabaseManager
+    from signalpilot.db.earnings_repo import EarningsCalendarRepository
     from signalpilot.db.hybrid_score_repo import HybridScoreRepository
     from signalpilot.db.metrics import MetricsCalculator
     from signalpilot.db.models import HistoricalReference, ScoringWeights
+    from signalpilot.db.news_sentiment_repo import NewsSentimentRepository
+    from signalpilot.db.regime_performance_repo import RegimePerformanceRepository
+    from signalpilot.db.regime_repo import MarketRegimeRepository
     from signalpilot.db.signal_action_repo import SignalActionRepository
     from signalpilot.db.signal_repo import SignalRepository
     from signalpilot.db.strategy_performance_repo import StrategyPerformanceRepository
@@ -512,8 +638,16 @@ async def create_test_app(
     from signalpilot.pipeline.stages.gap_stock_marking import GapStockMarkingStage
     from signalpilot.pipeline.stages.persist_and_deliver import PersistAndDeliverStage
     from signalpilot.pipeline.stages.ranking import RankingStage
+    from signalpilot.pipeline.stages.news_sentiment import NewsSentimentStage
+    from signalpilot.pipeline.stages.regime_context import RegimeContextStage
     from signalpilot.pipeline.stages.risk_sizing import RiskSizingStage
     from signalpilot.pipeline.stages.strategy_eval import StrategyEvalStage
+    from signalpilot.intelligence.earnings import EarningsCalendar
+    from signalpilot.intelligence.news_sentiment import NewsSentimentService
+    from signalpilot.intelligence.regime_data import RegimeDataCollector
+    from signalpilot.intelligence.regime_classifier import MarketRegimeClassifier
+    from signalpilot.intelligence.morning_brief import MorningBriefGenerator
+    from signalpilot.intelligence.sentiment_engine import VADERSentimentEngine
     from signalpilot.ranking.composite_scorer import CompositeScorer
     from signalpilot.ranking.confidence import ConfidenceDetector
     from signalpilot.ranking.orb_scorer import ORBScorer
@@ -530,6 +664,16 @@ async def create_test_app(
     # Force paper mode off so signals get status="sent" for testing
     config.orb_paper_mode = False
     config.vwap_paper_mode = False
+    # Enable regime detection (shadow mode off so modifiers apply)
+    if hasattr(config, "regime_enabled"):
+        config.regime_enabled = True
+    if hasattr(config, "regime_shadow_mode"):
+        config.regime_shadow_mode = False
+    # Enable news sentiment filter
+    if hasattr(config, "news_enabled"):
+        config.news_enabled = True
+    if hasattr(config, "earnings_blackout_enabled"):
+        config.earnings_blackout_enabled = True
 
     # --- Database ---
     db = DatabaseManager(db_path)
@@ -548,6 +692,11 @@ async def create_test_app(
     adaptation_log_repo = AdaptationLogRepository(conn)
     strategy_performance_repo = StrategyPerformanceRepository(conn)
 
+    regime_repo = MarketRegimeRepository(conn)
+    regime_performance_repo = RegimePerformanceRepository(conn)
+    news_sentiment_repo = NewsSentimentRepository(conn)
+    earnings_repo = EarningsCalendarRepository(conn)
+
     await config_repo.initialize_default(telegram_chat_id="test_harness")
 
     # --- Market data store ---
@@ -561,6 +710,67 @@ async def create_test_app(
             average_daily_volume=float(s.adv),
         )
         await market_data.set_historical(s.symbol, ref)
+
+    # Load Nifty 50 historical reference for regime classification
+    nifty_ref = HistoricalReference(
+        previous_close=_NIFTY_SCENARIO.prev_close,
+        previous_high=_NIFTY_SCENARIO.prev_high,
+        average_daily_volume=0.0,
+    )
+    await market_data.set_historical(_NIFTY_SCENARIO.symbol, nifty_ref)
+
+    # --- Regime Detection Intelligence ---
+    regime_data_collector = RegimeDataCollector(market_data, config)
+    # Pre-populate synthetic global cues and VIX
+    regime_data_collector.set_global_cues({
+        "sgx_direction": "UP",
+        "sgx_change_pct": 0.5,
+        "sp500_change_pct": 0.8,
+        "nasdaq_change_pct": 1.2,
+        "nikkei_change_pct": 0.3,
+        "hang_seng_change_pct": -0.2,
+    })
+    regime_data_collector._session_cache["india_vix"] = 15.5  # slightly elevated
+    regime_data_collector.set_prev_day_data({
+        "high": 22650.0, "low": 22350.0, "close": 22500.0,
+    })
+
+    regime_classifier = MarketRegimeClassifier(
+        regime_data_collector, regime_repo, config,
+    )
+    morning_brief_generator = MorningBriefGenerator(
+        data_collector=regime_data_collector,
+        watchlist_repo=watchlist_repo,
+        config=config,
+    )
+
+    # --- News Sentiment Filter ---
+    fake_news_fetcher = FakeNewsFetcher(_SYNTHETIC_HEADLINES)
+    fake_news_fetcher.initialize([s.symbol for s in ALL_SCENARIOS])
+    sentiment_engine = VADERSentimentEngine(
+        lexicon_path=getattr(config, "news_financial_lexicon_path", None),
+    )
+    news_sentiment_service = NewsSentimentService(
+        news_fetcher=fake_news_fetcher,
+        sentiment_engine=sentiment_engine,
+        news_sentiment_repo=news_sentiment_repo,
+        earnings_repo=earnings_repo,
+        config=config,
+    )
+    earnings_calendar = EarningsCalendar(earnings_repo, config)
+
+    # Pre-populate an earnings entry for TATAMOTORS on simulation day to test blackout
+    from datetime import date as _date_cls
+    try:
+        await earnings_repo.upsert_earnings(
+            stock_code="TATAMOTORS",
+            earnings_date=_date_cls(2026, 3, 2),  # simulation day
+            quarter="Q3FY26",
+            source="harness",
+            is_confirmed=True,
+        )
+    except Exception:
+        pass  # table may not support upsert_earnings signature
 
     # --- Strategies ---
     gap_and_go = GapAndGoStrategy(config)
@@ -704,6 +914,12 @@ async def create_test_app(
             circuit_breaker=circuit_breaker, adaptive_manager=adaptive_manager,
             hybrid_score_repo=hybrid_score_repo,
             adaptation_log_repo=adaptation_log_repo,
+            regime_classifier=regime_classifier,
+            regime_data_collector=regime_data_collector,
+            regime_repo=regime_repo,
+            morning_brief_generator=morning_brief_generator,
+            news_sentiment_service=news_sentiment_service,
+            earnings_repo=earnings_repo,
         )
 
         # Wrap real bot so signals also print to console
@@ -767,6 +983,7 @@ async def create_test_app(
 
     signal_stages = [
         CircuitBreakerGateStage(circuit_breaker),
+        RegimeContextStage(regime_classifier, config),
         StrategyEvalStage(strategies, config_repo, market_data),
         GapStockMarkingStage(),
         DeduplicationStage(duplicate_checker),
@@ -774,6 +991,7 @@ async def create_test_app(
         CompositeScoringStage(composite_scorer),
         AdaptiveFilterStage(adaptive_manager),
         RankingStage(ranker),
+        NewsSentimentStage(news_sentiment_service, earnings_repo, config),
         RiskSizingStage(risk_manager, trade_repo),
         PersistAndDeliverStage(signal_repo, hybrid_score_repo, bot, adaptive_manager, config),
         DiagnosticStage(fake_ws),
@@ -795,6 +1013,13 @@ async def create_test_app(
         "exit_monitor": exit_monitor,
         "circuit_breaker": circuit_breaker,
         "strategies": strategies,
+        "regime_classifier": regime_classifier,
+        "regime_data_collector": regime_data_collector,
+        "regime_repo": regime_repo,
+        "morning_brief_generator": morning_brief_generator,
+        "news_sentiment_service": news_sentiment_service,
+        "earnings_repo": earnings_repo,
+        "earnings_calendar": earnings_calendar,
     }
 
 
@@ -803,6 +1028,7 @@ async def create_test_app(
 # ===========================================================================
 
 PHASE_START_TIMES = {
+    "pre_market": time(8, 40),
     "opening": time(9, 15),
     "entry_window": time(9, 30),
     "continuous": time(9, 45),
@@ -854,6 +1080,10 @@ async def run_simulation(args):
     signal_repo = components["signal_repo"]
     trade_repo = components["trade_repo"]
     strategies = components["strategies"]
+    regime_classifier = components["regime_classifier"]
+    regime_data_collector = components["regime_data_collector"]
+    morning_brief_generator = components["morning_brief_generator"]
+    news_sentiment_service = components["news_sentiment_service"]
 
     if components["use_telegram"]:
         await bot.start()
@@ -868,6 +1098,7 @@ async def run_simulation(args):
         while warmup_time <= start_dt:
             _clock.set(warmup_time)
             await feed_ticks(market_data, ALL_SCENARIOS, warmup_time, prev_volumes)
+            await feed_ticks(market_data, [_NIFTY_SCENARIO], warmup_time, prev_volumes)
             warmup_time += warmup_step
         # Lock opening ranges if starting at or after 9:45
         if start_dt >= start_dt.replace(hour=9, minute=45, second=0):
@@ -890,6 +1121,19 @@ async def run_simulation(args):
     sim_end = start_dt.replace(hour=15, minute=35, second=0, microsecond=0)
     cycle_count = 0
     last_status_time = start_dt
+
+    # Regime lifecycle event flags
+    morning_brief_sent = start_dt.time() >= time(8, 50)
+    regime_classified = start_dt.time() >= time(9, 35)
+    regime_reclass_11_done = start_dt.time() >= time(11, 5)
+    regime_reclass_13_done = start_dt.time() >= time(13, 5)
+    regime_reclass_1430_done = False  # always check (combines with wind_down)
+    regime_classifier.reset_daily()
+
+    # News Sentiment Filter lifecycle event flags
+    news_pre_market_done = start_dt.time() >= time(8, 35)
+    news_refresh_11_done = start_dt.time() >= time(11, 20)
+    news_refresh_13_done = start_dt.time() >= time(13, 20)
 
     print(_header("  Simulation started. Press Ctrl+C to abort.\n"))
 
@@ -919,9 +1163,122 @@ async def run_simulation(args):
                     "No new signals after 2:30 PM. Monitoring existing positions only."
                 )
 
+            # --- News Sentiment lifecycle events ---
+            if not news_pre_market_done and now.time() >= time(8, 30):
+                news_pre_market_done = True
+                try:
+                    count = await news_sentiment_service.fetch_and_analyze_all()
+                    print(_phase_line(
+                        f"\n  --- PRE-MARKET NEWS FETCH (8:30 AM): "
+                        f"{count} headlines analyzed ---"
+                    ))
+                except Exception as e:
+                    print(_warn(f"  Pre-market news fetch failed: {e}"))
+
+            if not news_refresh_11_done and now.time() >= time(11, 15):
+                news_refresh_11_done = True
+                try:
+                    count = await news_sentiment_service.fetch_and_analyze_stocks()
+                    print(_dim(f"    News cache refreshed (11:15): {count} headlines"))
+                except Exception as e:
+                    print(_warn(f"  News refresh (11:15) failed: {e}"))
+
+            if not news_refresh_13_done and now.time() >= time(13, 15):
+                news_refresh_13_done = True
+                try:
+                    count = await news_sentiment_service.fetch_and_analyze_stocks()
+                    print(_dim(f"    News cache refreshed (13:15): {count} headlines"))
+                except Exception as e:
+                    print(_warn(f"  News refresh (13:15) failed: {e}"))
+
+            # --- Regime lifecycle events ---
+            if not morning_brief_sent and now.time() >= time(8, 45):
+                morning_brief_sent = True
+                try:
+                    brief = await morning_brief_generator.generate()
+                    # Strip HTML tags for console
+                    import re as _re
+                    clean = _re.sub(r"<[^>]+>", "", brief)
+                    print(_phase_line(f"\n  --- MORNING BRIEF (8:45 AM) ---"))
+                    for line in clean.split("\n"):
+                        print(f"  {line}")
+                    if components["use_telegram"]:
+                        await bot.send_alert(brief)
+                except Exception as e:
+                    print(_warn(f"  Morning brief failed: {e}"))
+
+            if not regime_classified and now.time() >= time(9, 30):
+                regime_classified = True
+                try:
+                    classification = await regime_classifier.classify()
+                    print(_phase_line(
+                        f"\n  --- REGIME CLASSIFIED (9:30 AM): "
+                        f"{classification.regime} "
+                        f"(confidence={classification.confidence:.2f}) ---"
+                    ))
+                    print(_dim(
+                        f"    Scores: trending={classification.trending_score:.3f}"
+                        f" ranging={classification.ranging_score:.3f}"
+                        f" volatile={classification.volatile_score:.3f}"
+                    ))
+                    if classification.strategy_weights:
+                        print(_dim(f"    Weights: {classification.strategy_weights}"))
+                    if components["use_telegram"]:
+                        from signalpilot.telegram.formatters import format_classification_notification
+                        msg = format_classification_notification(classification)
+                        await bot.send_alert(msg)
+                except Exception as e:
+                    print(_warn(f"  Regime classification failed: {e}"))
+
+            if not regime_reclass_11_done and now.time() >= time(11, 0):
+                regime_reclass_11_done = True
+                # Simulate VIX spike for potential reclassification
+                regime_data_collector._session_cache["india_vix"] = 18.5
+                print(_dim("    (Simulated VIX spike: 15.5 -> 18.5)"))
+                try:
+                    reclass = await regime_classifier.check_reclassify("11:00")
+                    if reclass:
+                        print(_phase_line(
+                            f"\n  --- REGIME RE-CLASSIFIED (11:00): "
+                            f"{reclass.previous_regime} -> {reclass.regime} ---"
+                        ))
+                    else:
+                        print(_dim("    No re-classification triggered at 11:00"))
+                except Exception as e:
+                    print(_warn(f"  Regime re-classification (11:00) failed: {e}"))
+
+            if not regime_reclass_13_done and now.time() >= time(13, 0):
+                regime_reclass_13_done = True
+                try:
+                    reclass = await regime_classifier.check_reclassify("13:00")
+                    if reclass:
+                        print(_phase_line(
+                            f"\n  --- REGIME RE-CLASSIFIED (13:00): "
+                            f"{reclass.previous_regime} -> {reclass.regime} ---"
+                        ))
+                    else:
+                        print(_dim("    No re-classification triggered at 13:00"))
+                except Exception as e:
+                    print(_warn(f"  Regime re-classification (13:00) failed: {e}"))
+
+            if not regime_reclass_1430_done and now.time() >= time(14, 30):
+                regime_reclass_1430_done = True
+                try:
+                    reclass = await regime_classifier.check_reclassify("14:30")
+                    if reclass:
+                        print(_phase_line(
+                            f"\n  --- REGIME RE-CLASSIFIED (14:30): "
+                            f"{reclass.previous_regime} -> {reclass.regime} ---"
+                        ))
+                    else:
+                        print(_dim("    No re-classification triggered at 14:30"))
+                except Exception as e:
+                    print(_warn(f"  Regime re-classification (14:30) failed: {e}"))
+
             # Feed ticks (only during market hours)
             if now.time() >= time(9, 15):
                 await feed_ticks(market_data, ALL_SCENARIOS, now, prev_volumes)
+                await feed_ticks(market_data, [_NIFTY_SCENARIO], now, prev_volumes)
 
             # Run pipeline
             if now.time() >= time(9, 15) and phase != StrategyPhase.PRE_MARKET:
@@ -935,6 +1292,15 @@ async def run_simulation(args):
                 ctx = await pipeline.run(ctx)
                 accepting_signals = ctx.accepting_signals
                 cycle_count += 1
+
+                # Print suppressed signals from NSF
+                if hasattr(ctx, "suppressed_signals") and ctx.suppressed_signals:
+                    for ss in ctx.suppressed_signals:
+                        print(_warn(
+                            f"  SUPPRESSED: {ss.symbol} ({ss.strategy}) "
+                            f"| {ss.sentiment_label} (score={ss.sentiment_score:.2f})"
+                            f" | {ss.reason}"
+                        ))
 
                 if ctx.final_signals:
                     signals_generated += len(ctx.final_signals)
@@ -967,10 +1333,14 @@ async def run_simulation(args):
                         max(0, int((now - market_open).total_seconds()))
                     )
                     tick_summary.append(f"{s.symbol}={ltp:.0f}")
+                regime_tag = ""
+                cr = regime_classifier.get_cached_regime()
+                if cr:
+                    regime_tag = f" | regime={cr.regime}"
                 print(_dim(
                     f"  [{now.strftime('%H:%M')}] "
-                    f"cycle={cycle_count} signals={signals_generated} "
-                    f"| {', '.join(tick_summary)}"
+                    f"cycle={cycle_count} signals={signals_generated}"
+                    f"{regime_tag} | {', '.join(tick_summary)}"
                 ))
                 last_status_time = now
 
@@ -992,6 +1362,18 @@ async def run_simulation(args):
     print(_header(f"  Cycles run: {cycle_count}"))
     print(_header(f"  Signals generated: {signals_generated}"))
 
+    # Regime summary
+    cached_regime = regime_classifier.get_cached_regime()
+    if cached_regime:
+        print(_header(
+            f"  Regime: {cached_regime.regime} "
+            f"(confidence={cached_regime.confidence:.2f})"
+        ))
+        if cached_regime.is_reclassification:
+            print(_header(f"  Re-classified from: {cached_regime.previous_regime}"))
+    else:
+        print(_header(f"  Regime: not classified"))
+
     # Query DB for results
     try:
         all_signals = await signal_repo.get_signals_by_date(start_dt.date())
@@ -1002,11 +1384,14 @@ async def run_simulation(args):
         if all_signals:
             print(_header(f"\n  Signal Details:"))
             for sig in all_signals:
+                regime_tag = ""
+                if hasattr(sig, "market_regime") and sig.market_regime:
+                    regime_tag = f" | Regime={sig.market_regime}"
                 print(f"    {sig.strategy:15s} | {sig.symbol:12s} | "
                       f"Entry={sig.entry_price:.2f} | "
                       f"SL={sig.stop_loss:.2f} | "
                       f"T1={sig.target_1:.2f} | "
-                      f"Status={sig.status}")
+                      f"Status={sig.status}{regime_tag}")
         if all_trades:
             print(_header(f"\n  Trade Details:"))
             for tr in all_trades:
@@ -1023,6 +1408,11 @@ async def run_simulation(args):
     print(_header(f"{'='*64}\n"))
 
     # Cleanup
+    try:
+        news_sentiment_service.clear_unsuppress_overrides()
+        await news_sentiment_service.purge_old_entries(48)
+    except Exception:
+        pass
     if components["use_telegram"]:
         await bot.stop()
     await components["db"].close()
@@ -1064,8 +1454,9 @@ With --with-telegram:
              "(requires TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID in .env)",
     )
     parser.add_argument(
-        "--phase", choices=["opening", "entry_window", "continuous", "wind_down"],
-        help="Start simulation at a specific phase",
+        "--phase",
+        choices=["pre_market", "opening", "entry_window", "continuous", "wind_down"],
+        help="Start simulation at a specific phase (pre_market starts at 8:40 for morning brief)",
     )
     parser.add_argument(
         "--db-path", default=None,

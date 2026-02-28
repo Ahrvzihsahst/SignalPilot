@@ -6,6 +6,7 @@ from signalpilot.db.models import (
     ExitType,
     FinalSignal,
     PerformanceMetrics,
+    RegimeClassification,
     SignalRecord,
     SuppressedSignal,
     TradeRecord,
@@ -83,6 +84,8 @@ def format_signal_message(
     news_top_headline: str | None = None,
     news_sentiment_score: float | None = None,
     original_star_rating: int | None = None,
+    market_regime: str | None = None,
+    regime_confidence: float | None = None,
 ) -> str:
     """Format a FinalSignal into the user-facing Telegram message (HTML).
 
@@ -136,6 +139,14 @@ def format_signal_message(
     elif news_sentiment_label == "NO_NEWS":
         news_badge = "\nNo recent news"
 
+    # Market regime badge
+    regime_badge = ""
+    if market_regime:
+        conf_str = f"{regime_confidence:.0%}" if regime_confidence is not None else "N/A"
+        regime_badge = f"\nMarket: {market_regime} ({conf_str} confidence)"
+        if market_regime == "VOLATILE":
+            regime_badge += "\nDefensive sizing applied"
+
     warnings = ""
     if c.setup_type == "vwap_reclaim":
         warnings = "\n\u26a0\ufe0f Higher Risk setup"
@@ -168,7 +179,7 @@ def format_signal_message(
         f"Positions open: {active_count}/{max_positions}\n"
         f"{id_line}"
         f"{watchlist_line}"
-        f"Reason: {c.reason}{warnings}{news_badge}\n"
+        f"Reason: {c.reason}{warnings}{news_badge}{regime_badge}\n"
         f"\n"
         f"Valid Until: {signal.expires_at.strftime('%I:%M %p')} (auto-expires)\n"
         f"{'=' * 30}\n"
@@ -467,4 +478,156 @@ def format_allocation_summary(allocations: dict) -> str:
             f"{alloc.allocated_capital:,.0f} | {alloc.max_positions} positions"
         )
     parts.append("  Reserve: 20%")
+    return "\n".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# Phase 4: Market Regime Detection formatters
+# ---------------------------------------------------------------------------
+
+
+def _regime_fmt_pct(value: float | None) -> str:
+    if value is None:
+        return "N/A"
+    return f"{value:+.2f}%"
+
+
+def _regime_fmt_float(value: float | None) -> str:
+    if value is None:
+        return "N/A"
+    return f"{value:.2f}"
+
+
+def _regime_fmt_crores(value: float | None) -> str:
+    if value is None:
+        return "N/A"
+    return f"{value:+,.0f} Cr"
+
+
+def _regime_vix_interpretation(vix: float | None) -> str:
+    if vix is None:
+        return "unavailable"
+    if vix < 12:
+        return "very calm"
+    if vix < 14:
+        return "normal"
+    if vix < 18:
+        return "slightly elevated"
+    if vix < 22:
+        return "high"
+    return "very high - defensive mode"
+
+
+def format_regime_display(classification: RegimeClassification) -> str:
+    """Format the REGIME command response showing full classification details."""
+    weights = classification.strategy_weights or {}
+    return (
+        f"<b>MARKET REGIME \u2014 {classification.regime}</b>\n"
+        f"Confidence: {classification.confidence:.0%}\n"
+        f"Classified at: {classification.classified_at.strftime('%I:%M %p')}\n"
+        f"\n"
+        f"<b>INPUTS</b>\n"
+        f"  India VIX: {classification.india_vix or 'N/A'}\n"
+        f"  Nifty Gap: {_regime_fmt_pct(classification.nifty_gap_pct)}\n"
+        f"  15-min Range: {_regime_fmt_pct(classification.nifty_first_15_range_pct)}\n"
+        f"  15-min Direction: {classification.nifty_first_15_direction or 'N/A'}\n"
+        f"  Alignment: {_regime_fmt_float(classification.directional_alignment)}\n"
+        f"  SGX Nifty: {classification.sgx_direction or 'N/A'}\n"
+        f"  S&P 500: {_regime_fmt_pct(classification.sp500_change_pct)}\n"
+        f"  FII: {_regime_fmt_crores(classification.fii_net_crores)}\n"
+        f"  DII: {_regime_fmt_crores(classification.dii_net_crores)}\n"
+        f"\n"
+        f"<b>SCORES</b>\n"
+        f"  Trending:  {classification.trending_score:.3f}\n"
+        f"  Ranging:   {classification.ranging_score:.3f}\n"
+        f"  Volatile:  {classification.volatile_score:.3f}\n"
+        f"\n"
+        f"{format_regime_modifiers(classification)}"
+    )
+
+
+def format_regime_modifiers(classification: RegimeClassification) -> str:
+    """Format the regime modifier section."""
+    weights = classification.strategy_weights or {}
+    return (
+        f"<b>ACTIVE ADJUSTMENTS</b>\n"
+        f"  Gap & Go: {weights.get('gap_go', 33):.0f}%\n"
+        f"  ORB: {weights.get('orb', 33):.0f}%\n"
+        f"  VWAP Reversal: {weights.get('vwap', 34):.0f}%\n"
+        f"  Min Rating: {classification.min_star_rating} stars\n"
+        f"  Position Modifier: {classification.position_size_modifier:.2f}x\n"
+        f"  Max Positions: {classification.max_positions or 'default'}"
+    )
+
+
+def format_classification_notification(classification: RegimeClassification) -> str:
+    """Format the 9:30 AM classification Telegram notification."""
+    weights = classification.strategy_weights or {}
+    return (
+        f"\u2501" * 22 + "\n"
+        f"<b>MARKET REGIME CLASSIFIED: {classification.regime}</b>\n"
+        f"Confidence: {classification.confidence:.0%}\n"
+        f"\u2501" * 22 + "\n"
+        f"\n"
+        f"<b>KEY INPUTS</b>\n"
+        f"  VIX: {classification.india_vix or 'N/A'} ({_regime_vix_interpretation(classification.india_vix)})\n"
+        f"  Gap: {_regime_fmt_pct(classification.nifty_gap_pct)}\n"
+        f"  Range: {_regime_fmt_pct(classification.nifty_first_15_range_pct)}\n"
+        f"  Direction: {classification.nifty_first_15_direction or 'N/A'}\n"
+        f"\n"
+        f"<b>STRATEGY WEIGHTS</b>\n"
+        f"  Gap & Go: {weights.get('gap_go', 33):.0f}% | "
+        f"ORB: {weights.get('orb', 33):.0f}% | "
+        f"VWAP: {weights.get('vwap', 34):.0f}%\n"
+        f"  Min Stars: {classification.min_star_rating} | "
+        f"Position: {classification.position_size_modifier:.2f}x | "
+        f"Max Pos: {classification.max_positions or 'default'}\n"
+        f"\u2501" * 22
+    )
+
+
+def format_reclass_notification(
+    classification: RegimeClassification,
+    previous_regime: str,
+    trigger_reason: str,
+) -> str:
+    """Format a re-classification notification."""
+    return (
+        f"<b>REGIME RE-CLASSIFIED: {previous_regime} \u2192 {classification.regime}</b>\n"
+        f"Confidence: {classification.confidence:.0%}\n"
+        f"Trigger: {trigger_reason}\n"
+        f"\n"
+        f"{format_regime_modifiers(classification)}\n"
+        f"\n"
+        f"Existing positions not affected."
+    )
+
+
+def format_regime_history(history: list[dict], performance: list[dict]) -> str:
+    """Format REGIME HISTORY response with per-day regime and aggregated stats."""
+    parts = ["<b>REGIME HISTORY (Last 20 days)</b>"]
+
+    for record in history:
+        regime = record.get("regime", "N/A")
+        date_str = record.get("regime_date", "N/A")
+        conf = record.get("confidence", 0)
+        parts.append(f"  {date_str}: {regime} ({conf:.0%})")
+
+    if performance:
+        parts.append("")
+        parts.append("<b>PERFORMANCE BY REGIME</b>")
+
+        # Group by regime
+        by_regime: dict[str, list] = {}
+        for p in performance:
+            r = p.get("regime", "N/A")
+            by_regime.setdefault(r, []).append(p)
+
+        for regime, perfs in by_regime.items():
+            total_taken = sum(p.get("total_taken", 0) for p in perfs)
+            total_wins = sum(p.get("total_wins", 0) for p in perfs)
+            total_pnl = sum(p.get("total_pnl", 0) for p in perfs)
+            win_rate = (total_wins / total_taken * 100) if total_taken > 0 else 0
+            parts.append(f"  {regime}: {total_taken} trades, {win_rate:.0f}% WR, P&L {total_pnl:+,.0f}")
+
     return "\n".join(parts)

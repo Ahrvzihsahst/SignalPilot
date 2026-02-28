@@ -230,6 +230,7 @@ async def test_scan_loop_sends_signal_when_candidates_found() -> None:
         confirmation_level=None, confirmed_by=None, boosted_stars=None,
         news_sentiment_label=None, news_top_headline=None,
         news_sentiment_score=None, original_star_rating=None,
+        market_regime=None, regime_confidence=None,
     )
 
 

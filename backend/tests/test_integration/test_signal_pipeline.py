@@ -76,6 +76,7 @@ async def test_valid_signal_stored_and_sent(db, repos):
         confirmation_level=None, confirmed_by=None, boosted_stars=None,
         news_sentiment_label=None, news_top_headline=None,
         news_sentiment_score=None, original_star_rating=None,
+        market_regime=None, regime_confidence=None,
     )
 
 

@@ -113,6 +113,7 @@ class DatabaseManager:
         await self._run_phase3_migration()
         await self._run_phase4_migration()
         await self._run_news_sentiment_migration()
+        await self._run_regime_detection_migration()
 
     async def _run_phase2_migration(self) -> None:
         """Phase 2 idempotent migration: add new columns and tables.
@@ -424,3 +425,85 @@ class DatabaseManager:
 
         await conn.commit()
         logger.info("News sentiment migration complete")
+
+    async def _run_regime_detection_migration(self) -> None:
+        """Market Regime Detection idempotent migration.
+
+        Creates two new tables (market_regimes, regime_performance) with
+        indexes, and adds three nullable columns to the signals table.
+        """
+        conn = self.connection
+
+        async def _has_column(table: str, column: str) -> bool:
+            cursor = await conn.execute(f"PRAGMA table_info({table})")
+            rows = await cursor.fetchall()
+            return any(row["name"] == column for row in rows)
+
+        # -- New tables ---------------------------------------------------
+        await conn.executescript("""
+            CREATE TABLE IF NOT EXISTS market_regimes (
+                id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+                regime_date              TEXT    NOT NULL,
+                classification_time      TEXT    NOT NULL,
+                regime                   TEXT    NOT NULL,
+                confidence               REAL    NOT NULL,
+                trending_score           REAL,
+                ranging_score            REAL,
+                volatile_score           REAL,
+                india_vix                REAL,
+                nifty_gap_pct            REAL,
+                nifty_first_15_range_pct REAL,
+                nifty_first_15_direction TEXT,
+                directional_alignment    REAL,
+                sp500_change_pct         REAL,
+                sgx_direction            TEXT,
+                fii_net_crores           REAL,
+                dii_net_crores           REAL,
+                is_reclassification      INTEGER NOT NULL DEFAULT 0,
+                previous_regime          TEXT,
+                strategy_weights_json    TEXT,
+                min_star_rating          INTEGER,
+                max_positions            INTEGER,
+                position_size_modifier   REAL,
+                created_at               TEXT    NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_regime_date
+                ON market_regimes(regime_date);
+
+            CREATE TABLE IF NOT EXISTS regime_performance (
+                id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                regime_date       TEXT    NOT NULL,
+                regime            TEXT    NOT NULL,
+                strategy          TEXT    NOT NULL,
+                signals_generated INTEGER NOT NULL DEFAULT 0,
+                signals_taken     INTEGER NOT NULL DEFAULT 0,
+                wins              INTEGER NOT NULL DEFAULT 0,
+                losses            INTEGER NOT NULL DEFAULT 0,
+                pnl               REAL    NOT NULL DEFAULT 0.0,
+                win_rate          REAL,
+                created_at        TEXT    NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_regime_perf
+                ON regime_performance(regime, strategy);
+            CREATE INDEX IF NOT EXISTS idx_regime_perf_date
+                ON regime_performance(regime_date);
+        """)
+
+        # -- Extend signals table with regime columns --------------------
+        if not await _has_column("signals", "market_regime"):
+            await conn.execute(
+                "ALTER TABLE signals ADD COLUMN market_regime TEXT"
+            )
+        if not await _has_column("signals", "regime_confidence"):
+            await conn.execute(
+                "ALTER TABLE signals ADD COLUMN regime_confidence REAL"
+            )
+        if not await _has_column("signals", "regime_weight_modifier"):
+            await conn.execute(
+                "ALTER TABLE signals ADD COLUMN regime_weight_modifier REAL"
+            )
+
+        await conn.commit()
+        logger.info("Market Regime Detection migration complete")

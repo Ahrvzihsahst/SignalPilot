@@ -593,6 +593,11 @@ async def handle_help() -> str:
         "<b>OVERRIDE CIRCUIT</b> - Override circuit breaker\n"
         "<b>WATCHLIST</b> - View active watchlist\n"
         "<b>UNWATCH &lt;symbol&gt;</b> - Remove from watchlist\n"
+        "<b>REGIME</b> - View current market regime\n"
+        "<b>REGIME HISTORY</b> - View recent regime history\n"
+        "<b>REGIME OVERRIDE &lt;type&gt;</b> - Override regime (TRENDING/RANGING/VOLATILE)\n"
+        "<b>VIX</b> - View current India VIX\n"
+        "<b>MORNING</b> - View today's morning brief\n"
         "<b>HELP</b> - Show this help message\n"
         "\n"
         "Tap buttons below each signal to quickly TAKEN/SKIP/WATCH."
@@ -1069,3 +1074,89 @@ async def handle_unsuppress_command(news_sentiment_service, text: str) -> str:
         f"Current sentiment: {result.label} ({result.score:+.2f})\n"
         f"Signals for {stock_code} will pass through until end of day."
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 4: Market Regime Detection Command Handlers
+# ---------------------------------------------------------------------------
+
+_REGIME_OVERRIDE_PATTERN = re.compile(r"(?i)^regime\s+override\s+(trending|ranging|volatile)$")
+
+
+async def handle_regime_command(regime_classifier) -> str:
+    """Process the REGIME command — show current regime classification."""
+    if regime_classifier is None:
+        return "Market regime detection not configured."
+
+    classification = regime_classifier.get_cached_regime()
+    if classification is None:
+        return "No regime classification yet. Classification happens at 9:30 AM."
+
+    from signalpilot.telegram.formatters import format_regime_display
+    return format_regime_display(classification)
+
+
+async def handle_regime_history_command(regime_repo, days: int = 7) -> str:
+    """Process the REGIME HISTORY command — show recent regime history."""
+    if regime_repo is None:
+        return "Market regime detection not configured."
+
+    from signalpilot.telegram.formatters import format_regime_history
+    history = await regime_repo.get_regime_history(days)
+    return format_regime_history(history, days)
+
+
+async def handle_regime_override_command(regime_classifier, text: str) -> str:
+    """Process the REGIME OVERRIDE <REGIME> command — manually override regime."""
+    if regime_classifier is None:
+        return "Market regime detection not configured."
+
+    match = _REGIME_OVERRIDE_PATTERN.match(text.strip())
+    if not match:
+        return "Usage: REGIME OVERRIDE <TRENDING|RANGING|VOLATILE>"
+
+    new_regime = match.group(1).upper()
+    result = regime_classifier.apply_override(new_regime)
+    if result is None:
+        return f"Failed to override regime to {new_regime}. No active classification."
+
+    from signalpilot.telegram.formatters import format_regime_display
+    return f"Regime overridden to {new_regime}.\n\n" + format_regime_display(result)
+
+
+async def handle_vix_command(regime_data_collector) -> str:
+    """Process the VIX command — show current India VIX and interpretation."""
+    if regime_data_collector is None:
+        return "Market regime detection not configured."
+
+    vix = await regime_data_collector.fetch_current_vix()
+    if vix is None:
+        return "Could not fetch India VIX. Data may not be available yet."
+
+    if vix < 12:
+        interpretation = "Very calm — low volatility expected"
+    elif vix < 14:
+        interpretation = "Normal — standard conditions"
+    elif vix < 18:
+        interpretation = "Slightly elevated — caution advised"
+    elif vix < 22:
+        interpretation = "High — volatile conditions likely"
+    else:
+        interpretation = "Very high — defensive mode recommended"
+
+    return (
+        f"<b>India VIX: {vix:.2f}</b>\n"
+        f"Interpretation: {interpretation}"
+    )
+
+
+async def handle_morning_command(morning_brief_generator) -> str:
+    """Process the MORNING command — show cached morning brief."""
+    if morning_brief_generator is None:
+        return "Morning brief not configured."
+
+    cached = morning_brief_generator.get_cached_brief()
+    if cached is None:
+        return "No morning brief available yet. Brief is generated at 8:45 AM."
+
+    return cached

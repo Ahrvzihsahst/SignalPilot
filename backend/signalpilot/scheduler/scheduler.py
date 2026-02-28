@@ -91,6 +91,28 @@ class MarketScheduler:
                 )
                 logger.info("Registered job %s at %02d:%02d IST (mon-fri)", job_id, hour, minute)
 
+        # Phase 4: Market Regime Detection jobs
+        regime_jobs = [
+            ("morning_brief", 8, 45, "send_morning_brief"),
+            ("regime_classify", 9, 30, "classify_regime"),
+            ("regime_reclass_11", 11, 0, "check_regime_reclassify_11"),
+            ("regime_reclass_13", 13, 0, "check_regime_reclassify_13"),
+            ("regime_reclass_1430", 14, 30, "check_regime_reclassify_1430"),
+        ]
+        for job_id, hour, minute, method_name in regime_jobs:
+            if hasattr(app, method_name):
+                callback = getattr(app, method_name)
+                guarded = _trading_day_guard(callback)
+                self._scheduler.add_job(
+                    guarded,
+                    CronTrigger(
+                        day_of_week="mon-fri", hour=hour, minute=minute, timezone=IST,
+                    ),
+                    id=job_id,
+                    replace_existing=True,
+                )
+                logger.info("Registered job %s at %02d:%02d IST (mon-fri)", job_id, hour, minute)
+
         # Weekly capital rebalancing — Sunday 18:00 IST (before next trading week)
         if hasattr(app, "run_weekly_rebalance"):
             self._scheduler.add_job(

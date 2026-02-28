@@ -27,4 +27,18 @@ class RankingStage:
             composite_scores=ctx.composite_scores,
             confirmations=ctx.confirmation_map,
         )
+
+        # Phase 4: Market Regime Detection -- min-stars filter
+        if ctx.regime_min_stars and ctx.regime_min_stars > 3:
+            pre_filter_count = len(ctx.ranked_signals)
+            ctx.ranked_signals = [
+                s for s in ctx.ranked_signals
+                if s.signal_strength >= ctx.regime_min_stars
+            ]
+            if pre_filter_count > len(ctx.ranked_signals):
+                logger.info(
+                    "Regime min-stars filter: %d -> %d signals (threshold: %d stars)",
+                    pre_filter_count, len(ctx.ranked_signals), ctx.regime_min_stars,
+                )
+
         return ctx

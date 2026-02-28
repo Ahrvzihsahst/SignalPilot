@@ -8,15 +8,19 @@ EC2 Sizing Recommendation for SignalPilot
   ┌────────────────────────┬────────────────────────────────────────────────────────┐
   │ Component              │ Details                                                │
   ├────────────────────────┼────────────────────────────────────────────────────────┤
-  │ Backend (Python)       │ Async event loop, 13 pipeline stages, 3 strategies    │
+  │ Backend (Python)       │ Async event loop, 14 pipeline stages, 3 strategies    │
   │ Intelligence Module    │ VADER sentiment engine (~5 MB), RSS news fetcher      │
   │                        │ (aiohttp + feedparser), earnings calendar             │
+  │                        │ Market Regime Detection: RegimeDataCollector,          │
+  │                        │ MarketRegimeClassifier, MorningBriefGenerator —        │
+  │                        │ all dictionary/formula-based (~0 MB extra, ~0.1 ms     │
+  │                        │ per classification, no ML/GPU/heavy dependencies)      │
   │ Frontend (React/Vite)  │ SPA dashboard — static files served via nginx         │
-  │ Database               │ SQLite WAL, 12 tables, in-process                     │
+  │ Database               │ SQLite WAL, 14 tables, in-process                     │
   │ WebSocket              │ Angel One SmartAPI V2, 500 symbols, background thread  │
-  │ Telegram Bot           │ 19 commands + 9 inline callback handlers              │
+  │ Telegram Bot           │ 24 commands + 9 inline callback handlers              │
   │ FastAPI Dashboard API  │ 10 routers, runs in same process as backend           │
-  │ Scheduler              │ APScheduler 3.x, 12 cron jobs                         │
+  │ Scheduler              │ APScheduler 3.x, 17 cron jobs                         │
   │ Event Bus              │ 4 event types, in-process dispatch                    │
   └────────────────────────┴────────────────────────────────────────────────────────┘
 
@@ -42,7 +46,7 @@ EC2 Sizing Recommendation for SignalPilot
 
   - I/O-bound, not CPU-bound — the app mostly awaits WebSocket ticks, Telegram API, and broker
     API responses; actual computation (scoring, ranking, VWAP math) is simple O(N) arithmetic
-  - Single asyncio event loop — 13 pipeline stages, 3 strategies, exit monitor, FastAPI
+  - Single asyncio event loop — 14 pipeline stages, 3 strategies, exit monitor, FastAPI
     dashboard, and Telegram bot all share one event loop with ~10-15 concurrent coroutines at peak
   - Modest in-memory data — ~1-2 MB for 500-symbol tick cache, VWAP accumulators, opening
     ranges, and 15-min candle aggregation; news cache adds ~120 KB (500 sentiment entries +
@@ -52,6 +56,10 @@ EC2 Sizing Recommendation for SignalPilot
   - No ML, no pandas at runtime — the 4-factor composite scoring, confidence detection, and
     adaptive filtering are all lightweight math; VADER sentiment is dictionary-based (~0.1 ms per
     headline), not ML inference — no GPU or heavy CPU needed
+  - Market Regime Detection uses simple mathematical formulas (weighted averages) with no ML
+    inference. Classification happens once at 9:30 AM and costs ~50 ms. The per-cycle pipeline
+    stage (RegimeContextStage) is a dict lookup at <1 ms. The morning brief is a one-time text
+    formatting operation. Zero additional memory footprint.
   - Runs only 7 hours/day — 8:30 AM (pre-market news fetch) to 3:35 PM IST, weekdays only,
     with NSE holiday skipping
 
@@ -59,21 +67,26 @@ EC2 Sizing Recommendation for SignalPilot
 
   08:00 AM  ██░░░  Startup + historical data fetch (heaviest: ~500 batched API calls at 3 req/sec)
   08:30 AM  ██░░░  Pre-market news fetch — RSS feeds + VADER analysis for ~500 stocks (~2-3s)
+  08:45 AM  █░░░░  Morning brief generation — collect global cues, format message, send via Telegram (~200 ms)
   09:00 AM  █░░░░  Pre-market alert sent via Telegram
   09:15 AM  ███░░  OPENING — Gap & Go gap detection, WebSocket feed starts, volume accumulation
   09:30 AM  ████░  ENTRY_WINDOW — Gap & Go entry signals, scoring peak (~5-10% CPU)
+                   Regime classification — compute 4 scores, winner-takes-all, persist to DB, send notification (~50 ms)
   09:45 AM  ███░░  CONTINUOUS — ORB breakouts begin, opening ranges locked
   10:00 AM  ███░░  CONTINUOUS — VWAP Reversal activates, all 3 strategies running
   11:00 AM  ██░░░  CONTINUOUS — ORB window ends, VWAP + exit monitoring only
+                   Regime re-classification check (~30 ms, one-time, usually a no-op)
   11:15 AM  █░░░░  News cache refresh — stale entries updated
+  01:00 PM  █░░░░  Regime re-classification check (~30 ms, one-time, usually a no-op)
   01:15 PM  █░░░░  News cache refresh — stale entries updated
   02:30 PM  █░░░░  WIND_DOWN — no new signals, exit monitoring only
+                   Regime re-classification check (~30 ms, one-time, usually a no-op)
   03:15 PM  █░░░░  Mandatory exit reminders
   03:35 PM  ░░░░░  Shutdown, daily summary sent
 
   Pipeline Processing Per Scan Cycle (every 1 second)
 
-  Each cycle runs these 13 stages over up to 500 symbols:
+  Each cycle runs these 14 stages over up to 500 symbols (13 signal stages + 1 always stage):
 
    1. CircuitBreakerGateStage  — check daily SL limit       (< 1 ms)
    2. StrategyEvalStage        — run 3 strategies            (1-5 ms)
@@ -84,10 +97,11 @@ EC2 Sizing Recommendation for SignalPilot
    7. AdaptiveFilterStage      — check paused strategies     (< 1 ms)
    8. RankingStage             — top-N selection             (< 1 ms)
    9. NewsSentimentStage       — sentiment filter/boost      (< 1 ms, cache lookup)
-  10. RiskSizingStage          — position sizing             (< 1 ms)
-  11. PersistAndDeliverStage   — DB write + Telegram send    (5-20 ms, I/O)
-  12. DiagnosticStage          — heartbeat log               (< 1 ms)
-  13. ExitMonitoringStage      — SL/target/trailing exits    (1-3 ms)
+  10. RegimeContextStage       — regime-aware adjustments    (< 1 ms, dict lookup)
+  11. RiskSizingStage          — position sizing             (< 1 ms)
+  12. PersistAndDeliverStage   — DB write + Telegram send    (5-20 ms, I/O)
+  13. DiagnosticStage          — heartbeat log               (< 1 ms)
+  14. ExitMonitoringStage      — SL/target/trailing exits    (1-3 ms)
 
   Total per cycle: ~10-30 ms out of 1000 ms budget → ~1-3% CPU utilization
 
@@ -113,12 +127,12 @@ EC2 Sizing Recommendation for SignalPilot
   │  ┌──────────┐    ┌───────────────────────────────────┐    │
   │  │  nginx   │    │  Python backend (systemd)          │    │
   │  │  :80/443 │───▶│  ├─ Async event loop               │    │
-  │  │          │    │  ├─ 13 pipeline stages              │    │
+  │  │          │    │  ├─ 14 pipeline stages              │    │
   │  │ static   │    │  ├─ FastAPI dashboard (:8000)       │    │
   │  │ files    │    │  ├─ Telegram bot (polling)          │    │
   │  │ (React   │    │  ├─ WebSocket (bg thread)           │    │
   │  │  dist/)  │    │  ├─ VADER sentiment engine          │    │
-  │  └──────────┘    │  ├─ APScheduler (12 jobs)           │    │
+  │  └──────────┘    │  ├─ APScheduler (17 jobs)           │    │
   │                  │  └─ SQLite WAL (signalpilot.db)     │    │
   │                  └───────────────────────────────────┘    │
   └───────────────────────────────────────────────────────────┘
@@ -167,6 +181,10 @@ EC2 Sizing Recommendation for SignalPilot
 
   Note: the News Sentiment Filter (VADER + RSS feeds) does not require an upgrade. VADER is
   dictionary-based (~5 MB memory, ~0.1 ms per headline) with no GPU or heavy CPU dependency.
+
+  Note: the Market Regime Detection module does not require an upgrade. It uses simple
+  mathematical formulas (weighted averages) with no ML models, no additional memory, and
+  negligible CPU cost (~50 ms one-time classification, <1 ms per-cycle dict lookup).
 
   For the current production scanner + dashboard, t3.small handles everything comfortably
   at ~30-40% memory utilization and <10% CPU utilization.

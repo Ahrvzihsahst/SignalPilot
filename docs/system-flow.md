@@ -1,7 +1,7 @@
 # SignalPilot System Flow
 
 Complete architecture and data flow for the SignalPilot intraday signal generation system.
-All 40+ components across Phase 1, 2, 3, and 4 (including News Sentiment Filter) are represented in a single integrated view.
+All 45+ components across Phase 1, 2, 3, and 4 (including News Sentiment Filter and Market Regime Detection) are represented in a single integrated view.
 
 ---
 
@@ -18,11 +18,12 @@ All 40+ components across Phase 1, 2, 3, and 4 (including News Sentiment Filter)
  │ (pydantic-   │    │                                                            │
  │  settings)   │    │  Wiring order (23 stages):                                │
  └─────────────┘    │                                                            │
-                     │  1. DatabaseManager (SQLite WAL, 12 tables)               │
+                     │  1. DatabaseManager (SQLite WAL, 14 tables)               │
                      │  2. Repositories (signal, trade, config, metrics,          │
                      │     strategy_performance, signal_action, watchlist,        │
                      │     hybrid_score, circuit_breaker, adaptation_log,        │
-                     │     news_sentiment, earnings_calendar)                    │
+                     │     news_sentiment, earnings_calendar,                    │
+                     │     market_regime, regime_performance)                    │
                      │  3. EventBus (in-process async event dispatch)             │
                      │  4. SmartAPIAuthenticator (Angel One TOTP 2FA)             │
                      │  5. InstrumentManager (Nifty 500 CSV)                     │
@@ -37,12 +38,14 @@ All 40+ components across Phase 1, 2, 3, and 4 (including News Sentiment Filter)
                      │ 14. ExitMonitor (trailing configs + EventBus)              │
                      │ 15. CircuitBreaker + AdaptiveManager                      │
                      │ 16. Intelligence (VADERSentimentEngine, NewsFetcher,      │
-                     │     NewsSentimentService, EarningsCalendar)               │
-                     │ 17. SignalPilotBot (Telegram, 16 commands + 9 callbacks)  │
+                     │     NewsSentimentService, EarningsCalendar,               │
+                     │     RegimeDataCollector, MarketRegimeClassifier,          │
+                     │     MorningBriefGenerator)                                │
+                     │ 17. SignalPilotBot (Telegram, 24 commands + 9 callbacks)  │
                      │ 18. WebSocketClient (Angel One feed)                      │
-                     │ 19. MarketScheduler (APScheduler, 12 cron jobs)           │
+                     │ 19. MarketScheduler (APScheduler, 17 cron jobs)           │
                      │ 20. EventBus subscriptions (4 event→handler bindings)     │
-                     │ 21. ScanPipeline (12 signal stages + 1 always stage)      │
+                     │ 21. ScanPipeline (13 signal stages + 1 always stage)      │
                      │ 22. FastAPI Dashboard (optional, 10 route modules)        │
                      │ 23. SignalPilotApp (orchestrator)                          │
                      └───────────────────────┬────────────────────────────────────┘
@@ -87,33 +90,39 @@ All 40+ components across Phase 1, 2, 3, and 4 (including News Sentiment Filter)
  MARKET SCHEDULE TIMELINE (IST, Mon-Fri, skip NSE holidays)
  ═════════════════════════════════════════════════════════════════════════════════════
 
-  8:30     9:00     9:15        9:30         9:45        10:00       11:00
-    │        │        │           │            │            │           │
-    ▼        ▼        ▼           ▼            ▼            ▼           ▼
- ┌──────┐┌──────┐┌───────┐┌──────────┐┌───────────┐┌──────────┐┌──────────┐
- │PRE-  ││PRE-  ││START  ││          ││LOCK       ││          ││          │
- │MARKET││MARKET││SCAN   ││ Gap&Go   ││OPENING    ││VWAP      ││ORB       │
- │NEWS  ││ALERT ││       ││ entry    ││RANGES     ││SCAN      ││WINDOW    │
- │      ││      ││WS conn││ valid.   ││           ││START     ││END       │
- │fetch ││      ││CB/AM  ││          ││ORB begins ││          ││          │
- │RSS + ││      ││reset  ││          ││           ││          ││          │
- │VADER ││      ││       ││          ││           ││          ││          │
- └──────┘└──────┘└───────┘└──────────┘└───────────┘└──────────┘└──────────┘
+ 17 cron jobs: 8 core + 1 weekly + 3 news sentiment + 5 regime detection
+
+  8:30     8:45     9:00     9:15        9:30         9:45        10:00       11:00
+    │        │        │        │           │            │            │           │
+    ▼        ▼        ▼        ▼           ▼            ▼            ▼           ▼
+ ┌──────┐┌──────┐┌──────┐┌───────┐┌──────────┐┌───────────┐┌──────────┐┌──────────┐
+ │PRE-  ││MORN- ││PRE-  ││START  ││REGIME    ││LOCK       ││VWAP      ││ORB       │
+ │MARKET││ING   ││MARKET││SCAN   ││CLASSIFY  ││OPENING    ││SCAN      ││WINDOW    │
+ │NEWS  ││BRIEF ││ALERT ││       ││          ││RANGES     ││START     ││END       │
+ │      ││      ││      ││WS conn││initial   ││           ││          ││+ REGIME  │
+ │fetch ││global││      ││CB/AM  ││classif.  ││ORB begins ││          ││RECLASS 1 │
+ │RSS + ││cues, ││      ││reset  ││TRENDING/ ││           ││          ││VIX spike │
+ │VADER ││VIX,  ││      ││regime ││RANGING/  ││           ││          ││trigger   │
+ │      ││FII/  ││      ││reset  ││VOLATILE  ││           ││          ││          │
+ │      ││DII   ││      ││       ││          ││           ││          ││          │
+ └──────┘└──────┘└──────┘└───────┘└──────────┘└───────────┘└──────────┘└──────────┘
 
     │◄──OPENING──▶│◄ENTRY_WINDOW▶│◄────────── CONTINUOUS ──────────────────────▶│
                                                                                  │
- 11:15       13:15       14:30       15:00       15:15        15:30       15:35
-    │           │           │           │           │            │           │
-    ▼           ▼           ▼           ▼           ▼            ▼           ▼
- ┌──────────┐┌──────────┐┌──────────┐┌──────────┐┌──────────┐┌──────────┐┌──────────┐
- │NEWS      ││NEWS      ││STOP NEW  ││EXIT      ││MANDATORY ││DAILY     ││SHUTDOWN  │
- │CACHE     ││CACHE     ││SIGNALS   ││REMINDER  ││EXIT      ││SUMMARY   ││          │
- │REFRESH 1 ││REFRESH 2 ││          ││          ││          ││          ││          │
- │          ││          ││_accepting││advisory  ││force     ││metrics + ││WS disc.  │
- │mid-morn  ││mid-aftn  ││=False    ││alerts    ││all close ││strategy  ││bot stop  │
- │sentiment ││sentiment ││          ││+ buttons ││& persist ││breakdown ││DB close  │
- │re-fetch  ││re-fetch  ││          ││          ││          ││          ││          │
- └──────────┘└──────────┘└──────────┘└──────────┘└──────────┘└──────────┘└──────────┘
+ 11:15       13:00       13:15       14:30       15:00       15:15   15:30  15:35
+    │           │           │           │           │           │       │      │
+    ▼           ▼           ▼           ▼           ▼           ▼       ▼      ▼
+ ┌──────────┐┌──────────┐┌──────────┐┌──────────┐┌──────────┐┌─────┐┌─────┐┌─────┐
+ │NEWS      ││REGIME    ││NEWS      ││STOP NEW  ││EXIT      ││MAND.││DAILY││SHUT │
+ │CACHE     ││RECLASS 2 ││CACHE     ││SIGNALS   ││REMINDER  ││EXIT ││SUMM.││DOWN │
+ │REFRESH 1 ││          ││REFRESH 2 ││+ REGIME  ││          ││     ││     ││     │
+ │          ││direction ││          ││RECLASS 3 ││advisory  ││force││met- ││WS   │
+ │mid-morn  ││reversal  ││mid-aftn  ││          ││alerts    ││all  ││rics ││disc.│
+ │sentiment ││trigger   ││sentiment ││_accepting││+ buttons ││close││+str.││bot  │
+ │re-fetch  ││          ││re-fetch  ││=False    ││          ││     ││brkdn││stop │
+ │          ││          ││          ││round-trip││          ││     ││     ││DB   │
+ │          ││          ││          ││trigger   ││          ││     ││     ││close│
+ └──────────┘└──────────┘└──────────┘└──────────┘└──────────┘└─────┘└─────┘└─────┘
 
     │◄──────────────── WIND_DOWN ──────────────────▶│
 
@@ -130,7 +139,7 @@ All 40+ components across Phase 1, 2, 3, and 4 (including News Sentiment Filter)
                                                                └──────────┘
 
 
- COMPOSABLE PIPELINE (12 signal stages + 1 always stage, runs every ~1s)
+ COMPOSABLE PIPELINE (13 signal stages + 1 always stage, runs every ~1s)
  ═════════════════════════════════════════════════════════════════════════════════════
 
  The scan loop delegates ALL work to a ScanPipeline. Each stage implements the
@@ -144,6 +153,7 @@ All 40+ components across Phase 1, 2, 3, and 4 (including News Sentiment Filter)
  │  confirmation_map, composite_scores                                            │
  │  ranked_signals, sentiment_results, suppressed_signals                         │
  │  final_signals, active_trade_count                                             │
+ │  market_regime, regime_confidence, regime_modifiers (Phase 4 MRD)             │
  └──────────────────────────────────────────────────────────────────────────────────┘
 
  SIGNAL STAGES (run only when accepting_signals=True AND phase in
@@ -156,7 +166,24 @@ All 40+ components across Phase 1, 2, 3, and 4 (including News Sentiment Filter)
                                     │ (pass if not active)
                                     ▼
  ┌──────────────────────────────────────────────────────────────────────────────────┐
- │  Stage 2: StrategyEvalStage                                                     │
+ │  Stage 2: RegimeContextStage (Phase 4 — Market Regime Detection)                │
+ │                                                                                 │
+ │  Read cached regime classification (O(1) dict lookup, no DB I/O):             │
+ │  - Set ctx.market_regime (TRENDING / RANGING / VOLATILE / UNKNOWN)            │
+ │  - Set ctx.regime_confidence (0.0 - 1.0)                                      │
+ │  - Set ctx.regime_modifiers:                                                  │
+ │    strategy_weights, min_star_rating, position_size_modifier,                 │
+ │    max_positions_override                                                     │
+ │                                                                                 │
+ │  Downstream stages consume modifiers:                                         │
+ │  - RankingStage: min-stars filter from regime                                 │
+ │  - RiskSizingStage: position_size_modifier, max_positions_override            │
+ │  - PersistAndDeliverStage: regime badge on signal messages                    │
+ └──────────────────────────────────┬───────────────────────────────────────────────┘
+                                    │ ctx with regime modifiers set
+                                    ▼
+ ┌──────────────────────────────────────────────────────────────────────────────────┐
+ │  Stage 3: StrategyEvalStage                                                     │
  │                                                                                 │
  │  Load user_config, filter enabled strategies (gap_go/orb/vwap_enabled flags)   │
  │  Run strategy.evaluate(market_data, phase) for each enabled strategy           │
@@ -176,7 +203,7 @@ All 40+ components across Phase 1, 2, 3, and 4 (including News Sentiment Filter)
                                        │ ctx.all_candidates = list[CandidateSignal]
                                        ▼
  ┌──────────────────────────────────────────────────────────────────────────────────┐
- │  Stage 3: GapStockMarkingStage                                                  │
+ │  Stage 4: GapStockMarkingStage                                                  │
  │                                                                                 │
  │  Extract Gap & Go symbols from candidates                                      │
  │  Call mark_gap_stock(symbol) on ORB/VWAP strategies (exclude gapping stocks)   │
@@ -184,7 +211,7 @@ All 40+ components across Phase 1, 2, 3, and 4 (including News Sentiment Filter)
                                     │
                                     ▼
  ┌──────────────────────────────────────────────────────────────────────────────────┐
- │  Stage 4: DeduplicationStage                                                    │
+ │  Stage 5: DeduplicationStage                                                    │
  │                                                                                 │
  │  - Active trade check (skip if symbol already has open position)               │
  │  - Same-day signal check (skip if signal already sent today for symbol)        │
@@ -193,7 +220,7 @@ All 40+ components across Phase 1, 2, 3, and 4 (including News Sentiment Filter)
                                     │ filtered list[CandidateSignal]
                                     ▼
  ┌──────────────────────────────────────────────────────────────────────────────────┐
- │  Stage 5: ConfidenceStage (Phase 3)                                             │
+ │  Stage 6: ConfidenceStage (Phase 3)                                             │
  │                                                                                 │
  │  Group candidates by symbol, check for multi-strategy agreement:               │
  │  - In-batch: multiple strategies in current scan cycle                         │
@@ -204,7 +231,7 @@ All 40+ components across Phase 1, 2, 3, and 4 (including News Sentiment Filter)
                                     │ ctx.confirmation_map
                                     ▼
  ┌──────────────────────────────────────────────────────────────────────────────────┐
- │  Stage 6: CompositeScoringStage (Phase 3)                                       │
+ │  Stage 7: CompositeScoringStage (Phase 3)                                       │
  │                                                                                 │
  │  For each candidate:                                                           │
  │  ┌───────────────────────────────────────────────────────────────────────────┐  │
@@ -217,7 +244,7 @@ All 40+ components across Phase 1, 2, 3, and 4 (including News Sentiment Filter)
                                     │ ctx.composite_scores
                                     ▼
  ┌──────────────────────────────────────────────────────────────────────────────────┐
- │  Stage 7: AdaptiveFilterStage (Phase 3)                                         │
+ │  Stage 8: AdaptiveFilterStage (Phase 3)                                         │
  │                                                                                 │
  │  Per-strategy state: NORMAL -> REDUCED -> PAUSED                               │
  │  - NORMAL:  all signals pass                                                   │
@@ -227,17 +254,18 @@ All 40+ components across Phase 1, 2, 3, and 4 (including News Sentiment Filter)
                                     │ filtered candidates
                                     ▼
  ┌──────────────────────────────────────────────────────────────────────────────────┐
- │  Stage 8: RankingStage                                                          │
+ │  Stage 9: RankingStage                                                          │
  │                                                                                 │
  │  Per-strategy scorers: SignalScorer (Gap&Go), ORBScorer, VWAPScorer            │
  │  Top-N selection (N = max_positions from config, default 8)                    │
  │  Star rating: 1-5 stars based on composite score thresholds                    │
  │  Confirmation star boost applied (+1 for double, +2 for triple, max 5)        │
+ │  Regime min-stars filter: drop signals below ctx.regime_modifiers min_star     │
  └──────────────────────────────────┬───────────────────────────────────────────────┘
                                     │ ctx.ranked_signals = list[RankedSignal]
                                     ▼
  ┌──────────────────────────────────────────────────────────────────────────────────┐
- │  Stage 9: NewsSentimentStage (Phase 4 — News Sentiment Filter)                  │
+ │  Stage 10: NewsSentimentStage (Phase 4 — News Sentiment Filter)                 │
  │                                                                                 │
  │  For each ranked signal, fetch sentiment from NewsSentimentService cache:      │
  │                                                                                 │
@@ -270,15 +298,17 @@ All 40+ components across Phase 1, 2, 3, and 4 (including News Sentiment Filter)
                                     │ filtered ctx.ranked_signals (suppressed removed)
                                     ▼
  ┌──────────────────────────────────────────────────────────────────────────────────┐
- │  Stage 10: RiskSizingStage                                                      │
+ │  Stage 11: RiskSizingStage                                                      │
  │                                                                                 │
  │  RiskManager.filter_and_size():                                                │
  │  - Check available position slots (max 8 - active trades)                      │
+ │  - Regime max_positions_override applied if set                                │
  │  - Price affordability check (entry_price vs per-trade capital)                │
  │                                                                                 │
  │  PositionSizer:                                                                │
  │  - Equal allocation: total_capital / max_positions                             │
  │  - Confirmation multipliers: 1.0x (single), 1.5x (double), 2.0x (triple)      │
+ │  - Regime position_size_modifier applied (e.g. 0.7x for VOLATILE)             │
  │                                                                                 │
  │  CapitalAllocator:                                                             │
  │  - Expectancy-weighted allocation across strategies                            │
@@ -288,19 +318,21 @@ All 40+ components across Phase 1, 2, 3, and 4 (including News Sentiment Filter)
                                     │ ctx.final_signals = list[FinalSignal]
                                     ▼
  ┌──────────────────────────────────────────────────────────────────────────────────┐
- │  Stage 11: PersistAndDeliverStage                                               │
+ │  Stage 12: PersistAndDeliverStage                                               │
  │                                                                                 │
  │  For each FinalSignal:                                                         │
  │  ┌──────────────────────────────────────────────────────────────────────────┐   │
- │  │  1. Convert to SignalRecord                                              │   │
+ │  │  1. Convert to SignalRecord (+ market_regime, regime_confidence,        │   │
+ │  │     regime_weight_modifier columns)                                     │   │
  │  │  2. Paper mode check (ORB: orb_paper_mode, VWAP: vwap_paper_mode)      │   │
  │  │  3. INSERT INTO signals table (signal_repo.insert_signal)               │   │
  │  │  4. INSERT INTO hybrid_scores table (Phase 3 composite breakdown)       │   │
  │  │  5. bot.send_signal() with inline keyboard:                             │   │
  │  │                                                                          │   │
- │  │     ┌─────────────────────────────────────────┐                          │   │
+ │  │     ┌─────────────────────────────────────────────┐                          │   │
  │  │     │  BUY SIGNAL -- RELIANCE  ****- (Strong) │                          │   │
  │  │     │  Entry: 2,850  SL: 2,764  T1: 2,992    │                          │   │
+ │  │     │  REGIME: TRENDING (85%)                 │  ◀── regime badge       │   │
  │  │     │  NEWS WARNING (if MILD_NEGATIVE)        │  ◀── sentiment badge    │   │
  │  │     │  ...                                    │                          │   │
  │  │     │  [ TAKEN ]   [ SKIP ]   [ WATCH ]       │  ◀── Phase 4 buttons    │   │
@@ -310,7 +342,7 @@ All 40+ components across Phase 1, 2, 3, and 4 (including News Sentiment Filter)
                                     │
                                     ▼
  ┌──────────────────────────────────────────────────────────────────────────────────┐
- │  Stage 12: DiagnosticStage                                                      │
+ │  Stage 13: DiagnosticStage                                                      │
  │                                                                                 │
  │  Heartbeat every 60 cycles (~1 min): phase, strategy count, WS status          │
  └──────────────────────────────────────────────────────────────────────────────────┘
@@ -443,12 +475,12 @@ All 40+ components across Phase 1, 2, 3, and 4 (including News Sentiment Filter)
               │                        │   │  emit(AlertMessage) on change  │
               └─────────┬──────────────┘   └──────────┬─────────────────────┘
                         │                              │
-                        │ Stage 1: CB gate             │ Stage 7: Adaptive filter
+                        │ Stage 1: CB gate             │ Stage 8: Adaptive filter
                         ▼                              ▼
               ┌─────────────────────────────────────────────────────────────┐
               │            ScanPipeline (next iteration)                    │
               │   Circuit breaker gate = Stage 1 of every cycle           │
-              │   Adaptive filter      = Stage 7 of every cycle           │
+              │   Adaptive filter      = Stage 8 of every cycle           │
               └─────────────────────────────────────────────────────────────┘
 
 
@@ -527,7 +559,7 @@ All 40+ components across Phase 1, 2, 3, and 4 (including News Sentiment Filter)
  │  news_sentiment_cache (SQLite)        earnings_calendar      │
  │                                                               │
  │  Read by NewsSentimentStage           Read by NewsSentiment  │
- │  (pipeline stage 9) during            Stage to check         │
+ │  (pipeline stage 10) during           Stage to check         │
  │  each scan cycle                      earnings blackout      │
  └───────────────────────────────────────────────────────────────┘
 
@@ -543,7 +575,88 @@ All 40+ components across Phase 1, 2, 3, and 4 (including News Sentiment Filter)
  └──────────────────────────────────────────────────────────────────────────────────┘
 
 
- USER INTERACTION (Telegram Bot: 16 text commands + 9 callback handlers)
+ INTELLIGENCE MODULE (Phase 4 — Market Regime Detection)
+ ═════════════════════════════════════════════════════════════════════════════════════
+
+ Daily market regime classification (TRENDING / RANGING / VOLATILE) with intraday
+ re-classification checks. A pre-market morning brief provides global cues before
+ market open. The cached regime drives pipeline modifiers for star filtering,
+ position sizing, and max positions.
+
+ ┌─────────────────────────────────────────────────────────────────────────────────┐
+ │ Data Flow: Market Data → Regime Classifier → Cache → Pipeline Stage           │
+ └─────────────────────────────────────────────────────────────────────────────────┘
+
+  8:45 IST (morning_brief job)               9:30 IST (regime_classify job)
+        │                                           │
+        ▼                                           ▼
+ ┌──────────────────┐                        ┌──────────────────┐
+ │ MorningBrief     │                        │ RegimeData       │
+ │ Generator        │                        │ Collector        │
+ │                  │                        │                  │
+ │ Collects:        │                        │ Collects:        │
+ │  S&P 500 close   │                        │  India VIX       │
+ │  Nasdaq close    │                        │  Nifty gap %     │
+ │  Asian markets   │                        │  First 15-min    │
+ │  SGX Nifty       │                        │   range %        │
+ │  India VIX       │                        │  Directional     │
+ │  FII/DII flows   │                        │   alignment      │
+ └──────┬───────────┘                        └──────┬───────────┘
+        │ formatted brief                           │ RegimeInputData
+        ▼                                           ▼
+ ┌──────────────────┐                        ┌──────────────────────────────────┐
+ │ Telegram         │                        │ MarketRegimeClassifier            │
+ │ morning brief    │                        │                                  │
+ │ message          │                        │ Composite scores:                │
+ │                  │                        │  trending_score  (0-100)         │
+ │ (sent to user)   │                        │  ranging_score   (0-100)         │
+ └──────────────────┘                        │  volatile_score  (0-100)         │
+                                             │                                  │
+                                             │ Winner-takes-all classification  │
+                                             │ Confidence = max_score / sum     │
+                                             │                                  │
+                                             │ Regime modifiers (per-regime):   │
+                                             │  strategy_weights (JSON)         │
+                                             │  min_star_rating                 │
+                                             │  position_size_modifier          │
+                                             │  max_positions_override          │
+                                             └──────────┬───────────────────────┘
+                                                        │ persist + cache
+                                                        ▼
+                                             ┌──────────────────────────────────┐
+                                             │ market_regimes (SQLite)          │
+                                             │                                  │
+                                             │ + in-memory dict cache           │
+                                             │   (O(1) lookup by pipeline)     │
+                                             │                                  │
+                                             │ Read by RegimeContextStage       │
+                                             │ (pipeline stage 2) each cycle   │
+                                             └──────────────────────────────────┘
+
+ Re-classification checks (11:00, 13:00, 14:30):
+ ┌──────────────────────────────────────────────────────────────────────────────────┐
+ │                                                                                 │
+ │  11:00 — VIX spike trigger:      VIX increased significantly since 9:30        │
+ │  13:00 — Direction reversal:     Nifty reversed from morning direction          │
+ │  14:30 — Round-trip trigger:     Nifty made round-trip (up then down or v.v.)  │
+ │                                                                                 │
+ │  Severity-only upgrades: TRENDING → RANGING → VOLATILE (never downgrade)       │
+ │  Re-classifications flagged with is_reclassification=True, previous_regime     │
+ │  Telegram notification sent on regime change                                   │
+ └──────────────────────────────────────────────────────────────────────────────────┘
+
+ ┌──────────────────────────────────────────────────────────────────────────────────┐
+ │  RegimePerformanceRepository                                                    │
+ │                                                                                 │
+ │  Daily per-regime per-strategy performance tracking:                           │
+ │  regime_date, regime, strategy, signals_generated, signals_taken,              │
+ │  wins, losses, pnl, win_rate                                                  │
+ │                                                                                 │
+ │  Used for regime-aware performance analysis (REGIME HISTORY command)           │
+ └──────────────────────────────────────────────────────────────────────────────────┘
+
+
+ USER INTERACTION (Telegram Bot: 24 text commands + 9 callback handlers)
  ═════════════════════════════════════════════════════════════════════════════════════
 
                     ┌─────────────────────────────────────────────────┐
@@ -573,6 +686,18 @@ All 40+ components across Phase 1, 2, 3, and 4 (including News Sentiment Filter)
  │  │ EARNINGS              — show upcoming earnings calendar                 │   │
  │  │ UNSUPPRESS <STOCK>    — override sentiment suppression for a stock      │   │
  │  │                         (session-scoped, cleared at end of day)          │   │
+ │  └──────────────────────────────────────────────────────────────────────────┘   │
+ │                                                                                 │
+ │  ┌──────────────────────────────────────────────────────────────────────────┐   │
+ │  │ Phase 4: Market Regime Detection Commands                               │   │
+ │  │                                                                          │   │
+ │  │ REGIME               — show current regime classification with scores   │   │
+ │  │                        and modifiers                                     │   │
+ │  │ REGIME HISTORY        — show last 7 days of regime classifications      │   │
+ │  │ REGIME OVERRIDE <R>   — manual regime override (TRENDING/RANGING/       │   │
+ │  │                        VOLATILE)                                         │   │
+ │  │ VIX                  — show current India VIX with interpretation       │   │
+ │  │ MORNING              — show cached morning brief                        │   │
  │  └──────────────────────────────────────────────────────────────────────────┘   │
  │                                                                                 │
  │  Inline Button Callbacks (Phase 4):                                            │
@@ -626,14 +751,14 @@ All 40+ components across Phase 1, 2, 3, and 4 (including News Sentiment Filter)
                                    └────────────┘     └────────────┘
 
 
- DATABASE SCHEMA (12 tables, SQLite WAL mode)
+ DATABASE SCHEMA (14 tables, SQLite WAL mode)
  ═════════════════════════════════════════════════════════════════════════════════════
 
  Core Tables:
  ┌───────────────┐  ┌───────────────┐  ┌───────────────┐  ┌────────────────────────┐
  │   signals     │  │   trades      │  │  user_config  │  │ strategy_performance   │
  │               │  │               │  │               │  │                        │
- │ Phase 1+2+3   │  │ Phase 1+2     │  │ Phase 1+2+3   │  │ Phase 2+3              │
+ │ Phase 1+2+3+4 │  │ Phase 1+2     │  │ Phase 1+2+3   │  │ Phase 2+3              │
  │               │  │               │  │               │  │                        │
  │ +composite_   │  │ entry/exit    │  │ +circuit_     │  │ wins, losses,          │
  │  score        │  │ price, pnl,   │  │  breaker_    │  │ expectancy,            │
@@ -641,6 +766,12 @@ All 40+ components across Phase 1, 2, 3, and 4 (including News Sentiment Filter)
  │  _level       │  │               │  │ +adaptation  │  │                        │
  │ +adaptation   │  │               │  │  _mode       │  │                        │
  │  _status      │  │               │  │               │  │                        │
+ │ +market_      │  │               │  │               │  │                        │
+ │  regime       │  │               │  │               │  │                        │
+ │ +regime_      │  │               │  │               │  │                        │
+ │  confidence   │  │               │  │               │  │                        │
+ │ +regime_wt_   │  │               │  │               │  │                        │
+ │  modifier     │  │               │  │               │  │                        │
  └───────────────┘  └───────────────┘  └───────────────┘  └────────────────────────┘
 
  Phase 3 Tables:
@@ -682,6 +813,28 @@ All 40+ components across Phase 1, 2, 3, and 4 (including News Sentiment Filter)
  │ Queries: get_stock_sentiment,         │  │                                   │
  │ get_top_negative_headline,            │  │                                   │
  │ upsert_headlines, purge_old_entries   │  │                                   │
+ └────────────────────────────────────────┘  └───────────────────────────────────┘
+
+ Phase 4 Tables (Market Regime Detection):
+ ┌────────────────────────────────────────┐  ┌───────────────────────────────────┐
+ │   market_regimes                      │  │   regime_performance              │
+ │                                        │  │                                   │
+ │ Phase 4 — MRD                          │  │ Phase 4 — MRD                     │
+ │                                        │  │                                   │
+ │ regime (TRENDING/RANGING/VOLATILE),   │  │ regime_date, regime, strategy,   │
+ │ confidence, trending_score,           │  │ signals_generated, signals_taken, │
+ │ ranging_score, volatile_score,        │  │ wins, losses, pnl, win_rate      │
+ │ india_vix, nifty_gap_pct,            │  │                                   │
+ │ strategy_weights (JSON),             │  │ Daily per-regime per-strategy     │
+ │ min_star_rating,                      │  │ performance tracking              │
+ │ position_size_modifier,              │  │                                   │
+ │ is_reclassification,                 │  │ Queries: get_regime_performance,  │
+ │ previous_regime, classified_at       │  │ get_regime_history(days)          │
+ │                                        │  │                                   │
+ │ 24 columns total                      │  │                                   │
+ │                                        │  │                                   │
+ │ Queries: get_current_regime,          │  │                                   │
+ │ insert_regime, get_regime_history     │  │                                   │
  └────────────────────────────────────────┘  └───────────────────────────────────┘
 ```
 
@@ -826,8 +979,11 @@ Each phase activates a specific set of strategies and system behaviors.
 | VWAP Reversal      | Inactive (VWAP scan starts at 10:00)                     |
 | ExitMonitor        | Monitoring any trades from crash recovery                 |
 | NewsSentimentStage | **Active** -- using pre-market cache (fetched at 8:30)   |
+| RegimeContextStage | **Active** -- reads cached regime (UNKNOWN until 9:30)   |
 | CircuitBreaker     | Reset at 9:15, monitoring SL events via EventBus         |
 | AdaptiveManager    | Reset at 9:15, all strategies at NORMAL                  |
+| RegimeClassifier   | Reset at 9:15 (regime_classifier.reset_daily())          |
+| RegimeDataCollector| Reset at 9:15 (regime_data_collector.reset_session())    |
 
 ### ENTRY_WINDOW Phase (9:30 - 9:45)
 
@@ -836,8 +992,10 @@ Each phase activates a specific set of strategies and system behaviors.
 | Gap & Go           | **Active** -- entry validation, signal generation         |
 | ORB                | Inactive (opening range still building)                   |
 | VWAP Reversal      | Inactive                                                 |
-| Pipeline Stages    | Full 12-stage pipeline running                           |
-| PersistAndDeliver  | Signals delivered with [ TAKEN ] [ SKIP ] [ WATCH ]      |
+| RegimeClassifier   | 9:30 -- initial classification (TRENDING/RANGING/VOLATILE)|
+| RegimeContextStage | **Active** -- regime modifiers applied to pipeline        |
+| Pipeline Stages    | Full 13-stage pipeline running                           |
+| PersistAndDeliver  | Signals delivered with regime badge + inline buttons      |
 
 ### CONTINUOUS Phase (9:45 - 14:30)
 
@@ -847,11 +1005,13 @@ Each phase activates a specific set of strategies and system behaviors.
 | ORB                | **Active 9:45-11:00** -- breakout detection               |
 | VWAP Reversal      | **Active 10:00-14:30** -- mean-reversion setups           |
 | Opening Ranges     | Locked at 9:45 (30-min range finalized)                  |
+| RegimeContextStage | **Active** -- cached regime modifiers on every scan cycle |
+| RegimeClassifier   | Re-classification at 11:00/13:00/14:30 (severity-only)  |
 | ConfidenceStage    | Cross-strategy confirmation (ORB + VWAP overlap)         |
 | CompositeScoring   | Full 4-factor scoring with live win rates                |
 | NewsSentimentStage | Filters/downgrades signals based on cached sentiment     |
 | CircuitBreaker     | May activate if SL limit reached (Stage 1 gate)          |
-| AdaptiveManager    | May throttle/pause losing strategies (Stage 7 filter)    |
+| AdaptiveManager    | May throttle/pause losing strategies (Stage 8 filter)    |
 | ExitMonitor        | Full monitoring: SL, T1, T2, trailing SL, breakeven     |
 | Phase 4 Buttons    | Active on all delivered signals and exit alerts           |
 
@@ -871,6 +1031,7 @@ Each phase activates a specific set of strategies and system behaviors.
 | Component          | Activity                                                 |
 |--------------------|----------------------------------------------------------|
 | Pre-Market News    | 8:30 -- RSS fetch + VADER analysis, cache in SQLite      |
+| Morning Brief      | 8:45 -- global cues, VIX, FII/DII flows via Telegram     |
 | Pre-Market Alert   | 9:00 -- advisory Telegram message                        |
 
 ### Off-Hours

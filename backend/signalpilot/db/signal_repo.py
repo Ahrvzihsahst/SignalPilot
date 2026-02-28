@@ -28,9 +28,10 @@ class SignalRepository:
                  composite_score, confirmation_level, confirmed_by,
                  position_size_multiplier, adaptation_status,
                  news_sentiment_score, news_sentiment_label,
-                 news_top_headline, news_action, original_star_rating)
+                 news_top_headline, news_action, original_star_rating,
+                 market_regime, regime_confidence, regime_weight_modifier)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 signal.date.isoformat(),
@@ -61,6 +62,9 @@ class SignalRepository:
                 signal.news_top_headline,
                 signal.news_action,
                 signal.original_star_rating,
+                signal.market_regime,
+                signal.regime_confidence,
+                signal.regime_weight_modifier,
             ),
         )
         await self._conn.commit()
@@ -234,4 +238,8 @@ class SignalRepository:
             news_top_headline=row["news_top_headline"] if "news_top_headline" in keys else None,
             news_action=row["news_action"] if "news_action" in keys else None,
             original_star_rating=row["original_star_rating"] if "original_star_rating" in keys else None,
+            # Phase 4: Market Regime Detection fields
+            market_regime=row["market_regime"] if "market_regime" in keys else None,
+            regime_confidence=row["regime_confidence"] if "regime_confidence" in keys else None,
+            regime_weight_modifier=row["regime_weight_modifier"] if "regime_weight_modifier" in keys else None,
         )

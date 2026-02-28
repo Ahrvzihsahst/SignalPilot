@@ -112,6 +112,12 @@ class PersistAndDeliverStage:
                 if state is not None:
                     record.adaptation_status = state.level.value
 
+            # Phase 4: Market Regime Detection -- attach regime metadata
+            if ctx.regime is not None:
+                record.market_regime = ctx.regime
+                record.regime_confidence = ctx.regime_confidence
+                record.regime_weight_modifier = ctx.regime_position_modifier
+
             signal_id = await self._signal_repo.insert_signal(record)
             record.id = signal_id
 
@@ -157,6 +163,8 @@ class PersistAndDeliverStage:
                 news_top_headline=news_top_headline,
                 news_sentiment_score=news_sentiment_score,
                 original_star_rating=original_star_rating,
+                market_regime=ctx.regime,
+                regime_confidence=ctx.regime_confidence if ctx.regime is not None else None,
             )
             logger.info(
                 "Signal %s for %s (id=%d, composite_score=%s, confirmation=%s)",

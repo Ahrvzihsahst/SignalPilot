@@ -163,6 +163,20 @@ It also checks the earnings calendar. Any stock reporting earnings today gets
 flagged for automatic blackout — no signals will be generated for that stock,
 no matter how good the setup looks. Earnings days are simply too unpredictable.
 
+### 8:45 AM — The Morning Brief
+
+Before the market opens, SignalPilot sends a pre-market briefing to your Telegram --
+think of it as the "weather forecast" for the trading day. It collects global cues
+(S&P 500, Nasdaq, Asian markets, SGX Nifty), checks India VIX (the market's fear gauge),
+and looks at FII/DII flows (whether foreign and domestic institutions were buying or
+selling). Using all of this, it predicts the likely **market regime** for the day --
+TRENDING, RANGING, or VOLATILE -- and lists any watchlist alerts for stocks you're
+tracking.
+
+This is like a meteorologist giving you the morning forecast: "Sunny with clear skies
+(TRENDING), expect momentum plays to do well" or "Storm clouds gathering (VOLATILE),
+keep your umbrella ready and trade small." You start your day knowing what to expect.
+
 ### 8:50 AM — The Alarm Clock
 
 SignalPilot wakes up. It loads all its settings from a configuration file (API keys,
@@ -193,10 +207,35 @@ It feeds these ticks into an in-memory data store that tracks:
 
 **The Gap & Go strategy is now active**, scanning for stocks that opened with a gap.
 
-### 9:30 AM — Entry Window Opens
+### 9:30 AM — Entry Window Opens & Regime Classification
 
 Gap & Go candidates that passed the initial checks now get their final validation:
 "Is the price still holding above where it opened?" If yes, signals are generated.
+
+At the same time, SignalPilot classifies the market day. After observing the first
+15 minutes of trading, it has enough data to "read the room." It looks at 4 key
+inputs:
+
+1. **India VIX** — How fearful is the market? (the barometer)
+2. **Nifty gap %** — How far did the market jump at open? (the opening leap)
+3. **First-15-min range %** — How wild were the first 15 minutes? (the temperature check)
+4. **Directional alignment** — Are global markets (S&P 500, SGX Nifty) agreeing on
+   direction? (the consensus reading)
+
+From these four inputs, it labels the day as one of three regimes:
+
+- **TRENDING** — A momentum day. Markets opened strong and global cues agree. SignalPilot
+  favors Gap & Go (45% weight) and lets breakout strategies run. Like a tailwind --
+  go with the flow.
+- **RANGING** — A sideways day. Markets are indecisive. VWAP Reversal gets 50% weight
+  (mean-reversion works best here), position sizes drop by 15%, and only 4-star or
+  better signals pass. Like a calm lake -- fish carefully.
+- **VOLATILE** — A chaotic day. VIX is high, swings are wide. All strategies get equal
+  weight, position sizes are slashed by 35%, max positions drop to 4, and only 4-5
+  star signals pass. Like a storm -- batten down the hatches and trade defensively.
+
+This classification adjusts strategy weights, position sizes, and minimum signal
+quality for the rest of the day.
 
 ### 9:45 AM — The Range Locks (CONTINUOUS Phase Begins)
 
@@ -212,8 +251,29 @@ at the same time.
 ### 10:00 AM - 2:30 PM — The Core Trading Session
 
 This is where the magic happens. Every single second, SignalPilot runs a complete
-**12-stage pipeline** (more on this in Chapter 4). It's like an assembly line in a
+**13-stage pipeline** (more on this in Chapter 4). It's like an assembly line in a
 factory — each station does one specific job.
+
+### 11:00 AM / 1:00 PM / 2:30 PM — Regime Re-checks
+
+The market does not always behave the way the morning suggested. SignalPilot checks
+three times during the day whether the regime should change -- like a pilot checking
+the weather radar mid-flight.
+
+Triggers for a re-classification include:
+- **VIX spike** — India VIX jumps by 3 or more points from the morning reading
+  (fear is rising fast)
+- **Direction reversal** — Nifty reverses direction from the morning (opened bullish,
+  now falling hard)
+- **Round-trip** — Nifty does a "round-trip," coming back to where it opened after
+  a big move (the momentum was a fake-out)
+
+Important rules: the regime can only **upgrade in severity** (TRENDING can become
+RANGING or VOLATILE, RANGING can become VOLATILE, but never backwards). And there's
+a maximum of **2 re-classifications per day** to prevent flip-flopping. If the
+morning said TRENDING but VIX spikes at 11:00 AM, SignalPilot upgrades to VOLATILE
+and immediately tightens all the knobs -- higher quality bar, smaller positions,
+fewer trades.
 
 ### 11:15 AM — Mid-Day News Refresh
 
@@ -266,9 +326,9 @@ Telegram bot. Good night.
 
 ---
 
-## Chapter 4: The 12-Stage Pipeline (The Assembly Line)
+## Chapter 4: The 13-Stage Pipeline (The Assembly Line)
 
-Every second, each signal candidate passes through an assembly line of 12 stages.
+Every second, each signal candidate passes through an assembly line of 13 stages.
 Think of it like a car factory — the car (signal) moves from one station to the next,
 and each station adds something or rejects defective ones.
 
@@ -287,7 +347,32 @@ Today's SL hits: 2 (limit: 3)
 --> Gate is OPEN, signal passes through
 ```
 
-### Stage 2: Strategy Evaluation (The Talent Scout)
+### Stage 2: Regime Context (The Weather Report)
+
+*"What kind of day is the market having?"*
+
+This stage is like checking the weather before deciding what to wear. Every second,
+it reads the day's regime classification (a simple dictionary lookup -- takes less
+than 1 millisecond) and sets the "conditions" for all downstream stages:
+
+- **TRENDING day**: "It's sunny -- go full speed." Strategy weights favor Gap & Go
+  (45%), position sizes stay normal, accept 3-star signals.
+- **RANGING day**: "It's overcast -- proceed with caution." VWAP Reversal gets 50%
+  weight, position sizes reduced by 15%, require 4-star signals.
+- **VOLATILE day**: "Storm warning -- batten down the hatches." All strategies equally
+  weighted, position sizes slashed by 35%, only accept 4-5 star signals, max 4 positions.
+
+Before 9:30 AM (when the first classification happens), this stage uses neutral
+defaults -- no modifications. The market has not spoken yet, so SignalPilot does not
+make assumptions.
+
+```
+Today's regime: TRENDING (classified at 9:30 AM)
+Confidence: 0.78
+--> Downstream stages will use TRENDING modifiers
+```
+
+### Stage 3: Strategy Evaluation (The Talent Scout)
 
 *"Which strategies are active right now, and what did they find?"*
 
@@ -301,7 +386,7 @@ VWAP found: TCS pullback to VWAP
 --> 2 candidates collected
 ```
 
-### Stage 3: Gap Stock Marking (The Exclusion List)
+### Stage 4: Gap Stock Marking (The Exclusion List)
 
 *"Was this stock already flagged by Gap & Go?"*
 
@@ -313,7 +398,7 @@ Reliance was NOT a gap stock today
 --> Passes through unchanged
 ```
 
-### Stage 4: Deduplication (The Bouncer)
+### Stage 5: Deduplication (The Bouncer)
 
 *"Have we already sent a signal for this stock today?"*
 
@@ -326,7 +411,7 @@ No active Reliance trade, no prior Reliance signal today
 --> Reliance passes through
 ```
 
-### Stage 5: Confidence Detection (The Second Opinion)
+### Stage 6: Confidence Detection (The Second Opinion)
 
 *"Do multiple strategies agree on this stock?"*
 
@@ -341,7 +426,7 @@ But if both ORB and VWAP flagged Reliance:
 --> Double confirmation (1.5x position size, +1 star bonus!)
 ```
 
-### Stage 6: Composite Scoring (The Report Card)
+### Stage 7: Composite Scoring (The Report Card)
 
 *"How good is this signal really?"*
 
@@ -360,7 +445,7 @@ Reliance ORB Signal Score Breakdown:
                   = 64.3 / 100
 ```
 
-### Stage 7: Adaptive Filter (The Performance Review)
+### Stage 8: Adaptive Filter (The Performance Review)
 
 *"Has this strategy been losing too much lately?"*
 
@@ -377,7 +462,7 @@ ORB status: NORMAL (last 3 trades: Win, Win, Loss)
 --> Reliance signal passes through
 ```
 
-### Stage 8: Ranking (The Talent Show)
+### Stage 9: Ranking (The Talent Show)
 
 *"Which signals deserve to be sent?"*
 
@@ -396,7 +481,13 @@ Star Rating Scale:
   1 star:  Weak        (score < 35)
 ```
 
-### Stage 9: News Sentiment Filter (The Intelligence Analyst)
+**Regime adjustment:** In VOLATILE or RANGING regimes, the admission bar is raised.
+On a normal TRENDING day, 3-star signals pass. On a RANGING day, only 4-star or
+better. On a VOLATILE day with high confidence, only 5-star signals make it through.
+This is like raising the entrance requirements when conditions are tough -- only the
+best candidates get through the door.
+
+### Stage 10: News Sentiment Filter (The Intelligence Analyst)
 
 *"What is the news saying about this stock right now?"*
 
@@ -449,7 +540,7 @@ EARNINGS BLACKOUT:
 If you disagree with a suppression, you can override it with the `UNSUPPRESS RELIANCE`
 command, and the stock will be allowed through for the rest of the day.
 
-### Stage 10: Risk Sizing (The Accountant)
+### Stage 11: Risk Sizing (The Accountant)
 
 *"How many shares can you afford, and how much to risk?"*
 
@@ -465,7 +556,13 @@ Quantity:              2 shares (floor of 6,250 / 2,862)
 Actual capital used:   Rs 5,724
 ```
 
-### Stage 11: Persist & Deliver (The Messenger)
+**Regime adjustment:** During RANGING days, all position sizes are reduced by 15%.
+During VOLATILE days, positions are slashed by 35% and the maximum number of positions
+drops from 8 to 4. This is SignalPilot being defensive -- smaller bets when the market
+is unpredictable. If the accountant sees storm clouds on the regime weather report,
+they tighten the budget.
+
+### Stage 12: Persist & Deliver (The Messenger)
 
 *"Save the record and tell the user!"*
 
@@ -486,7 +583,12 @@ The signal is saved to the database and delivered to your Telegram:
 
 Those three buttons are your response options (more on this in Chapter 6).
 
-### Stage 12: Diagnostic (The Health Check)
+Each signal message now also includes a **regime badge** -- a small label like
+"TRENDING DAY" or "VOLATILE -- reduced sizing" -- so you always know the market
+context behind each signal. It is like a label on the package telling you the
+weather conditions when it was shipped.
+
+### Stage 13: Diagnostic (The Health Check)
 
 Every 60 cycles (~1 minute), a heartbeat log confirms everything is healthy:
 
@@ -613,13 +715,18 @@ You can also type commands:
 | `NEWS ALL` | Summary of sentiment scores for all stocks in the cache |
 | `EARNINGS` | Show upcoming earnings calendar (next 7 days) |
 | `UNSUPPRESS SBIN` | Manually override a news suppression for SBIN (lasts until end of day) |
+| `REGIME` | What kind of day is the market having? Shows the current classification (TRENDING/RANGING/VOLATILE), confidence score, and how it's affecting strategy weights and position sizing |
+| `REGIME HISTORY` | Shows the last 7 days of market regimes. Useful for spotting patterns (e.g., "3 volatile days in a row -- market is unsettled") |
+| `REGIME OVERRIDE TRENDING` | Manual override. If you disagree with SignalPilot's assessment, you can force a different regime (TRENDING, RANGING, or VOLATILE). Use with caution -- you're overriding the algorithm |
+| `VIX` | Shows the current India VIX with an interpretation (very calm / normal / slightly elevated / high / very high -- defensive mode) |
+| `MORNING` | Re-read today's morning brief. If you missed the 8:45 AM message, this shows it again |
 | `HELP` | List all available commands |
 
 ---
 
 ## Chapter 7: The Safety Systems
 
-SignalPilot has four layers of protection to prevent catastrophic losses.
+SignalPilot has five layers of protection to prevent catastrophic losses.
 
 ### Layer 1: Circuit Breaker (The Fire Alarm)
 
@@ -713,6 +820,36 @@ If you review the news and disagree with the suppression (maybe the headline
 is about a different entity or old news), you can type `UNSUPPRESS SBIN` to
 override it for the rest of the day.
 
+### Layer 5: Market Regime Detection (The Weather Station)
+
+The regime detection system is SignalPilot's "macro awareness." While the other
+safety systems react to individual trades (circuit breaker) or strategy performance
+(adaptive manager), the regime detector looks at the whole market environment. It is
+like having a weather station on the roof of the factory -- the assembly line workers
+(pipeline stages) can check the conditions before deciding how aggressively to work.
+
+On a VOLATILE day (high VIX, wild swings), SignalPilot automatically:
+- Raises the quality bar (only 4-5 star signals)
+- Cuts position sizes by 35%
+- Limits to 4 positions maximum
+- Weights all strategies equally (no favorites)
+
+This prevents SignalPilot from being overly aggressive when the market is
+unpredictable. On RANGING days, the adjustments are milder but still meaningful:
+position sizes drop by 15% and the minimum star rating is raised to 4. On TRENDING
+days, the system runs at full speed -- conditions are favorable.
+
+And if you disagree with the classification, the `REGIME OVERRIDE` command lets you
+set your own assessment. Maybe you see something the algorithm missed, or you have
+conviction that the market is about to break out of its range. You are still in
+control.
+
+The system starts in **shadow mode** by default -- it classifies and logs the regime
+but does not actually change trading behavior. This lets you observe how it works
+and validate its accuracy for a couple of weeks before enabling active mode. Think of
+it as a trial run: the weather station is installed and reporting, but the factory
+workers are not yet checking it. Once you trust the readings, you flip the switch.
+
 ---
 
 ## Chapter 8: Multi-Strategy Confirmation (The Second Opinion)
@@ -748,7 +885,7 @@ tracked:
 
 | Table | What it stores | Example |
 |-------|---------------|---------|
-| `signals` | Every signal ever generated | Reliance BUY at 2,862, ORB, 3 stars |
+| `signals` | Every signal ever generated (now includes `market_regime`, `regime_confidence`, and `regime_weight_modifier` columns so every signal is tagged with the market context when it was generated) | Reliance BUY at 2,862, ORB, 3 stars, TRENDING day |
 | `trades` | Trades you actually took | Reliance, entry 2,862, exit 2,921, +Rs 118 |
 | `user_config` | Your personal settings | Capital: 50K, max positions: 8 |
 | `strategy_performance` | Win/loss record per strategy | ORB: 45 wins, 23 losses |
@@ -759,6 +896,11 @@ tracked:
 | `adaptation_log` | Strategy status changes | ORB: NORMAL -> REDUCED, Feb 25 |
 | `news_sentiment` | Cached headlines with sentiment scores | SBIN: -0.62, STRONG_NEGATIVE, 4 headlines |
 | `earnings_calendar` | Upcoming earnings dates per stock | RELIANCE: earnings on Mar 5 |
+| `market_regimes` | Every regime classification: the scores, the inputs, the resulting modifiers. Creates an audit trail and enables backtesting | Feb 28: TRENDING, confidence 0.78, VIX 13.2, gap +0.8% |
+| `regime_performance` | Daily performance broken down by regime type. Over time, tells you which strategies work best on which types of days | TRENDING days: Gap & Go 72% win rate, ORB 61% |
+
+That is **14 tables** in total -- a complete audit trail of every decision SignalPilot
+makes, from signal generation to regime classification to your response.
 
 ---
 
@@ -794,18 +936,19 @@ on a normal trading day:
 10:30:00.000  Scan cycle #4500 begins
 
   [Stage 1]  Circuit Breaker: OFF (1 SL today, limit is 3) .............. PASS
-  [Stage 2]  Strategy Eval: ORB evaluates 500 stocks, finds 1 breakout .. 1 candidate
+  [Stage 2]  Regime Context: TRENDING (confidence 0.78) ................. modifiers set
+  [Stage 3]  Strategy Eval: ORB evaluates 500 stocks, finds 1 breakout .. 1 candidate
              VWAP evaluates 500 stocks, finds 0 setups .................. 0 candidates
-  [Stage 3]  Gap Stock Marking: no overlap ............................... 1 candidate
-  [Stage 4]  Dedup: no prior signal for this stock ....................... 1 candidate
-  [Stage 5]  Confidence: single strategy only ............................ 1x multiplier
-  [Stage 6]  Composite Score: 64.3/100 ................................... scored
-  [Stage 7]  Adaptive Filter: ORB is NORMAL .............................. PASS
-  [Stage 8]  Ranking: rank #1 of 1, 3 stars .............................. ranked
-  [Stage 9]  News Sentiment: NEUTRAL (+0.12), no earnings ............... PASS
-  [Stage 10] Risk Sizing: 2 shares, Rs 5,724 capital .................... sized
-  [Stage 11] Persist & Deliver: saved to DB, sent to Telegram ........... DELIVERED
-  [Stage 12] Diagnostic: healthy .......................................... logged
+  [Stage 4]  Gap Stock Marking: no overlap ............................... 1 candidate
+  [Stage 5]  Dedup: no prior signal for this stock ....................... 1 candidate
+  [Stage 6]  Confidence: single strategy only ............................ 1x multiplier
+  [Stage 7]  Composite Score: 64.3/100 ................................... scored
+  [Stage 8]  Adaptive Filter: ORB is NORMAL .............................. PASS
+  [Stage 9]  Ranking: rank #1 of 1, 3 stars (min 3 for TRENDING) ....... ranked
+  [Stage 10] News Sentiment: NEUTRAL (+0.12), no earnings ............... PASS
+  [Stage 11] Risk Sizing: 2 shares, Rs 5,724 capital (no regime cut) ... sized
+  [Stage 12] Persist & Deliver: saved to DB, sent to Telegram ........... DELIVERED
+  [Stage 13] Diagnostic: healthy .......................................... logged
 
   [Always]   Exit Monitor: checking 1 active trade (HDFC Bank) .......... no exits
 
@@ -844,6 +987,11 @@ on a normal trading day:
 | **Suppression** | When the News Sentiment Filter blocks a signal from being delivered due to strong negative news or an earnings blackout |
 | **Unsuppress** | A manual override command that lets you bypass a news suppression for a specific stock for the rest of the trading day |
 | **RSS** | Really Simple Syndication — a standard format for publishing news feeds that SignalPilot reads to gather financial headlines |
+| **Market Regime** | The overall market characterization for the day: TRENDING (strong directional movement), RANGING (sideways, mean-reverting), or VOLATILE (high uncertainty, wide swings) |
+| **India VIX** | The India Volatility Index, derived from Nifty option prices. High VIX (>18) suggests fear and uncertainty; low VIX (<14) suggests calm markets |
+| **Regime Classification** | The act of labeling the market day at 9:30 AM using VIX, gap, range, and alignment data |
+| **Shadow Mode** | A deployment mode where the regime is classified and logged but does not affect actual trading decisions. Useful for validation before going live |
+| **Directional Alignment** | A score from -1 to +1 measuring whether global markets (S&P 500, SGX Nifty) agree on direction. High alignment suggests trending; low alignment suggests ranging |
 
 ---
 
@@ -853,9 +1001,10 @@ on a normal trading day:
 |--------------|-----|
 | Three different strategies | Different market conditions favor different setups. Diversification of approaches. |
 | Strict time windows | Each strategy has a proven optimal window. Running them outside that window adds noise, not signal. |
-| 12-stage pipeline | Each stage does one thing well. Easy to test, easy to modify, easy to understand. |
+| 13-stage pipeline | Each stage does one thing well. Easy to test, easy to modify, easy to understand. |
+| Market regime detection | The market environment matters. TRENDING, RANGING, and VOLATILE days need different approaches. Regime detection adjusts strategy weights, position sizes, and quality thresholds based on the overall market conditions -- macro awareness, not just individual signals. |
 | News sentiment filter | Price and volume alone do not tell the full story. Checking news before delivery avoids trading into known bad situations. |
-| Circuit breaker + adaptive filter | Bad days and bad streaks happen. Automatic protection prevents emotional revenge trading. |
+| 5 layers of safety | Circuit Breaker, Adaptive Manager, Capital Allocator, News Sentiment Filter, and Market Regime Detection. Each layer protects at a different level -- individual trades, strategy streaks, capital allocation, news risk, and macro environment. |
 | Multi-strategy confirmation | When independent methods agree, probability of success increases significantly. |
 | Trailing stops | Lets winners run while mechanically locking in profits. Removes the hardest decision in trading. |
 | Telegram delivery with buttons | You get actionable intel on your phone with one-tap responses. No need to watch charts all day. |

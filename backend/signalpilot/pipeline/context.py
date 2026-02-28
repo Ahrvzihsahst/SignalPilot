@@ -47,3 +47,11 @@ class ScanContext:
     # Set by RiskSizingStage
     final_signals: list[FinalSignal] = field(default_factory=list)
     active_trade_count: int = 0
+
+    # Set by RegimeContextStage (Phase 4: Market Regime Detection)
+    regime: str | None = None                        # "TRENDING", "RANGING", "VOLATILE", or None
+    regime_confidence: float = 0.0                   # 0.0-1.0
+    regime_min_stars: int = 3                        # Minimum star threshold (3 = no filter)
+    regime_position_modifier: float = 1.0            # 0.65x-1.0x multiplier (1.0 = no change)
+    regime_max_positions: int | None = None           # Override (None = use config default)
+    regime_strategy_weights: dict | None = None       # {"gap_go": 0.45, "orb": 0.35, "vwap": 0.20}

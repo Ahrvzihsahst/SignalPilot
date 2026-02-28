@@ -27,12 +27,16 @@ from signalpilot.telegram.handlers import (
     handle_hold_callback,
     handle_journal,
     handle_let_run_callback,
+    handle_morning_command,
     handle_news_command,
     handle_override_circuit,
     handle_override_confirm,
     handle_partial_exit_callback,
     handle_pause,
     handle_rebalance,
+    handle_regime_command,
+    handle_regime_history_command,
+    handle_regime_override_command,
     handle_resume,
     handle_score,
     handle_skip_callback,
@@ -44,6 +48,7 @@ from signalpilot.telegram.handlers import (
     handle_taken_callback,
     handle_unsuppress_command,
     handle_unwatch_command,
+    handle_vix_command,
     handle_watch_callback,
     handle_watchlist_command,
 )
@@ -90,6 +95,11 @@ class SignalPilotBot:
         # Phase 4: News Sentiment Filter
         news_sentiment_service=None,
         earnings_repo=None,
+        # Phase 4: Market Regime Detection
+        regime_classifier=None,
+        regime_data_collector=None,
+        regime_repo=None,
+        morning_brief_generator=None,
     ) -> None:
         self._bot_token = bot_token
         self._chat_id = chat_id
@@ -112,6 +122,11 @@ class SignalPilotBot:
         # Phase 4: News Sentiment Filter
         self._news_sentiment_service = news_sentiment_service
         self._earnings_repo = earnings_repo
+        # Phase 4: Market Regime Detection
+        self._regime_classifier = regime_classifier
+        self._regime_data_collector = regime_data_collector
+        self._regime_repo = regime_repo
+        self._morning_brief_generator = morning_brief_generator
         self._application: Application | None = None
         self._pending_entry_edits: dict[int, int] = {}  # chat_message_id -> signal_id
         self._awaiting_override_confirm = False
@@ -244,6 +259,38 @@ class SignalPilotBot:
                 self._handle_unsuppress,
             )
         )
+        # Phase 4: Market Regime Detection commands
+        self._application.add_handler(
+            MessageHandler(
+                chat_filter & filters.TEXT
+                & filters.Regex(r"(?i)^regime\s+override\s+(trending|ranging|volatile)$"),
+                self._handle_regime_override,
+            )
+        )
+        self._application.add_handler(
+            MessageHandler(
+                chat_filter & filters.TEXT & filters.Regex(r"(?i)^regime\s+history$"),
+                self._handle_regime_history,
+            )
+        )
+        self._application.add_handler(
+            MessageHandler(
+                chat_filter & filters.TEXT & filters.Regex(r"(?i)^regime$"),
+                self._handle_regime,
+            )
+        )
+        self._application.add_handler(
+            MessageHandler(
+                chat_filter & filters.TEXT & filters.Regex(r"(?i)^vix$"),
+                self._handle_vix,
+            )
+        )
+        self._application.add_handler(
+            MessageHandler(
+                chat_filter & filters.TEXT & filters.Regex(r"(?i)^morning$"),
+                self._handle_morning,
+            )
+        )
         self._application.add_handler(CallbackQueryHandler(self._handle_callback))
 
         await self._application.initialize()
@@ -269,6 +316,8 @@ class SignalPilotBot:
         news_top_headline: str | None = None,
         news_sentiment_score: float | None = None,
         original_star_rating: int | None = None,
+        market_regime: str | None = None,
+        regime_confidence: float | None = None,
     ) -> int | None:
         """Format and send a signal message to the user's chat.
 
@@ -284,6 +333,8 @@ class SignalPilotBot:
             news_top_headline=news_top_headline,
             news_sentiment_score=news_sentiment_score,
             original_star_rating=original_star_rating,
+            market_regime=market_regime,
+            regime_confidence=regime_confidence,
         )
         keyboard = None
         if signal_id is not None:
@@ -523,6 +574,45 @@ class SignalPilotBot:
                 self._news_sentiment_service, update.message.text,
             )
             await update.message.reply_text(response)
+
+    # -- Phase 4: Market Regime Detection command wrappers
+
+    async def _handle_regime(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        async with log_context(command="REGIME"):
+            response = await handle_regime_command(self._regime_classifier)
+            await update.message.reply_text(response, parse_mode="HTML")
+
+    async def _handle_regime_history(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        async with log_context(command="REGIME_HISTORY"):
+            response = await handle_regime_history_command(self._regime_repo)
+            await update.message.reply_text(response, parse_mode="HTML")
+
+    async def _handle_regime_override(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        async with log_context(command="REGIME_OVERRIDE"):
+            response = await handle_regime_override_command(
+                self._regime_classifier, update.message.text,
+            )
+            await update.message.reply_text(response, parse_mode="HTML")
+
+    async def _handle_vix(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        async with log_context(command="VIX"):
+            response = await handle_vix_command(self._regime_data_collector)
+            await update.message.reply_text(response, parse_mode="HTML")
+
+    async def _handle_morning(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        async with log_context(command="MORNING"):
+            response = await handle_morning_command(self._morning_brief_generator)
+            await update.message.reply_text(response, parse_mode="HTML")
 
     # -- Callback query handler (Phase 4: Quick Action Buttons)
 

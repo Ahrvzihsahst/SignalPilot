@@ -79,6 +79,13 @@ async def create_app(config: AppConfig) -> SignalPilotApp:
     news_sentiment_repo = NewsSentimentRepository(connection)
     earnings_repo = EarningsCalendarRepository(connection)
 
+    # --- Phase 4: Market Regime Detection Repositories ---
+    from signalpilot.db.regime_performance_repo import RegimePerformanceRepository
+    from signalpilot.db.regime_repo import MarketRegimeRepository
+
+    regime_repo = MarketRegimeRepository(connection)
+    regime_performance_repo = RegimePerformanceRepository(connection)
+
     # --- Data layer (no DB deps) ---
     authenticator = SmartAPIAuthenticator(config)
     instruments = InstrumentManager(config.nifty500_csv_path)
@@ -157,6 +164,21 @@ async def create_app(config: AppConfig) -> SignalPilotApp:
         config=config,
     )
     earnings_calendar = EarningsCalendar(earnings_repo, config)
+
+    # --- Phase 4: Market Regime Detection Intelligence ---
+    from signalpilot.intelligence.morning_brief import MorningBriefGenerator
+    from signalpilot.intelligence.regime_classifier import MarketRegimeClassifier
+    from signalpilot.intelligence.regime_data import RegimeDataCollector
+
+    regime_data_collector = RegimeDataCollector(market_data, config)
+    regime_classifier = MarketRegimeClassifier(
+        regime_data_collector, regime_repo, config,
+    )
+    morning_brief_generator = MorningBriefGenerator(
+        data_collector=regime_data_collector,
+        watchlist_repo=watchlist_repo,
+        config=config,
+    )
 
     # --- Risk ---
     position_sizer = PositionSizer()
@@ -269,6 +291,11 @@ async def create_app(config: AppConfig) -> SignalPilotApp:
         # Phase 4: News Sentiment Filter
         news_sentiment_service=news_sentiment_service,
         earnings_repo=earnings_repo,
+        # Phase 4: Market Regime Detection
+        regime_classifier=regime_classifier,
+        regime_data_collector=regime_data_collector,
+        regime_repo=regime_repo,
+        morning_brief_generator=morning_brief_generator,
     )
 
     # --- Wire event bus subscriptions (after all components exist) ---
@@ -351,6 +378,12 @@ async def create_app(config: AppConfig) -> SignalPilotApp:
         earnings_repo=earnings_repo,
         earnings_calendar=earnings_calendar,
         news_sentiment_repo=news_sentiment_repo,
+        # Phase 4: Market Regime Detection
+        regime_classifier=regime_classifier,
+        regime_data_collector=regime_data_collector,
+        regime_repo=regime_repo,
+        regime_performance_repo=regime_performance_repo,
+        morning_brief_generator=morning_brief_generator,
     )
 
     # Wire app reference back to bot for OVERRIDE CIRCUIT command

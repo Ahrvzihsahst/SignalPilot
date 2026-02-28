@@ -42,6 +42,8 @@ class TestDatabaseManager:
                 # News Sentiment Filter
                 "news_sentiment_score", "news_sentiment_label",
                 "news_top_headline", "news_action", "original_star_rating",
+                # Market Regime Detection
+                "market_regime", "regime_confidence", "regime_weight_modifier",
             }
             assert columns == expected
         finally:

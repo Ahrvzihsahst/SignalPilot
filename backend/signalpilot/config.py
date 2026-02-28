@@ -155,6 +155,57 @@ class AppConfig(BaseSettings):
         description="Path to earnings calendar CSV",
     )
 
+    # Phase 4: Market Regime Detection
+    regime_enabled: bool = Field(default=True, description="Kill switch for regime detection feature")
+    regime_shadow_mode: bool = Field(default=True, description="Classify and log but do not adjust weights")
+    regime_confidence_threshold: float = Field(default=0.55, description="High vs low confidence boundary")
+    regime_max_reclassifications: int = Field(default=2, description="Max re-classifications per day")
+    regime_vix_spike_threshold: float = Field(default=0.15, description="15% VIX spike triggers re-classification")
+    regime_roundtrip_threshold: float = Field(default=0.003, description="0.3% of open for round-trip RANGING detection")
+
+    # Strategy weights per regime (JSON strings in .env, parsed to dicts)
+    regime_trending_weights_high: str = Field(
+        default='{"gap_go": 45, "orb": 35, "vwap": 20}',
+        description="Strategy weights for TRENDING regime with high confidence",
+    )
+    regime_trending_weights_low: str = Field(
+        default='{"gap_go": 38, "orb": 35, "vwap": 27}',
+        description="Strategy weights for TRENDING regime with low confidence",
+    )
+    regime_ranging_weights_high: str = Field(
+        default='{"gap_go": 20, "orb": 30, "vwap": 50}',
+        description="Strategy weights for RANGING regime with high confidence",
+    )
+    regime_ranging_weights_low: str = Field(
+        default='{"gap_go": 28, "orb": 33, "vwap": 39}',
+        description="Strategy weights for RANGING regime with low confidence",
+    )
+    regime_volatile_weights_high: str = Field(
+        default='{"gap_go": 25, "orb": 25, "vwap": 25}',
+        description="Strategy weights for VOLATILE regime with high confidence",
+    )
+    regime_volatile_weights_low: str = Field(
+        default='{"gap_go": 30, "orb": 30, "vwap": 30}',
+        description="Strategy weights for VOLATILE regime with low confidence",
+    )
+
+    # Position modifiers per regime
+    regime_trending_position_modifier: float = Field(default=1.0, description="Position size modifier for TRENDING")
+    regime_ranging_position_modifier: float = Field(default=0.85, description="Position size modifier for RANGING")
+    regime_volatile_position_modifier: float = Field(default=0.65, description="Position size modifier for VOLATILE")
+
+    # Max positions per regime
+    regime_trending_max_positions: int = Field(default=8, description="Max positions for TRENDING")
+    regime_ranging_max_positions: int = Field(default=6, description="Max positions for RANGING")
+    regime_volatile_max_positions: int = Field(default=4, description="Max positions for VOLATILE")
+
+    # Min star ratings per regime (keyed by confidence level)
+    regime_trending_min_stars: int = Field(default=3, description="Min stars for TRENDING (any confidence)")
+    regime_ranging_high_min_stars: int = Field(default=3, description="Min stars for RANGING (high confidence)")
+    regime_ranging_low_min_stars: int = Field(default=4, description="Min stars for RANGING (low confidence)")
+    regime_volatile_high_min_stars: int = Field(default=5, description="Min stars for VOLATILE (high confidence)")
+    regime_volatile_low_min_stars: int = Field(default=4, description="Min stars for VOLATILE (low confidence)")
+
     model_config = {
         "env_file": ".env",
         "env_file_encoding": "utf-8",

@@ -8,6 +8,7 @@ from datetime import date, datetime
 from enum import Enum
 
 # Re-export StrategyPhase from its canonical location
+from signalpilot.utils.constants import IST
 from signalpilot.utils.market_calendar import StrategyPhase
 
 __all__ = [
@@ -52,6 +53,9 @@ __all__ = [
     "SuppressedSignal",
     "NewsSentimentRecord",
     "EarningsCalendarRecord",
+    # Phase 4: Market Regime Detection
+    "RegimeClassification",
+    "RegimePerformanceRecord",
 ]
 
 
@@ -244,6 +248,10 @@ class SignalRecord:
     news_top_headline: str | None = None
     news_action: str | None = None
     original_star_rating: int | None = None
+    # Phase 4: Market Regime Detection fields
+    market_regime: str | None = None
+    regime_confidence: float | None = None
+    regime_weight_modifier: float | None = None
 
 
 @dataclass
@@ -533,3 +541,60 @@ class EarningsCalendarRecord:
     source: str = ""
     is_confirmed: bool = False
     updated_at: datetime | None = None
+
+
+# ---------------------------------------------------------------------------
+# Phase 4: Market Regime Detection
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class RegimeClassification:
+    """Classification result from MarketRegimeClassifier.
+
+    Represents a single regime classification with all inputs, scores,
+    derived modifiers, and metadata.
+    """
+
+    regime: str                              # "TRENDING", "RANGING", "VOLATILE"
+    confidence: float                        # 0.0-1.0
+    trending_score: float = 0.0
+    ranging_score: float = 0.0
+    volatile_score: float = 0.0
+    # Raw inputs
+    india_vix: float | None = None
+    nifty_gap_pct: float | None = None
+    nifty_first_15_range_pct: float | None = None
+    nifty_first_15_direction: str | None = None  # 'UP', 'DOWN', 'FLAT'
+    directional_alignment: float | None = None
+    sp500_change_pct: float | None = None
+    sgx_direction: str | None = None             # 'UP', 'DOWN', 'FLAT'
+    fii_net_crores: float | None = None
+    dii_net_crores: float | None = None
+    prev_day_range_pct: float | None = None
+    # Derived modifiers
+    strategy_weights: dict[str, float] = field(default_factory=dict)
+    min_star_rating: int = 3
+    max_positions: int | None = None
+    position_size_modifier: float = 1.0
+    # Metadata
+    is_reclassification: bool = False
+    previous_regime: str | None = None
+    classified_at: datetime = field(default_factory=lambda: datetime.now(IST))
+
+
+@dataclass
+class RegimePerformanceRecord:
+    """Daily strategy performance under a specific regime."""
+
+    id: int | None = None
+    regime_date: date = field(default_factory=lambda: datetime.now(IST).date())
+    regime: str = ""                    # "TRENDING", "RANGING", "VOLATILE"
+    strategy: str = ""                  # "Gap & Go", "ORB", "VWAP Reversal"
+    signals_generated: int = 0
+    signals_taken: int = 0
+    wins: int = 0
+    losses: int = 0
+    pnl: float = 0.0
+    win_rate: float | None = None
+    created_at: datetime | None = None
