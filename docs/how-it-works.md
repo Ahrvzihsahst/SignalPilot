@@ -9,30 +9,38 @@
 
 1. [Architecture Overview](#1-architecture-overview)
 2. [Step 1 — Configuration & Startup](#2-step-1--configuration--startup)
+   - [Event Bus — Cross-Component Communication](#event-bus--cross-component-communication)
 3. [Step 2 — Authentication (Angel One SmartAPI)](#3-step-2--authentication-angel-one-smartapi)
 4. [Step 3 — Pre-Market Data Fetch](#4-step-3--pre-market-data-fetch)
 5. [Step 4 — Market Scheduling](#5-step-4--market-scheduling)
 6. [Step 5 — Real-Time Data (WebSocket)](#6-step-5--real-time-data-websocket)
 7. [Step 6 — Market Data Store](#7-step-6--market-data-store)
-8. [Step 7 — Strategy Evaluation](#8-step-7--strategy-evaluation)
+8. [Step 7 — Strategy Evaluation & Pipeline Architecture](#8-step-7--strategy-evaluation)
+   - [Composable Pipeline Architecture](#composable-pipeline-architecture)
    - [7a. Gap & Go Strategy](#7a-gap--go-strategy)
    - [7b. ORB Strategy](#7b-orb-strategy)
    - [7c. VWAP Reversal Strategy](#7c-vwap-reversal-strategy)
 9. [Step 8 — Duplicate Checking](#9-step-8--duplicate-checking)
-10. [Step 9 — Signal Ranking & Scoring](#10-step-9--signal-ranking--scoring)
-11. [Step 10 — Risk Management & Position Sizing](#11-step-10--risk-management--position-sizing)
-12. [Step 11 — Capital Allocation](#12-step-11--capital-allocation)
-13. [Step 12 — Database Persistence](#13-step-12--database-persistence)
-14. [Step 13 — Telegram Delivery](#14-step-13--telegram-delivery)
-15. [Step 14 — Exit Monitoring](#15-step-14--exit-monitoring)
-16. [Step 15 — Telegram Commands (User Interaction)](#16-step-15--telegram-commands-user-interaction)
-17. [Step 16 — Daily Wind-Down & Summary](#17-step-16--daily-wind-down--summary)
-18. [Step 17 — Shutdown & Crash Recovery](#18-step-17--shutdown--crash-recovery)
-19. [Data Model Chain](#19-data-model-chain)
-20. [Logging & Observability](#20-logging--observability)
-21. [Rate Limiting & Retry](#21-rate-limiting--retry)
-22. [Complete Scan Loop Iteration](#22-complete-scan-loop-iteration)
-23. [Summary: A Complete Trading Day](#23-summary-a-complete-trading-day)
+10. [Step 8.5 — Multi-Strategy Confirmation Detection (Phase 3)](#10-step-85--multi-strategy-confirmation-detection-phase-3)
+11. [Step 9 — Signal Ranking & Scoring](#11-step-9--signal-ranking--scoring)
+12. [Step 9.5 — Composite Hybrid Scoring (Phase 3)](#12-step-95--composite-hybrid-scoring-phase-3)
+13. [Step 10 — Risk Management & Position Sizing](#13-step-10--risk-management--position-sizing)
+14. [Step 10.5 — Circuit Breaker Gate (Phase 3)](#14-step-105--circuit-breaker-gate-phase-3)
+15. [Step 10.6 — Adaptive Strategy Management (Phase 3)](#15-step-106--adaptive-strategy-management-phase-3)
+16. [Step 11 — Capital Allocation](#16-step-11--capital-allocation)
+17. [Step 12 — Database Persistence](#17-step-12--database-persistence)
+18. [Step 13 — Telegram Delivery](#18-step-13--telegram-delivery)
+19. [Step 14 — Exit Monitoring](#19-step-14--exit-monitoring)
+20. [Step 15 — Telegram Commands (User Interaction)](#20-step-15--telegram-commands-user-interaction)
+21. [Step 15.5 — Inline Button Callbacks & Quick Actions (Phase 4)](#205-step-155--inline-button-callbacks--quick-actions-phase-4)
+22. [Step 16 — Daily Wind-Down & Summary](#21-step-16--daily-wind-down--summary)
+23. [Step 17 — Shutdown & Crash Recovery](#22-step-17--shutdown--crash-recovery)
+24. [Step 18 — Dashboard (Phase 3)](#23-step-18--dashboard-phase-3)
+25. [Data Model Chain](#24-data-model-chain)
+26. [Logging & Observability](#25-logging--observability)
+27. [Rate Limiting & Retry](#26-rate-limiting--retry)
+28. [Complete Scan Loop Iteration](#27-complete-scan-loop-iteration)
+29. [Summary: A Complete Trading Day](#28-summary-a-complete-trading-day)
 
 ---
 
@@ -50,13 +58,24 @@ its dependencies via constructor parameters.
    AppConfig (pydantic-settings)
         |
         v
-   create_app()          <-- wires 20+ components in dependency order
+   create_app()          <-- wires 35+ components in dependency order
         |
         |-- DatabaseManager --> SignalRepository
         |                   --> TradeRepository
         |                   --> ConfigRepository
         |                   --> MetricsCalculator
         |                   --> StrategyPerformanceRepository
+        |                   --> SignalActionRepository       (Phase 4)
+        |                   --> WatchlistRepository          (Phase 4)
+        |                   --> HybridScoreRepository       (Phase 3)
+        |                   --> CircuitBreakerRepository     (Phase 3)
+        |                   --> AdaptationLogRepository      (Phase 3)
+        |
+        |-- EventBus (in-process async event dispatch)
+        |       |-- ExitAlertEvent      --> bot.send_exit_alert()
+        |       |-- StopLossHitEvent    --> circuit_breaker.on_sl_hit()
+        |       |-- TradeExitedEvent    --> adaptive_manager.on_trade_exit()
+        |       |-- AlertMessageEvent   --> bot.send_alert()
         |
         |-- SmartAPIAuthenticator --> Angel One SmartAPI (TOTP-based 2FA)
         |
@@ -81,9 +100,23 @@ its dependencies via constructor parameters.
         |-- VWAPReversalStrategy |
         |       |-- VWAPCooldownTracker (max 2/stock/day, 60-min cooldown)
         |
+        |-- ScanPipeline (composable 11-stage signal pipeline + 1 always stage)
+        |       |-- Signal stages (run when accepting_signals=True):
+        |       |     CircuitBreakerGateStage --> StrategyEvalStage -->
+        |       |     GapStockMarkingStage --> DeduplicationStage -->
+        |       |     ConfidenceStage --> CompositeScoringStage -->
+        |       |     AdaptiveFilterStage --> RankingStage -->
+        |       |     RiskSizingStage --> PersistAndDeliverStage -->
+        |       |     DiagnosticStage
+        |       |-- Always stages (run every cycle):
+        |       |     ExitMonitoringStage
+        |       +-- ScanContext (mutable state bag passed through all stages)
+        |
         |-- DuplicateChecker (cross-strategy same-day dedup)
         |
         |-- SignalRanker (SignalScorer --> ORBScorer / VWAPScorer)
+        |       |-- ConfidenceDetector     (Phase 3) — multi-strategy confirmation detection
+        |       |-- CompositeScorer        (Phase 3) — 4-factor hybrid scoring
         |
         |-- RiskManager (PositionSizer)
         |
@@ -91,17 +124,33 @@ its dependencies via constructor parameters.
         |       |-- 20% reserve, expectancy-weighted allocation
         |       |-- Auto-pause: win_rate < 40% after 10+ trades
         |
-        |-- ExitMonitor --> reads MarketDataStore, fires Telegram alerts
+        |-- Intelligence Layer (Phase 3)
+        |       |-- CircuitBreaker           — halt signals after N SL hits/day
+        |       |-- AdaptiveManager          — throttle/pause underperforming strategies
+        |       |-- ConfidenceDetector       — cross-strategy confirmation (single/double/triple)
+        |
+        |-- ExitMonitor --> reads MarketDataStore, emits events via EventBus
         |       |-- Per-strategy TrailingStopConfig
         |       |-- close_trade callback --> TradeRepository
+        |       |-- emits ExitAlertEvent, StopLossHitEvent, TradeExitedEvent
         |
         |-- SignalPilotBot (Telegram, python-telegram-bot)
-        |       |-- 9 commands: TAKEN, STATUS, JOURNAL, CAPITAL, PAUSE,
-        |       |   RESUME, ALLOCATE, STRATEGY, HELP
+        |       |-- 13 text commands: TAKEN, STATUS, JOURNAL, CAPITAL, PAUSE,
+        |       |   RESUME, ALLOCATE, STRATEGY, OVERRIDE, SCORE, ADAPT,
+        |       |   REBALANCE, HELP
+        |       |-- 7 inline keyboards (Phase 4): signal actions, skip reasons,
+        |       |   T1/T2 targets, SL approaching, near-T2
+        |       |-- 9 callback handlers (Phase 4): taken, skip, skip_reason,
+        |       |   watch, partial_exit, exit_now, take_profit, hold, let_run
+        |
+        |-- Dashboard (Phase 3)
+        |       |-- FastAPI backend          — 8 route modules (/api/signals, /trades, etc.)
+        |       |-- React frontend/          — Vite + TypeScript + Tailwind + React Query
         |
         +-- MarketScheduler (APScheduler 3.x, 9 IST cron jobs)
                 |
                 +-- SignalPilotApp._scan_loop()  <-- runs every 1 second
+                        via ScanPipeline.run(ctx)
 ```
 
 The **central orchestrator** is `SignalPilotApp`
@@ -236,6 +285,46 @@ using **pydantic-settings**. There is no hardcoded configuration.
 | `orb_paper_mode` | `True` | ORB signals are paper-only by default |
 | `vwap_paper_mode` | `True` | VWAP signals are paper-only by default |
 
+**Phase 3 — Composite Scoring:**
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `composite_weight_strategy` | `0.4` | Strategy strength weight |
+| `composite_weight_win_rate` | `0.3` | Win rate weight |
+| `composite_weight_risk_reward` | `0.2` | Risk-reward ratio weight |
+| `composite_weight_confirmation` | `0.1` | Confirmation bonus weight |
+| `confirmation_window_minutes` | `15` | Window for cross-strategy confirmation |
+
+**Phase 3 — Circuit Breaker:**
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `circuit_breaker_sl_limit` | `3` | SL hits before circuit breaker activates |
+
+**Phase 3 — Adaptive Learning:**
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `adaptive_consecutive_loss_throttle` | `3` | Consecutive losses to trigger throttle |
+| `adaptive_consecutive_loss_pause` | `5` | Consecutive losses to trigger pause |
+| `adaptive_5d_warn_threshold` | `35.0` | 5-day win rate warning threshold % |
+| `adaptive_10d_pause_threshold` | `30.0` | 10-day win rate pause threshold % |
+
+**Phase 3 — Confirmed Signal Caps:**
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `confirmed_double_cap_pct` | `20.0` | Max capital % for double-confirmed signals |
+| `confirmed_triple_cap_pct` | `25.0` | Max capital % for triple-confirmed signals |
+
+**Phase 3 — Dashboard:**
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `dashboard_enabled` | `True` | Enable web dashboard |
+| `dashboard_port` | `8000` | Dashboard server port |
+| `dashboard_host` | `"127.0.0.1"` | Dashboard bind address |
+
 **Retry & Resilience:**
 
 | Field | Default | Description |
@@ -248,8 +337,11 @@ using **pydantic-settings**. There is no hardcoded configuration.
 **Validators:**
 
 A `@model_validator` enforces that each of the three scoring weight groups
-(Gap & Go, ORB, VWAP) sums to `1.0 +/- 0.01` tolerance. The app won't start
-with invalid weights.
+(Gap & Go, ORB, VWAP) sums to `1.0 +/- 0.01` tolerance. A separate
+`@model_validator` enforces that the four composite scoring weights
+(`composite_weight_strategy`, `composite_weight_win_rate`,
+`composite_weight_risk_reward`, `composite_weight_confirmation`) sum to
+`1.0`. The app won't start with invalid weights.
 
 ### Entry Point: `signalpilot/main.py`
 
@@ -257,7 +349,7 @@ with invalid weights.
 async def main() -> None:
     config = AppConfig()                     # load .env
     configure_logging(level=config.log_level, log_file=config.log_file)
-    app = await create_app(config)           # wire 20+ components
+    app = await create_app(config)           # wire 30+ components
 
     # Setup SIGINT/SIGTERM handlers (once via shutting_down flag)
     now = datetime.now(IST)
@@ -270,25 +362,81 @@ async def main() -> None:
         await asyncio.sleep(1)               # keep event loop alive
 ```
 
-#### `create_app()` Wiring Order (13 stages)
+#### `create_app()` Wiring Order (22 stages)
 
-1. **Database** — `DatabaseManager(db_path)` + `initialize()` (WAL mode, foreign keys, phase 2 migration)
-2. **Repositories** — `SignalRepository`, `TradeRepository`, `ConfigRepository`, `MetricsCalculator`, `StrategyPerformanceRepository` (all sharing the same `aiosqlite.Connection`)
-3. **Auth** — `SmartAPIAuthenticator(config)`
-4. **Data** — `InstrumentManager(csv_path)`, `MarketDataStore()`, `HistoricalDataFetcher(authenticator, instruments, rate_limit)`
-5. **Strategies** — `GapAndGoStrategy(config)`, `ORBStrategy(config, market_data)`, `VWAPCooldownTracker(max_signals=2, cooldown=60)` + `VWAPReversalStrategy(config, market_data, cooldown_tracker)`
-6. **Duplicate Checker** — `DuplicateChecker(signal_repo, trade_repo)`
-7. **Ranking** — `ScoringWeights(...)` + `ORBScorer(...)` + `VWAPScorer(...)` + `SignalScorer(weights, orb_scorer, vwap_scorer)` + `SignalRanker(scorer, max_signals=8)`
-8. **Capital Allocation** — `CapitalAllocator(strategy_performance_repo, config_repo)`
-9. **Risk** — `PositionSizer()` + `RiskManager(position_sizer)`
-10. **Exit Monitor** — `ExitMonitor(get_tick, alert_callback, trailing_configs, close_trade=trade_repo.close_trade)` with per-strategy `TrailingStopConfig` dict (6 entries for Gap & Go, ORB, VWAP setups)
-11. **Telegram Bot** — `SignalPilotBot(...)` with `_get_current_prices` wrapper (converts `list[str]` to `dict[str, float]` via `market_data.get_tick()`)
-12. **WebSocket** — `WebSocketClient(authenticator, instruments, market_data_store, on_disconnect_alert, max_reconnect_attempts)`
-13. **Scheduler** — `MarketScheduler()`
+1. **Database** — `DatabaseManager(db_path)` + `initialize()` (WAL mode, foreign keys, phase 2 migration, phase 3 migration)
+2. **Repositories** — `SignalRepository`, `TradeRepository`, `ConfigRepository`, `MetricsCalculator`, `StrategyPerformanceRepository`, `SignalActionRepository`, `WatchlistRepository`, `HybridScoreRepository`, `CircuitBreakerRepository`, `AdaptationLogRepository` (all sharing the same `aiosqlite.Connection`)
+3. **Event Bus** — `EventBus()` (in-process async event dispatch for decoupled cross-component communication)
+4. **Auth** — `SmartAPIAuthenticator(config)`
+5. **Data** — `InstrumentManager(csv_path)`, `MarketDataStore()`, `HistoricalDataFetcher(authenticator, instruments, rate_limit)`
+6. **Strategies** — `GapAndGoStrategy(config)`, `ORBStrategy(config, market_data)`, `VWAPCooldownTracker(max_signals=2, cooldown=60)` + `VWAPReversalStrategy(config, market_data, cooldown_tracker)`
+7. **Duplicate Checker** — `DuplicateChecker(signal_repo, trade_repo)`
+8. **Ranking** — `ScoringWeights(...)` + `ORBScorer(...)` + `VWAPScorer(...)` + `SignalScorer(weights, orb_scorer, vwap_scorer)` + `SignalRanker(scorer, max_signals=8)`
+9. **Capital Allocation** — `CapitalAllocator(strategy_performance_repo, config_repo)`
+10. **Risk** — `PositionSizer()` + `RiskManager(position_sizer)`
+11. **Exit Monitor** — `ExitMonitor(get_tick, event_bus, trailing_configs, close_trade=trade_repo.close_trade)` with per-strategy `TrailingStopConfig` dict (6 entries for Gap & Go, ORB, VWAP setups)
+12. **Telegram Bot** — `SignalPilotBot(...)` with `_get_current_prices` wrapper (converts `list[str]` to `dict[str, float]` via `market_data.get_tick()`)
+13. **WebSocket** — `WebSocketClient(authenticator, instruments, market_data_store, on_disconnect_alert, max_reconnect_attempts)`
+14. **Scheduler** — `MarketScheduler()`
+15. **Confidence Detector** (Phase 3) — `ConfidenceDetector(signal_repo, confirmation_window_minutes=15)`
+16. **Composite Scorer** (Phase 3) — `CompositeScorer(strategy_performance_repo, config)` with 4 weighted factors
+17. **Circuit Breaker** (Phase 3) — `CircuitBreaker(circuit_breaker_repo, config_repo, event_bus, sl_limit=3)`
+18. **Adaptive Manager** (Phase 3) — `AdaptiveManager(adaptation_log_repo, config_repo, strategy_performance_repo, event_bus)`
+19. **Event Bus Subscriptions** — wires all cross-component events:
+    - `ExitAlertEvent` → `bot.send_exit_alert()`
+    - `StopLossHitEvent` → `circuit_breaker.on_sl_hit()`
+    - `TradeExitedEvent` → `adaptive_manager.on_trade_exit()`
+    - `AlertMessageEvent` → `bot.send_alert()`
+20. **Pipeline** — `ScanPipeline(signal_stages=[11 stages], always_stages=[ExitMonitoringStage])`
+21. **Dashboard** (Phase 3) — `create_dashboard_app(db_path, write_connection)` (if `dashboard_enabled`)
+22. **SignalPilotApp** — orchestrator wired with all components + pipeline
 
 The bot and exit monitor have a circular dependency (exit alerts are sent via
-the bot). This is resolved with a `bot_ref: list[SignalPilotBot | None]`
-closure that is filled after the bot is constructed.
+the bot). The `EventBus` eliminates this: the exit monitor emits
+`ExitAlertEvent` objects, and the bot subscribes to them. No direct reference
+needed.
+
+#### Event Bus — Cross-Component Communication
+
+**File:** `signalpilot/events.py`
+
+The `EventBus` is a lightweight in-process async event dispatcher. Components
+publish events without knowing who receives them, and subscribers handle events
+without knowing who sent them. All dispatch is sequential per event, with error
+isolation (one handler failure does not block others).
+
+**Event Types** (frozen dataclasses):
+
+| Event | Emitted by | Handled by | Purpose |
+|-------|-----------|------------|---------|
+| `ExitAlertEvent(alert)` | ExitMonitor | Bot (`send_exit_alert`) | Deliver exit alerts to Telegram |
+| `StopLossHitEvent(symbol, strategy, pnl_amount)` | ExitMonitor | CircuitBreaker (`on_sl_hit`) | Feed daily SL counter |
+| `TradeExitedEvent(strategy_name, is_loss)` | ExitMonitor | AdaptiveManager (`on_trade_exit`) | Track consecutive wins/losses |
+| `AlertMessageEvent(message)` | CircuitBreaker, AdaptiveManager | Bot (`send_alert`) | General Telegram alerts |
+
+**EventBus API:**
+
+```python
+class EventBus:
+    def subscribe(self, event_type: type, handler: EventHandler) -> None: ...
+    def unsubscribe(self, event_type: type, handler: EventHandler) -> None: ...
+    async def emit(self, event: object) -> None: ...
+    def handler_count(self, event_type: type) -> int: ...
+```
+
+**Wiring** (in `create_app()`):
+
+```python
+event_bus = EventBus()
+event_bus.subscribe(ExitAlertEvent, bot.send_exit_alert)
+event_bus.subscribe(StopLossHitEvent, circuit_breaker.on_sl_hit)
+event_bus.subscribe(TradeExitedEvent, adaptive_manager.on_trade_exit)
+event_bus.subscribe(AlertMessageEvent, bot.send_alert)
+```
+
+This replaces the previous closure-based callback wiring (`bot_ref`,
+`on_sl_hit_callback`, `on_trade_exit_callback`) with a type-safe, decoupled
+event pattern.
 
 There are two startup paths:
 - **Normal** (`app.startup()`): pre-market boot, authenticate, fetch historical data, start the scheduler.
@@ -626,16 +774,101 @@ VWAP = sum(price * volume) / sum(volume), computed incrementally on every tick.
 
 ## 8. Step 7 — Strategy Evaluation
 
-The scan loop runs every second and calls `strategy.evaluate(market_data, phase)`.
+### Composable Pipeline Architecture
+
+**Files:** `signalpilot/pipeline/stage.py`, `context.py`, `stages/*.py`
+
+The scan loop uses a **composable pipeline** — a sequence of independent stages
+that each transform a shared `ScanContext`. This replaces inline orchestration
+code with pluggable, testable stages.
+
+#### Pipeline Protocol
+
+```python
+class PipelineStage(Protocol):
+    @property
+    def name(self) -> str: ...
+    async def process(self, ctx: ScanContext) -> ScanContext: ...
+```
+
+#### ScanContext — Mutable State Bag
+
+```python
+@dataclass
+class ScanContext:
+    cycle_id: str = ""
+    now: datetime | None = None
+    phase: StrategyPhase = StrategyPhase.OPENING
+    accepting_signals: bool = True
+
+    # Set by StrategyEvalStage
+    user_config: UserConfig | None = None
+    enabled_strategies: list = field(default_factory=list)
+    all_candidates: list[CandidateSignal] = field(default_factory=list)
+
+    # Set by ConfidenceStage (Phase 3)
+    confirmation_map: dict | None = None
+
+    # Set by CompositeScoringStage (Phase 3)
+    composite_scores: dict | None = None
+
+    # Set by RankingStage
+    ranked_signals: list[RankedSignal] = field(default_factory=list)
+
+    # Set by RiskSizingStage
+    final_signals: list[FinalSignal] = field(default_factory=list)
+    active_trade_count: int = 0
+```
+
+#### Pipeline Execution
+
+```python
+class ScanPipeline:
+    def __init__(self, signal_stages: list[PipelineStage],
+                 always_stages: list[PipelineStage]) -> None: ...
+
+    async def run(self, ctx: ScanContext) -> ScanContext:
+        if ctx.accepting_signals and ctx.phase in {OPENING, ENTRY_WINDOW, CONTINUOUS}:
+            for stage in self._signal_stages:
+                ctx = await stage.process(ctx)
+        for stage in self._always_stages:
+            ctx = await stage.process(ctx)
+        return ctx
+```
+
+#### 11 Signal Stages (in order)
+
+| # | Stage | File | Purpose |
+|---|-------|------|---------|
+| 1 | `CircuitBreakerGateStage` | `circuit_breaker_gate.py` | Sets `ctx.accepting_signals = False` if circuit breaker is active |
+| 2 | `StrategyEvalStage` | `strategy_eval.py` | Loads user config, filters enabled strategies, runs `evaluate()` on each |
+| 3 | `GapStockMarkingStage` | `gap_stock_marking.py` | Marks Gap & Go symbols for ORB/VWAP exclusion via `mark_gap_stock()` |
+| 4 | `DeduplicationStage` | `deduplication.py` | Filters active-trade and same-day signal duplicates |
+| 5 | `ConfidenceStage` | `confidence.py` | Detects multi-strategy confirmations (Phase 3) |
+| 6 | `CompositeScoringStage` | `composite_scoring.py` | 4-factor hybrid scoring (Phase 3) |
+| 7 | `AdaptiveFilterStage` | `adaptive_filter.py` | Removes signals from paused/throttled strategies (Phase 3) |
+| 8 | `RankingStage` | `ranking.py` | Top-K selection by composite score, assigns 1-5 stars |
+| 9 | `RiskSizingStage` | `risk_sizing.py` | Position sizing, capital allocation, position slot availability |
+| 10 | `PersistAndDeliverStage` | `persist_and_deliver.py` | Save signals to DB, deliver via Telegram with inline keyboards |
+| 11 | `DiagnosticStage` | `diagnostic.py` | Heartbeat logging, WebSocket health checks |
+
+#### 1 Always Stage (runs every cycle, regardless of signal acceptance)
+
+| # | Stage | File | Purpose |
+|---|-------|------|---------|
+| 1 | `ExitMonitoringStage` | `exit_monitoring.py` | Check all active trades for SL/target/time exits |
+
+### Strategy Evaluation (Stage 2 Detail)
+
 Each strategy implements `BaseStrategy` (abstract class with `name`, `active_phases`,
 and `evaluate()`) and declares which phases it is active in.
 
 ```python
-# Inside SignalPilotApp._scan_loop()
+# Inside StrategyEvalStage.process():
 for strat in enabled_strategies:
     if phase in strat.active_phases:
         candidates = await strat.evaluate(self._market_data, phase)
-        all_candidates.extend(candidates)
+        ctx.all_candidates.extend(candidates)
 ```
 
 All three strategies produce `CandidateSignal` objects.
@@ -913,9 +1146,53 @@ CandidateSignal(
 This prevents the same stock from receiving signals from multiple strategies
 on the same day.
 
+**Phase 3 exception:** Symbols with multi-strategy confirmation (detected by
+`ConfidenceDetector`) bypass the same-day signal dedup check, allowing
+confirmed setups to generate signals even if a prior strategy already signaled
+the stock.
+
 ---
 
-## 10. Step 9 — Signal Ranking & Scoring
+## 10. Step 8.5 — Multi-Strategy Confirmation Detection (Phase 3)
+
+### File: `signalpilot/ranking/confidence.py`
+
+The `ConfidenceDetector` identifies when multiple strategies agree on the same
+stock within a configurable time window (default: 15 minutes). This is a
+Phase 3 component that runs after duplicate checking and before ranking.
+
+#### Confirmation Levels
+
+| Level | Condition | Position Multiplier |
+|-------|-----------|---------------------|
+| `single` | Only 1 strategy signals the stock | 1.0x (no boost) |
+| `double` | 2 strategies signal within window | 1.5x |
+| `triple` | 3 strategies signal within window | 2.0x |
+
+#### Detection Flow
+
+1. Group current batch of candidates by symbol
+2. For each symbol with candidates, query
+   `signal_repo.get_recent_signals_by_symbol(symbol, since=now - window)`
+3. Collect unique strategy names from both current candidates and recent DB
+   signals
+4. Determine level: 3+ strategies = triple, 2 = double, 1 = single
+5. Return `ConfirmationResult(symbol, level, confirmed_by=[strategy_names], multiplier)`
+
+#### Impact on Downstream Components
+
+- **DuplicateChecker:** Symbols with multi-strategy confirmation bypass
+  same-day dedup
+- **PositionSizer:** Multiplier applied to position size (capped at 20%/25%
+  of capital for double/triple confirmation respectively)
+- **SignalRecord:** `confirmation_level`, `confirmed_by`, and
+  `position_size_multiplier` fields are persisted to the `signals` table
+- **Telegram:** Confirmation badge shown in the signal message (e.g.,
+  "DOUBLE CONFIRMED by Gap & Go + ORB")
+
+---
+
+## 11. Step 9 — Signal Ranking & Scoring
 
 ### Files: `signalpilot/ranking/scorer.py`, `ranker.py`, `orb_scorer.py`, `vwap_scorer.py`
 
@@ -1014,7 +1291,55 @@ list of `RankedSignal` objects.
 
 ---
 
-## 11. Step 10 — Risk Management & Position Sizing
+## 12. Step 9.5 — Composite Hybrid Scoring (Phase 3)
+
+### File: `signalpilot/ranking/composite_scorer.py`
+
+When Phase 3 is active, signals are scored using a 4-factor composite system
+instead of legacy single-factor scoring. The composite scorer runs after the
+per-strategy scorer and produces a blended score incorporating historical
+performance and cross-strategy confirmation data.
+
+#### Four Factors
+
+| Factor | Weight | Source | Range |
+|--------|--------|--------|-------|
+| Strategy Strength | 0.40 | `candidate.strategy_specific_score` or legacy scorer | 0-100 |
+| Win Rate | 0.30 | 30-day trailing win rate from `strategy_performance` table | 0-100 |
+| Risk-Reward | 0.20 | Linear mapping: R:R 1.0 -> 0, R:R 3.0+ -> 100 | 0-100 |
+| Confirmation Bonus | 0.10 | 0 (single), 50 (double), 100 (triple) | 0-100 |
+
+#### Formula
+
+```
+composite = (strategy_strength * 0.40) + (win_rate * 0.30) + (risk_reward * 0.20) + (confirmation * 0.10)
+```
+
+#### Win Rate Cache
+
+Per-strategy win rates are cached per day to avoid repeated DB queries. The
+cache is keyed by `(strategy_name, date)` and populated on first access via
+`strategy_performance_repo`.
+
+#### Star Rating (Composite Mode)
+
+| Score Range | Stars |
+|-------------|-------|
+| [0, 20) | 1 |
+| [20, 40) | 2 |
+| [40, 60) | 3 |
+| [60, 80) | 4 |
+| [80, 100] | 5 |
+
+#### Persistence
+
+`HybridScoreRecord` is persisted to the `hybrid_scores` table for every
+scored signal, capturing the composite score and all four factor scores along
+with confirmation details.
+
+---
+
+## 13. Step 10 — Risk Management & Position Sizing
 
 ### Files: `signalpilot/risk/risk_manager.py`, `position_sizer.py`
 
@@ -1078,7 +1403,92 @@ class FinalSignal:
 
 ---
 
-## 12. Step 11 — Capital Allocation
+## 14. Step 10.5 — Circuit Breaker Gate (Phase 3)
+
+### File: `signalpilot/monitor/circuit_breaker.py`
+
+After scoring but before delivery, signals pass through the circuit breaker
+gate. The circuit breaker protects against cascading losses by halting all
+new signal generation after a configurable number of stop-loss exits in a
+single trading day.
+
+#### How It Works
+
+- Tracks daily stop-loss count via the `on_sl_hit()` callback wired from
+  ExitMonitor
+- When `sl_count >= sl_limit` (default 3): activates, halting all new
+  signals for the rest of the day
+- Sends a Telegram alert: "Circuit breaker activated after N stop-losses"
+- Logs activation to the `circuit_breaker_log` table
+- Can be overridden via the `OVERRIDE` Telegram command or the dashboard API
+- Resets daily at the start of scanning (9:15 AM)
+
+#### State
+
+```python
+_daily_sl_count: int = 0
+_is_active: bool = False
+_overridden: bool = False
+```
+
+#### Key Methods
+
+| Method | Description |
+|--------|-------------|
+| `on_sl_hit()` | Increment SL count; activate if threshold reached |
+| `is_active` | Property: `True` if circuit breaker has tripped |
+| `is_overridden` | Property: `True` if user manually overrode |
+| `override()` | Set `_overridden = True`, log override to DB |
+| `reset()` | Reset all state for new trading day |
+
+---
+
+## 15. Step 10.6 — Adaptive Strategy Management (Phase 3)
+
+### File: `signalpilot/monitor/adaptive_manager.py`
+
+The `AdaptiveManager` adjusts strategy behavior based on recent performance.
+It operates at the per-strategy level, tracking consecutive losses and
+trailing win rates to automatically throttle or pause underperforming
+strategies.
+
+#### Adaptation Levels (Per Strategy)
+
+| Level | Trigger | Effect |
+|-------|---------|--------|
+| `NORMAL` | Default / win resets | Full signal generation |
+| `REDUCED` | 3 consecutive losses | Signals generated but flagged as reduced confidence |
+| `PAUSED` | 5 consecutive losses | Strategy temporarily disabled |
+
+#### `on_trade_exit()` Flow
+
+1. If loss: increment `consecutive_losses`, reset `consecutive_wins`
+2. If `consecutive_losses >= pause_threshold` (5): transition to `PAUSED`,
+   log to `adaptation_log` table, send Telegram alert
+3. Elif `consecutive_losses >= throttle_threshold` (3): transition to
+   `REDUCED`, log, alert
+4. If win: reset `consecutive_losses`, if strategy was `REDUCED` or `PAUSED`
+   then transition back to `NORMAL`
+
+#### Trailing Performance Check
+
+`check_trailing_performance()` is called during the weekly rebalance job:
+
+- 5-day win rate < 35%: warning alert sent via Telegram
+- 10-day win rate < 30%: auto-pause recommendation sent
+
+#### `should_allow_signal(strategy_name)`
+
+Returns `True` if the strategy is `NORMAL` or `REDUCED`, `False` if `PAUSED`.
+This method is called in the scan loop to filter out signals from paused
+strategies before delivery.
+
+All state changes are logged to the `adaptation_log` table with event type,
+old weight, new weight, and details.
+
+---
+
+## 16. Step 11 — Capital Allocation
 
 ### File: `signalpilot/risk/capital_allocator.py`
 
@@ -1128,14 +1538,14 @@ recommendations to Telegram.
 
 ---
 
-## 13. Step 12 — Database Persistence
+## 17. Step 12 — Database Persistence
 
 ### File: `signalpilot/db/database.py`
 
 SQLite with **WAL mode** and **foreign keys** enabled via pragma. Uses
 `aiosqlite` with `Row` factory for named column access.
 
-### Five Tables
+### Ten Tables (5 core + 3 Phase 3 + 2 Phase 4)
 
 #### `signals` table
 
@@ -1244,6 +1654,102 @@ CREATE TABLE vwap_cooldown (
 `gap_go_enabled`, `orb_enabled`, `vwap_enabled` to user_config) and creates
 the `strategy_performance` and `vwap_cooldown` tables.
 
+#### `hybrid_scores` table (Phase 3)
+
+```sql
+CREATE TABLE hybrid_scores (
+    id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+    signal_id               INTEGER NOT NULL REFERENCES signals(id),
+    composite_score         REAL NOT NULL DEFAULT 0.0,
+    strategy_strength_score REAL NOT NULL DEFAULT 0.0,
+    win_rate_score          REAL NOT NULL DEFAULT 0.0,
+    risk_reward_score       REAL NOT NULL DEFAULT 0.0,
+    confirmation_bonus      REAL NOT NULL DEFAULT 0.0,
+    confirmed_by            TEXT,
+    confirmation_level      TEXT NOT NULL DEFAULT 'single',
+    position_size_multiplier REAL NOT NULL DEFAULT 1.0,
+    created_at              TEXT
+);
+```
+
+#### `circuit_breaker_log` table (Phase 3)
+
+```sql
+CREATE TABLE circuit_breaker_log (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    date            TEXT NOT NULL,
+    sl_count        INTEGER NOT NULL DEFAULT 0,
+    triggered_at    TEXT,
+    resumed_at      TEXT,
+    manual_override INTEGER NOT NULL DEFAULT 0,
+    override_at     TEXT
+);
+```
+
+#### `adaptation_log` table (Phase 3)
+
+```sql
+CREATE TABLE adaptation_log (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    date        TEXT NOT NULL,
+    strategy    TEXT NOT NULL,
+    event_type  TEXT NOT NULL,
+    details     TEXT NOT NULL DEFAULT '',
+    old_weight  REAL,
+    new_weight  REAL,
+    created_at  TEXT
+);
+```
+
+#### Phase 3 Columns Added to Existing Tables
+
+The Phase 3 migration adds new columns to existing tables:
+
+- **`signals` table:** `composite_score`, `confirmation_level`, `confirmed_by`,
+  `position_size_multiplier`, `adaptation_status`
+- **`user_config` table:** `circuit_breaker_limit`, `confidence_boost_enabled`,
+  `adaptive_learning_enabled`, `auto_rebalance_enabled`, `adaptation_mode`
+
+#### Phase 3 Migration
+
+`DatabaseManager._run_phase3_migration()` is idempotent, following the same
+pattern as the Phase 2 migration. It uses `PRAGMA table_info()` to check
+column existence before adding new columns to `signals` and `user_config`,
+and creates the `hybrid_scores`, `circuit_breaker_log`, and `adaptation_log`
+tables.
+
+#### `signal_actions` table (Phase 4)
+
+```sql
+CREATE TABLE signal_actions (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    signal_id           INTEGER NOT NULL REFERENCES signals(id),
+    action              TEXT    NOT NULL,    -- "taken", "skip", "watch"
+    reason              TEXT,               -- skip reason: "no_capital", "low_confidence", "sector", "other"
+    response_time_ms    INTEGER,            -- ms from signal creation to action
+    acted_at            TEXT    NOT NULL,
+    message_id          INTEGER             -- Telegram message ID for keyboard update
+);
+-- Index: idx_signal_actions_signal_id
+```
+
+#### `watchlist` table (Phase 4)
+
+```sql
+CREATE TABLE watchlist (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol              TEXT    NOT NULL,
+    signal_id           INTEGER REFERENCES signals(id),
+    strategy            TEXT    NOT NULL,
+    entry_price         REAL    NOT NULL,
+    added_at            TEXT    NOT NULL,
+    expires_at          TEXT    NOT NULL,    -- default: added_at + 5 days
+    triggered_count     INTEGER NOT NULL DEFAULT 0,
+    last_triggered_at   TEXT
+);
+-- Index: idx_watchlist_symbol
+```
+
 ### Signal Status Lifecycle
 
 Valid statuses: `frozenset({"sent", "taken", "expired", "paper", "position_full"})`
@@ -1305,15 +1811,38 @@ Valid statuses: `frozenset({"sent", "taken", "expired", "paper", "position_full"
 | `calculate_daily_summary(date)` | Daily summary with cumulative P&L |
 | `calculate_daily_summary_by_strategy(date)` | Per-strategy breakdown (excludes open trades) |
 
+**SignalActionRepository** (`signal_action_repo.py`) — Phase 4:
+
+| Method | Description |
+|--------|-------------|
+| `insert_action(record)` | Record button press (taken/skip/watch) with response time |
+| `get_actions_for_signal(signal_id)` | All actions on a specific signal |
+| `get_average_response_time(days=30)` | Average ms from signal creation to user action |
+| `get_skip_reason_distribution(days=30)` | `dict[reason_code, count]` for analytics |
+| `get_action_summary(date)` | `{"taken": N, "skip": N, "watch": N}` for a date |
+| `get_response_time_distribution(days=30)` | Distribution of response times |
+
+**WatchlistRepository** (`watchlist_repo.py`) — Phase 4:
+
+| Method | Description |
+|--------|-------------|
+| `add_to_watchlist(record)` | Add stock with 5-day expiry |
+| `get_active_watchlist(now)` | All non-expired entries |
+| `is_on_watchlist(symbol, now)` | Check if stock is being watched |
+| `remove_from_watchlist(symbol)` | Manual removal |
+| `increment_trigger(symbol, now)` | Bump triggered_count when stock re-signals |
+| `cleanup_expired(now)` | Remove expired entries |
+
 ---
 
-## 14. Step 13 — Telegram Delivery
+## 18. Step 13 — Telegram Delivery
 
-### Files: `signalpilot/telegram/bot.py`, `formatters.py`
+### Files: `signalpilot/telegram/bot.py`, `formatters.py`, `keyboards.py`
 
 `SignalPilotBot.send_signal()` formats the `FinalSignal` into an HTML Telegram
-message and sends it to the configured `chat_id`. All handlers are restricted
-to the configured `chat_id` via `filters.Chat(chat_id=int(self._chat_id))`.
+message with **inline action buttons** (Phase 4) and sends it to the configured
+`chat_id`. All handlers are restricted to the configured `chat_id` via
+`filters.Chat(chat_id=int(self._chat_id))`.
 
 #### Signal Message Format
 
@@ -1333,7 +1862,7 @@ Reason: Gap up 3.8% above prev close (2,742.00), ...
 
 Valid Until: 10:05 AM (auto-expires)
 ==============================
-Reply TAKEN to log this trade
+[ TAKEN ]  [ SKIP ]  [ WATCH ]       <-- Phase 4 inline buttons
 ```
 
 **Paper mode:** Adds `PAPER TRADE` prefix so the user knows it is a simulation.
@@ -1348,15 +1877,17 @@ from signal generation time.
 
 #### Exit Alert Formats
 
-| Exit Type | Header | Body |
-|-----------|--------|------|
-| `SL_HIT` | "STOP LOSS HIT -- {symbol}" | "Exit immediately." + P&L |
-| `TRAILING_SL_HIT` | "TRAILING SL HIT -- {symbol}" | "Exit immediately." + P&L |
-| `T1_HIT` | "TARGET 1 HIT -- {symbol}" | "Consider booking partial profit." |
-| `T2_HIT` | "TARGET 2 HIT -- {symbol}" | "Full exit recommended." + P&L |
-| `TIME_EXIT` (advisory) | "TIME EXIT REMINDER" | "Market closing soon. Consider closing." |
-| `TIME_EXIT` (mandatory) | "MANDATORY EXIT" | "Position closed at X (market closing)." |
-| Trailing SL Update | "TRAILING SL UPDATE" | "New SL: X" + current price + P&L |
+| Exit Type | Header | Body | Keyboard (Phase 4) |
+|-----------|--------|------|--------------------|
+| `SL_HIT` | "STOP LOSS HIT -- {symbol}" | "Exit immediately." + P&L | — |
+| `TRAILING_SL_HIT` | "TRAILING SL HIT -- {symbol}" | "Exit immediately." + P&L | — |
+| `T1_HIT` | "TARGET 1 HIT -- {symbol}" | "Consider booking partial profit." | `[ Book 50% at T1 ]` |
+| `T2_HIT` | "TARGET 2 HIT -- {symbol}" | "Full exit recommended." + P&L | `[ Exit Remaining at T2 ]` |
+| `TIME_EXIT` (advisory) | "TIME EXIT REMINDER" | "Market closing soon. Consider closing." | `[ Exit Now ] [ Hold ]` |
+| `TIME_EXIT` (mandatory) | "MANDATORY EXIT" | "Position closed at X (market closing)." | — |
+| Trailing SL Update | "TRAILING SL UPDATE" | "New SL: X" + current price + P&L | — |
+| SL Approaching | "SL APPROACHING" | "Price nearing stop loss." | `[ Exit Now ] [ Hold ]` |
+| Near T2 | "NEAR TARGET 2" | "Price approaching T2." | `[ Take Profit ] [ Let It Run ]` |
 
 #### Star Rating Display
 
@@ -1370,16 +1901,20 @@ from signal generation time.
 
 ---
 
-## 15. Step 14 — Exit Monitoring
+## 19. Step 14 — Exit Monitoring
 
 ### File: `signalpilot/monitor/exit_monitor.py`
 
-On every scan-loop iteration, **after** strategy evaluation:
+On every scan-loop iteration, the **ExitMonitoringStage** (always-run pipeline
+stage) checks all active trades:
 
 ```python
+# Inside ExitMonitoringStage.process():
 active_trades = await self._trade_repo.get_active_trades()
 for trade in active_trades:
-    await self._exit_monitor.check_trade(trade)
+    alert = await self._exit_monitor.check_trade(trade)
+    if alert:
+        await self._event_bus.emit(ExitAlertEvent(alert))
 ```
 
 #### `check_trade()` — Sequential Priority Checks
@@ -1402,6 +1937,12 @@ When an exit triggers (SL, T2, mandatory time exit):
 pnl_amount = (exit_price - trade.entry_price) * trade.quantity
 await self._close_trade(trade.id, exit_price, pnl_amount, pnl_pct, exit_reason)
 # close_trade is wired to trade_repo.close_trade() via callback
+
+# Emit events via EventBus for cross-component notification:
+await self._event_bus.emit(ExitAlertEvent(alert))           # --> bot delivery
+if exit_type in (SL_HIT, TRAILING_SL_HIT):
+    await self._event_bus.emit(StopLossHitEvent(...))       # --> circuit breaker
+await self._event_bus.emit(TradeExitedEvent(...))           # --> adaptive manager
 ```
 
 The trade is then removed from the monitoring map.
@@ -1502,7 +2043,7 @@ if move_pct >= trail_trigger_pct:
 
 ---
 
-## 16. Step 15 — Telegram Commands (User Interaction)
+## 20. Step 15 — Telegram Commands (User Interaction)
 
 ### File: `signalpilot/telegram/handlers.py`
 
@@ -1512,13 +2053,17 @@ handler functions. All commands are case-insensitive.
 | Command | Regex Pattern | Action |
 |---------|--------------|--------|
 | `TAKEN [FORCE] [id]` | `(?i)^/?taken(?:\s+force)?(?:\s+(\d+))?$` | Mark a signal as a trade (optionally by signal ID); FORCE overrides position limit |
-| `STATUS` | `(?i)^status$` | Show active signals and open trades with live P&L |
-| `JOURNAL` | `(?i)^journal$` | Display performance metrics (win rate, P&L, risk-reward) |
+| `STATUS` | `(?i)^status$` | Show active signals, open trades with live P&L, and circuit breaker status |
+| `JOURNAL` | `(?i)^journal$` | Display performance metrics with per-strategy breakdown (win rate, P&L, risk-reward) |
 | `CAPITAL <amt>` | `(?i)^capital\s+\d+(?:\.\d+)?$` | Update total trading capital |
 | `PAUSE <strat>` | `(?i)^pause\s+\w+$` | Disable a strategy (GAP/ORB/VWAP) |
 | `RESUME <strat>` | `(?i)^resume\s+\w+$` | Re-enable a paused strategy |
 | `ALLOCATE` | `(?i)^allocate` | Show/set capital allocation (AUTO or manual) |
 | `STRATEGY` | `(?i)^strategy$` | Show 30-day per-strategy performance breakdown |
+| `OVERRIDE` | `(?i)^override$` | Override circuit breaker, resume signals (requires confirmation) |
+| `SCORE <sym>` | `(?i)^score\s+\w+$` | Show composite score breakdown for a symbol's latest signal |
+| `ADAPT` | `(?i)^adapt$` | Show per-strategy adaptation status (normal/throttled/paused) |
+| `REBALANCE` | `(?i)^rebalance$` | Trigger immediate capital rebalance across strategies |
 | `HELP` | `(?i)^help$` | List all commands |
 
 #### TAKEN Flow
@@ -1600,9 +2145,176 @@ _STRATEGY_MAP = {
 | `ALLOCATE AUTO` | Re-enable automatic expectancy-weighted allocation |
 | `ALLOCATE GAP 40 ORB 20 VWAP 20` | Manual allocation (total must be <= 80%) |
 
+#### Phase 3 Commands
+
+**OVERRIDE** — Circuit Breaker Override
+
+Resets the circuit breaker and resumes signal generation. The bot asks for
+confirmation before proceeding. Once confirmed, sets `_overridden = True` on
+the circuit breaker instance and logs the override to the
+`circuit_breaker_log` table.
+
+**SCORE \<symbol\>** — Composite Score Breakdown
+
+Shows the composite score breakdown for the latest signal of the given
+symbol, including all four factor scores (strategy strength, win rate,
+risk-reward, confirmation bonus), the final composite score, star rating,
+and confirmation level.
+
+**ADAPT** — Adaptation Status
+
+Displays the current adaptation level for each strategy (`NORMAL`,
+`REDUCED`, or `PAUSED`), along with the consecutive loss count and trailing
+win rate statistics.
+
+**REBALANCE** — Immediate Capital Rebalance
+
+Triggers an immediate capital rebalance across strategies (the same logic
+that runs weekly on Sundays at 18:00). Recalculates expectancy-weighted
+allocations and sends the updated allocation summary.
+
 ---
 
-## 17. Step 16 — Daily Wind-Down & Summary
+## 20.5. Step 15.5 — Inline Button Callbacks & Quick Actions (Phase 4)
+
+### Files: `signalpilot/telegram/keyboards.py`, `handlers.py`, `db/signal_action_repo.py`, `db/watchlist_repo.py`
+
+Phase 4 adds **inline keyboard buttons** to every signal and exit alert,
+replacing the text-based `TAKEN` command flow with one-tap actions. User
+actions are tracked for analytics (response time, skip reasons).
+
+### Inline Keyboards
+
+#### Signal Keyboards
+
+**`build_signal_keyboard(signal_id)`** — attached to every delivered signal:
+
+```
+[ TAKEN ]  [ SKIP ]  [ WATCH ]
+```
+
+Callback data: `taken:{signal_id}`, `skip:{signal_id}`, `watch:{signal_id}`
+
+**`build_skip_reason_keyboard(signal_id)`** — shown after SKIP (2x2 grid):
+
+```
+[ No Capital ]        [ Low Confidence ]
+[ Already In Sector ] [ Other ]
+```
+
+Callback data: `skip_reason:{signal_id}:{reason_code}`
+
+#### Exit Alert Keyboards
+
+**`build_t1_keyboard(trade_id)`** — when Target 1 is reached:
+
+```
+[ Book 50% at T1 ]
+```
+
+**`build_t2_keyboard(trade_id)`** — when Target 2 is reached:
+
+```
+[ Exit Remaining at T2 ]
+```
+
+**`build_sl_approaching_keyboard(trade_id)`** — when SL is being approached:
+
+```
+[ Exit Now ]  [ Hold ]
+```
+
+**`build_near_t2_keyboard(trade_id)`** — when price is near T2 but not hit:
+
+```
+[ Take Profit ]  [ Let It Run ]
+```
+
+### Callback Handlers
+
+All callback handlers return `CallbackResult(answer_text, success, status_line, new_keyboard)`.
+
+#### Signal Action Callbacks
+
+| Handler | Trigger | Action |
+|---------|---------|--------|
+| `handle_taken_callback()` | TAKEN button | Create trade, start exit monitoring, record action + response time |
+| `handle_skip_callback()` | SKIP button | Show skip reason keyboard |
+| `handle_skip_reason_callback()` | Reason button | Mark signal as skipped, record reason + response time |
+| `handle_watch_callback()` | WATCH button | Add to watchlist (5-day expiry), record action |
+
+#### Trade Management Callbacks
+
+| Handler | Trigger | Action |
+|---------|---------|--------|
+| `handle_partial_exit_callback()` | Book 50% at T1 | Partial exit at T1 price |
+| `handle_exit_now_callback()` | Exit Now | Close trade at current price, persist P&L |
+| `handle_take_profit_callback()` | Take Profit | Close trade at current price (near T2) |
+| `handle_hold_callback()` | Hold | Dismiss SL-approaching alert |
+| `handle_let_run_callback()` | Let It Run | Dismiss near-T2 alert, continue trailing |
+
+### Signal Action Tracking
+
+**File:** `signalpilot/db/signal_action_repo.py`
+
+Every button press is recorded in the `signal_actions` table:
+
+```python
+@dataclass
+class SignalActionRecord:
+    signal_id: int                    # which signal
+    action: str                       # "taken", "skip", "watch"
+    reason: str | None                # skip reason code (no_capital, low_confidence, sector, other)
+    response_time_ms: int | None      # time from signal creation to action
+    acted_at: datetime | None
+    message_id: int | None
+```
+
+**Analytics queries:**
+
+| Method | Returns |
+|--------|---------|
+| `get_average_response_time(days=30)` | Average ms from signal to user action |
+| `get_skip_reason_distribution(days=30)` | `dict[reason_code, count]` |
+| `get_action_summary(date)` | `{"taken": N, "skip": N, "watch": N}` |
+| `get_response_time_distribution(days=30)` | Distribution of response times |
+
+### Watchlist
+
+**File:** `signalpilot/db/watchlist_repo.py`
+
+Stocks added via the WATCH button are tracked for re-alerting on future signals.
+
+```python
+@dataclass
+class WatchlistRecord:
+    symbol: str
+    signal_id: int | None             # original signal that triggered watchlist add
+    strategy: str
+    entry_price: float
+    added_at: datetime | None
+    expires_at: datetime | None       # default: now + 5 days
+    triggered_count: int = 0          # times re-alerted for same symbol
+    last_triggered_at: datetime | None = None
+```
+
+**Key methods:**
+
+| Method | Description |
+|--------|-------------|
+| `add_to_watchlist(record)` | Add stock with 5-day expiry |
+| `get_active_watchlist(now)` | All non-expired entries |
+| `is_on_watchlist(symbol, now)` | Check if stock is being watched |
+| `remove_from_watchlist(symbol)` | Manual removal |
+| `increment_trigger(symbol, now)` | Called when watched stock generates new signal |
+| `cleanup_expired(now)` | Remove expired entries |
+
+**Telegram commands:** `/watchlist` shows all active entries, `/unwatch SYMBOL`
+removes a stock.
+
+---
+
+## 21. Step 16 — Daily Wind-Down & Summary
 
 ### Wind-Down Phase (14:30-15:35)
 
@@ -1643,7 +2355,7 @@ Cumulative P&L is calculated as:
 
 ---
 
-## 18. Step 17 — Shutdown & Crash Recovery
+## 22. Step 17 — Shutdown & Crash Recovery
 
 ### Graceful Shutdown
 
@@ -1700,7 +2412,56 @@ signal generation after a mid-day crash.
 
 ---
 
-## 19. Data Model Chain
+## 23. Step 18 — Dashboard (Phase 3)
+
+### Files: `signalpilot/dashboard/` (backend), `frontend/` (React app)
+
+The web dashboard provides a visual interface for monitoring and managing
+SignalPilot. It runs alongside the main application when `dashboard_enabled`
+is `True` in configuration.
+
+### Backend — FastAPI
+
+- `create_dashboard_app(db_path, write_connection)` factory creates the
+  FastAPI application
+- Uses a separate read-only DB connection for queries, shared write
+  connection for mutations
+- CORS enabled for localhost development
+
+### API Routes
+
+| Prefix | Module | Endpoints |
+|--------|--------|-----------|
+| `/api/signals` | `signals.py` | GET /live, GET /history |
+| `/api/trades` | `trades.py` | GET /, GET /export (CSV download) |
+| `/api/performance` | `performance.py` | GET /equity-curve, /daily-pnl, /win-rate, /monthly |
+| `/api/strategies` | `strategies.py` | GET /comparison, /confirmed, /pnl-series |
+| `/api/allocation` | `allocation.py` | GET /current, GET /history, POST /override, POST /reset |
+| `/api/settings` | `settings.py` | GET /, PUT /, PUT /strategies |
+| `/api/circuit-breaker` | `circuit_breaker.py` | GET /, POST /override, GET /history |
+| `/api/adaptation` | `adaptation.py` | GET /status, GET /log |
+
+### Frontend — React + TypeScript
+
+- **Build tool:** Vite
+- **Styling:** Tailwind CSS
+- **Data fetching:** React Query with 30-second polling for live data
+- **Routing:** React Router with lazy-loaded routes
+
+#### Pages
+
+| Page | Description |
+|------|-------------|
+| Live Signals | Real-time view of active signals with current prices and P&L |
+| Trade Journal | Searchable/filterable trade history with CSV export |
+| Performance Charts | Equity curve, daily P&L bar chart, win rate trend, monthly breakdown |
+| Strategy Comparison | Side-by-side strategy metrics, confirmed signal analysis |
+| Capital Allocation | Current allocation pie chart, allocation history, manual override controls |
+| Settings | Configuration editor, strategy enable/disable toggles, circuit breaker controls |
+
+---
+
+## 24. Data Model Chain
 
 The journey of a signal from detection to database:
 
@@ -1714,20 +2475,51 @@ CandidateSignal          <-- produced by GapAndGoStrategy / ORBStrategy / VWAPRe
     v
   [DuplicateChecker]     <-- filter: active trades + same-day signals
     v
+  [ConfidenceDetector]   <-- (Phase 3) produces ConfirmationResult (level, confirmed_by, multiplier)
+    v
+  [CompositeScorer]      <-- (Phase 3) produces CompositeScoreResult (composite, factor scores)
+    v
 RankedSignal             <-- produced by SignalRanker
     | candidate, composite_score, rank (1-N), signal_strength (1-5 stars)
+    v
+  [CircuitBreaker]       <-- (Phase 3) gate: blocks signals if SL limit exceeded
+    v
+  [AdaptiveManager]      <-- (Phase 3) filter: blocks signals from paused strategies
     v
 FinalSignal              <-- produced by RiskManager
     | ranked_signal, quantity, capital_required, expires_at
     v
-SignalRecord             <-- persisted to `signals` table (18 fields)
+SignalRecord             <-- persisted to `signals` table
     | id, date, symbol, strategy, entry_price, stop_loss, T1, T2,
     | quantity, capital_required, signal_strength, gap_pct, volume_ratio,
     | reason, created_at, expires_at, status, setup_type, strategy_specific_score
+    | + Phase 3: composite_score, confirmation_level, confirmed_by,
+    |   position_size_multiplier, adaptation_status
+    v
+HybridScoreRecord        <-- (Phase 3) persisted to `hybrid_scores` table
+    | signal_id, composite_score, strategy_strength_score, win_rate_score,
+    | risk_reward_score, confirmation_bonus, confirmed_by, confirmation_level,
+    | position_size_multiplier
     v
 TradeRecord              <-- created when user replies TAKEN (15 fields)
     | signal_id, date, symbol, strategy, entry_price, stop_loss, T1, T2,
     | quantity, taken_at, exit_price, pnl_amount, pnl_pct, exit_reason, exited_at
+
+CircuitBreakerRecord     <-- (Phase 3) persisted to `circuit_breaker_log` table
+    | date, sl_count, triggered_at, resumed_at, manual_override, override_at
+
+AdaptationLogRecord      <-- (Phase 3) persisted to `adaptation_log` table
+    | date, strategy, event_type, details, old_weight, new_weight
+
+SignalActionRecord       <-- (Phase 4) persisted to `signal_actions` table
+    | signal_id, action (taken/skip/watch), reason, response_time_ms, acted_at
+
+WatchlistRecord          <-- (Phase 4) persisted to `watchlist` table
+    | symbol, signal_id, strategy, entry_price, added_at, expires_at,
+    | triggered_count, last_triggered_at
+
+CallbackResult           <-- (Phase 4) return type for inline button callbacks
+    | answer_text, success, status_line, new_keyboard
 ```
 
 ### All Dataclasses
@@ -1756,6 +2548,15 @@ TradeRecord              <-- created when user replies TAKEN (15 fields)
 | `OpeningRange` | `market_data_store.py` | range_high, range_low, locked, range_size_pct |
 | `VWAPState` | `market_data_store.py` | cumulative_price_volume, cumulative_volume, current_vwap |
 | `Candle15Min` | `market_data_store.py` | symbol, OHLCV, start_time, end_time, is_complete |
+| `ConfirmationResult` | `ranking/confidence.py` | symbol, level (single/double/triple), confirmed_by, multiplier |
+| `CompositeScoreResult` | `ranking/composite_scorer.py` | composite_score, strategy_strength, win_rate, risk_reward, confirmation_bonus |
+| `HybridScoreRecord` | `db/models.py` | signal_id, composite_score, factor scores, confirmation details |
+| `CircuitBreakerRecord` | `db/models.py` | date, sl_count, triggered_at, resumed_at, manual_override |
+| `AdaptationLogRecord` | `db/models.py` | date, strategy, event_type, details, old_weight, new_weight |
+| `SignalActionRecord` | `db/models.py` | signal_id, action, reason, response_time_ms, acted_at, message_id |
+| `WatchlistRecord` | `db/models.py` | symbol, signal_id, strategy, entry_price, added_at, expires_at, triggered_count |
+| `CallbackResult` | `db/models.py` | answer_text, success, status_line, new_keyboard |
+| `ScanContext` | `pipeline/context.py` | cycle_id, now, phase, accepting_signals, all_candidates, ranked_signals, final_signals |
 
 ### Enums
 
@@ -1764,10 +2565,12 @@ TradeRecord              <-- created when user replies TAKEN (15 fields)
 | `SignalDirection` | `BUY`, `SELL` |
 | `ExitType` | `SL_HIT`, `T1_HIT`, `T2_HIT`, `TRAILING_SL_HIT`, `TIME_EXIT` |
 | `StrategyPhase` | `PRE_MARKET`, `OPENING`, `ENTRY_WINDOW`, `CONTINUOUS`, `WIND_DOWN`, `POST_MARKET` |
+| `ConfirmationLevel` | `SINGLE`, `DOUBLE`, `TRIPLE` |
+| `AdaptationLevel` | `NORMAL`, `REDUCED`, `PAUSED` |
 
 ---
 
-## 20. Logging & Observability
+## 25. Logging & Observability
 
 ### Files: `signalpilot/utils/logger.py`, `log_context.py`
 
@@ -1833,7 +2636,7 @@ enabled strategy count, WebSocket connection status, and candidate count.
 
 ---
 
-## 21. Rate Limiting & Retry
+## 26. Rate Limiting & Retry
 
 ### Token Bucket Rate Limiter
 
@@ -1887,57 +2690,63 @@ async def some_api_call():
 
 ---
 
-## 22. Complete Scan Loop Iteration
+## 27. Complete Scan Loop Iteration
 
 ### File: `signalpilot/scheduler/lifecycle.py` — `_scan_loop()`
+
+The scan loop delegates all work to the **composable pipeline** (see
+[Step 7 — Pipeline Architecture](#8-step-7--strategy-evaluation)):
 
 ```
 WHILE scanning == True:
   |
   |-- a. Generate 8-char hex cycle_id
   |-- b. set_context(cycle_id, phase)
+  |-- c. Build ScanContext(cycle_id, now, phase, accepting_signals)
   |
-  |-- c. IF _accepting_signals AND phase IN (OPENING, ENTRY_WINDOW, CONTINUOUS):
-  |   |-- Fetch user_config from config_repo
-  |   |-- Filter strategies by enabled flags (gap_go_enabled, orb_enabled, vwap_enabled)
-  |   |-- FOR each enabled strategy WHERE phase IN strategy.active_phases:
-  |   |     +-- candidates += await strategy.evaluate(market_data, phase)
+  |-- d. ctx = await pipeline.run(ctx)
   |   |
-  |   |-- d. Cross-strategy gap marking:
-  |   |     gap_symbols = {c.symbol for c in candidates if strategy_name == "Gap & Go"}
-  |   |     FOR each strategy with mark_gap_stock():
-  |   |       FOR sym in gap_symbols: strategy.mark_gap_stock(sym)
+  |   |-- SIGNAL STAGES (run if accepting_signals AND phase in OPENING/ENTRY_WINDOW/CONTINUOUS):
+  |   |   |
+  |   |   1. CircuitBreakerGateStage
+  |   |       IF circuit_breaker.is_active: ctx.accepting_signals = False → skip rest
+  |   |   2. StrategyEvalStage
+  |   |       Fetch user_config, filter enabled strategies, evaluate each
+  |   |       --> ctx.all_candidates
+  |   |   3. GapStockMarkingStage
+  |   |       Mark Gap & Go symbols for ORB/VWAP exclusion
+  |   |   4. DeduplicationStage
+  |   |       Filter active-trade + same-day signal duplicates
+  |   |   5. ConfidenceStage (Phase 3)
+  |   |       Detect multi-strategy confirmations --> ctx.confirmation_map
+  |   |   6. CompositeScoringStage (Phase 3)
+  |   |       4-factor hybrid scoring --> ctx.composite_scores
+  |   |   7. AdaptiveFilterStage (Phase 3)
+  |   |       Remove signals from paused strategies
+  |   |   8. RankingStage
+  |   |       Score + rank --> ctx.ranked_signals (1-5 stars)
+  |   |   9. RiskSizingStage
+  |   |       Position sizing + capital checks --> ctx.final_signals
+  |   |   10. PersistAndDeliverStage
+  |   |       INSERT signals + hybrid_scores, send via Telegram with keyboards
+  |   |   11. DiagnosticStage
+  |   |       Heartbeat every 60 cycles (~1 min)
   |   |
-  |   |-- e. IF candidates AND duplicate_checker:
-  |   |     candidates = await duplicate_checker.filter_duplicates(candidates, today)
-  |   |
-  |   |-- f. IF candidates:
-  |   |     ranked = ranker.rank(candidates)
-  |   |     active_count = await trade_repo.get_active_trade_count()
-  |   |     final_signals = risk_manager.filter_and_size(ranked, config, active_count)
-  |   |
-  |   |     g. FOR each signal in final_signals:
-  |   |       |-- record = _signal_to_record(signal, now)
-  |   |       |-- is_paper = _is_paper_mode(signal, app_config)
-  |   |       |-- IF is_paper: record.status = "paper"
-  |   |       |-- signal_id = await signal_repo.insert_signal(record)
-  |   |       +-- await bot.send_signal(signal, is_paper)
-  |   |
-  |   +-- h. Heartbeat every 60 cycles (~1 min)
+  |   +-- ALWAYS STAGES (run every cycle):
+  |       1. ExitMonitoringStage
+  |           active_trades = await trade_repo.get_active_trades()
+  |           FOR trade in active_trades:
+  |             alert = await exit_monitor.check_trade(trade)
+  |             IF alert: event_bus.emit(ExitAlertEvent(alert))
   |
-  |-- i. Exit Monitoring (ALWAYS, every iteration):
-  |     active_trades = await trade_repo.get_active_trades()
-  |     FOR trade in active_trades:
-  |       await exit_monitor.check_trade(trade)
-  |
-  |-- j. Expire stale signals (30-min window):
+  |-- e. Expire stale signals (30-min window):
   |     count = await signal_repo.expire_stale_signals(now)
   |
-  |-- k. On success: consecutive_errors = 0
+  |-- f. On success: consecutive_errors = 0
   |
   |-- EXCEPT any exception:
   |     consecutive_errors += 1
-  |     IF consecutive_errors >= 10: --> circuit breaker, stop loop
+  |     IF consecutive_errors >= 10: --> stop loop, alert via Telegram
   |
   |-- FINALLY: reset_context()
   |
@@ -1946,11 +2755,15 @@ WHILE scanning == True:
 
 ---
 
-## 23. Summary: A Complete Trading Day
+## 29. Summary: A Complete Trading Day
 
 ```
 08:00  App boots --> AppConfig loaded, logging configured
-08:00  create_app() wires 20+ components
+08:00  create_app() wires 30+ components:
+         |-- EventBus + subscriptions (ExitAlert, StopLossHit, TradeExited, AlertMessage)
+         |-- ScanPipeline (11 signal stages + 1 always stage)
+         |-- Phase 3 intelligence layer (CircuitBreaker, AdaptiveManager, CompositeScorer)
+         +-- Phase 4 quick actions (SignalActionRepo, WatchlistRepo, inline keyboards)
 08:00  SmartAPIAuthenticator.authenticate() (TOTP-based 2FA)
 08:01  InstrumentManager.load() (Nifty 500 from CSV)
 08:01  historical.fetch_previous_day_data()    <-- 499 stocks, batches of 3
@@ -1959,14 +2772,18 @@ WHILE scanning == True:
 08:20  ConfigRepository.initialize_default()
 08:20  bot.start() --> Telegram polling begins
 08:20  MarketScheduler.start() --> 9 cron jobs registered
+08:20  (Phase 3) Dashboard starts on configured port if dashboard_enabled
 
 09:00  [CRON] send_pre_market_alert()
          --> "Signals coming shortly after 9:15 AM"
 
 09:15  [CRON] start_scanning()
          |   _reset_session() --> clear intraday data, reset strategies
+         |   (Phase 3) circuit_breaker.reset() --> daily SL counter reset
+         |   (Phase 3) adaptive_manager daily state refresh
+         |   (Phase 4) watchlist_repo.cleanup_expired()
          |   websocket.connect() --> subscribe all 500 tokens (Mode 3)
-         +-> _scan_loop() starts (every 1 second)
+         +-> _scan_loop() starts (every 1 second, via ScanPipeline.run())
                |
                |-- phase = OPENING (9:15-9:30)
                |    +-- GapAndGoStrategy: detect gaps [3%-5%], open > prev_high,
@@ -1989,26 +2806,47 @@ WHILE scanning == True:
                |        + 0.3% VWAP touch + volume confirmation
                |        --> CandidateSignal (Setup 1: T1=+1%, T2=+1.5% / Setup 2: T1=+1.5%, T2=+2%)
                |
-               +-- (every pipeline iteration, all phases):
-               |    |-- DuplicateChecker: filter active trades + same-day signals
-               |    |-- SignalRanker: score + rank --> RankedSignal (1-5 stars)
-               |    |-- RiskManager: position limits + sizing --> FinalSignal
-               |    |-- Paper mode check (ORB/VWAP)
-               |    |-- SignalRepo: INSERT INTO signals
-               |    +-- Bot: send_signal() --> Telegram HTML message
+               +-- SIGNAL STAGES (pipeline, all active phases):
+               |    1.  CircuitBreakerGateStage: block if SL limit exceeded
+               |    2.  StrategyEvalStage: run enabled strategies
+               |    3.  GapStockMarkingStage: mark Gap & Go symbols for exclusion
+               |    4.  DeduplicationStage: filter active trades + same-day signals
+               |    5.  ConfidenceStage (Phase 3): multi-strategy confirmation
+               |    6.  CompositeScoringStage (Phase 3): 4-factor hybrid scoring
+               |    7.  AdaptiveFilterStage (Phase 3): block paused strategies
+               |    8.  RankingStage: score + rank --> RankedSignal (1-5 stars)
+               |    9.  RiskSizingStage: position limits + sizing --> FinalSignal
+               |    10. PersistAndDeliverStage: INSERT signals + hybrid_scores,
+               |        send via Telegram with inline keyboards (Phase 4)
+               |        [ TAKEN ]  [ SKIP ]  [ WATCH ]
+               |    11. DiagnosticStage: heartbeat every 60 cycles
                |
-               +-- (every tick, all phases 9:15-15:15):
-                    ExitMonitor.check_trade() for each active trade:
-                      |-- SL/trailing SL hit?  --> persist + alert + stop monitoring
-                      |-- T2 hit?              --> persist + alert + stop monitoring
-                      |-- T1 hit?              --> advisory alert (once)
+               +-- ALWAYS STAGE (every tick, all phases 9:15-15:15):
+                    ExitMonitoringStage:
+                      ExitMonitor.check_trade() for each active trade:
+                      |-- SL/trailing SL hit?  --> persist + emit events via EventBus
+                      |   +-- StopLossHitEvent --> circuit_breaker.on_sl_hit()
+                      |   +-- TradeExitedEvent --> adaptive_manager.on_trade_exit()
+                      |   +-- ExitAlertEvent   --> bot.send_exit_alert()
+                      |   +-- IF circuit breaker activates: AlertMessageEvent --> bot
+                      |-- T2 hit?              --> persist + emit events
+                      |   +-- TradeExitedEvent --> adaptive_manager (track wins)
+                      |-- T1 hit?              --> advisory alert with
+                      |                            [ Book 50% at T1 ] keyboard (Phase 4)
                       +-- Trailing SL update?  --> advisory alert
+
+         (Phase 4) User taps inline buttons on signal/exit messages:
+               |-- TAKEN --> handle_taken_callback() --> create trade, record response_time_ms
+               |-- SKIP  --> show skip reason keyboard --> record reason + response_time_ms
+               |-- WATCH --> handle_watch_callback() --> add to watchlist (5-day expiry)
+               +-- Exit buttons (Book T1 / Exit Now / Hold / Let Run) --> manage trade
 
 14:30  [CRON] stop_new_signals()
          --> _accepting_signals = False (scan loop continues for exits)
 
 15:00  [CRON] trigger_exit_reminder()
          --> advisory alerts per open trade (TIME_EXIT, is_alert_only=True)
+         --> [ Exit Now ]  [ Hold ] keyboard (Phase 4)
 
 15:15  [CRON] trigger_mandatory_exit()
          --> forced exit for all open trades (persist + alert)
@@ -2024,5 +2862,8 @@ WHILE scanning == True:
 Sunday 18:00  [CRON] weekly_rebalance()
          --> CapitalAllocator.calculate_allocations()
          --> check_auto_pause() (warn if win_rate < 40% after 10+ trades)
+         --> (Phase 3) AdaptiveManager.check_trailing_performance()
+         |     +-- 5-day win rate < 35%: warning alert
+         |     +-- 10-day win rate < 30%: auto-pause recommendation
          --> Send allocation summary to Telegram
 ```
