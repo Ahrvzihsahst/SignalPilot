@@ -112,6 +112,7 @@ class DatabaseManager:
         await self._run_phase2_migration()
         await self._run_phase3_migration()
         await self._run_phase4_migration()
+        await self._run_news_sentiment_migration()
 
     async def _run_phase2_migration(self) -> None:
         """Phase 2 idempotent migration: add new columns and tables.
@@ -344,3 +345,82 @@ class DatabaseManager:
 
         await conn.commit()
         logger.info("Phase 3 migration complete")
+
+    async def _run_news_sentiment_migration(self) -> None:
+        """News Sentiment Filter idempotent migration.
+
+        Creates two new tables (news_sentiment, earnings_calendar) with
+        indexes, and adds five nullable columns to the signals table.
+        Uses PRAGMA table_info() to check column existence before ALTER TABLE.
+        """
+        conn = self.connection
+
+        async def _has_column(table: str, column: str) -> bool:
+            cursor = await conn.execute(f"PRAGMA table_info({table})")
+            rows = await cursor.fetchall()
+            return any(row["name"] == column for row in rows)
+
+        # -- New tables ---------------------------------------------------
+        await conn.executescript("""
+            CREATE TABLE IF NOT EXISTS news_sentiment (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                stock_code      TEXT    NOT NULL,
+                headline        TEXT    NOT NULL,
+                source          TEXT    NOT NULL,
+                published_at    TEXT,
+                positive_score  REAL    NOT NULL DEFAULT 0.0,
+                negative_score  REAL    NOT NULL DEFAULT 0.0,
+                neutral_score   REAL    NOT NULL DEFAULT 0.0,
+                composite_score REAL    NOT NULL DEFAULT 0.0,
+                sentiment_label TEXT    NOT NULL DEFAULT '',
+                fetched_at      TEXT    NOT NULL,
+                model_used      TEXT    NOT NULL DEFAULT '',
+                UNIQUE(stock_code, headline, source)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_news_stock_date
+                ON news_sentiment(stock_code, published_at);
+            CREATE INDEX IF NOT EXISTS idx_news_fetched_at
+                ON news_sentiment(fetched_at);
+
+            CREATE TABLE IF NOT EXISTS earnings_calendar (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                stock_code      TEXT    NOT NULL,
+                earnings_date   TEXT    NOT NULL,
+                quarter         TEXT    NOT NULL DEFAULT '',
+                source          TEXT    NOT NULL DEFAULT '',
+                is_confirmed    INTEGER NOT NULL DEFAULT 0,
+                updated_at      TEXT    NOT NULL,
+                UNIQUE(stock_code, earnings_date)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_earnings_date
+                ON earnings_calendar(earnings_date);
+            CREATE INDEX IF NOT EXISTS idx_earnings_stock_date
+                ON earnings_calendar(stock_code, earnings_date);
+        """)
+
+        # -- Extend signals table with news sentiment columns -------------
+        if not await _has_column("signals", "news_sentiment_score"):
+            await conn.execute(
+                "ALTER TABLE signals ADD COLUMN news_sentiment_score REAL"
+            )
+        if not await _has_column("signals", "news_sentiment_label"):
+            await conn.execute(
+                "ALTER TABLE signals ADD COLUMN news_sentiment_label TEXT"
+            )
+        if not await _has_column("signals", "news_top_headline"):
+            await conn.execute(
+                "ALTER TABLE signals ADD COLUMN news_top_headline TEXT"
+            )
+        if not await _has_column("signals", "news_action"):
+            await conn.execute(
+                "ALTER TABLE signals ADD COLUMN news_action TEXT"
+            )
+        if not await _has_column("signals", "original_star_rating"):
+            await conn.execute(
+                "ALTER TABLE signals ADD COLUMN original_star_rating INTEGER"
+            )
+
+        await conn.commit()
+        logger.info("News sentiment migration complete")

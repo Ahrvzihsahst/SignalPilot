@@ -47,6 +47,11 @@ __all__ = [
     "HybridScoreRecord",
     "CircuitBreakerRecord",
     "AdaptationLogRecord",
+    # Phase 4: News Sentiment Filter
+    "SentimentResult",
+    "SuppressedSignal",
+    "NewsSentimentRecord",
+    "EarningsCalendarRecord",
 ]
 
 
@@ -233,6 +238,12 @@ class SignalRecord:
     confirmed_by: str | None = None
     position_size_multiplier: float = 1.0
     adaptation_status: str = "normal"
+    # Phase 4: News Sentiment Filter fields
+    news_sentiment_score: float | None = None
+    news_sentiment_label: str | None = None
+    news_top_headline: str | None = None
+    news_action: str | None = None
+    original_star_rating: int | None = None
 
 
 @dataclass
@@ -457,3 +468,68 @@ class AdaptationLogRecord:
     old_weight: float | None = None
     new_weight: float | None = None
     created_at: datetime | None = None
+
+
+# ---------------------------------------------------------------------------
+# Phase 4: News Sentiment Filter
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class SentimentResult:
+    """Per-stock sentiment output carried through the pipeline via ScanContext."""
+
+    score: float
+    label: str
+    headline: str | None
+    action: str
+    headline_count: int
+    top_negative_headline: str | None
+    model_used: str
+
+
+@dataclass
+class SuppressedSignal:
+    """A signal removed by the news sentiment filter before delivery."""
+
+    symbol: str
+    strategy: str
+    original_stars: int
+    sentiment_score: float
+    sentiment_label: str
+    top_headline: str | None
+    reason: str
+    entry_price: float
+    stop_loss: float
+    target_1: float
+
+
+@dataclass
+class NewsSentimentRecord:
+    """Persistent record for the news_sentiment table."""
+
+    id: int | None = None
+    stock_code: str = ""
+    headline: str = ""
+    source: str = ""
+    published_at: datetime | None = None
+    positive_score: float = 0.0
+    negative_score: float = 0.0
+    neutral_score: float = 0.0
+    composite_score: float = 0.0
+    sentiment_label: str = ""
+    fetched_at: datetime | None = None
+    model_used: str = ""
+
+
+@dataclass
+class EarningsCalendarRecord:
+    """Persistent record for the earnings_calendar table."""
+
+    id: int | None = None
+    stock_code: str = ""
+    earnings_date: date | None = None
+    quarter: str = ""
+    source: str = ""
+    is_confirmed: bool = False
+    updated_at: datetime | None = None

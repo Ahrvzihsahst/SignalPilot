@@ -5,7 +5,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from signalpilot.db.models import CandidateSignal, FinalSignal, RankedSignal, UserConfig
+from signalpilot.db.models import (
+    CandidateSignal,
+    FinalSignal,
+    RankedSignal,
+    SentimentResult,
+    SuppressedSignal,
+    UserConfig,
+)
 from signalpilot.utils.market_calendar import StrategyPhase
 
 
@@ -32,6 +39,10 @@ class ScanContext:
 
     # Set by RankingStage
     ranked_signals: list[RankedSignal] = field(default_factory=list)
+
+    # Set by NewsSentimentStage
+    sentiment_results: dict[str, SentimentResult] = field(default_factory=dict)
+    suppressed_signals: list[SuppressedSignal] = field(default_factory=list)
 
     # Set by RiskSizingStage
     final_signals: list[FinalSignal] = field(default_factory=list)

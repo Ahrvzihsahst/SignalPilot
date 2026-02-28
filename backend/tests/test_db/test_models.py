@@ -9,20 +9,24 @@ from signalpilot.db.models import (
     CandidateSignal,
     CircuitBreakerRecord,
     DailySummary,
+    EarningsCalendarRecord,
     ExitAlert,
     ExitType,
     FinalSignal,
     HistoricalReference,
     HybridScoreRecord,
     Instrument,
+    NewsSentimentRecord,
     PerformanceMetrics,
     PositionSize,
     PreviousDayData,
     RankedSignal,
     ScoringWeights,
+    SentimentResult,
     SignalDirection,
     SignalRecord,
     StrategyPhase,
+    SuppressedSignal,
     TickData,
     TradeRecord,
     UserConfig,
@@ -644,3 +648,185 @@ class TestUserConfigPhase3:
         assert cfg.circuit_breaker_limit == 5
         assert cfg.confidence_boost_enabled is False
         assert cfg.adaptation_mode == "conservative"
+
+
+# ---------------------------------------------------------------------------
+# Phase 4: News Sentiment Filter Model Tests
+# ---------------------------------------------------------------------------
+
+
+class TestSentimentResult:
+    def test_instantiation(self):
+        result = SentimentResult(
+            score=-0.45,
+            label="MILD_NEGATIVE",
+            headline="Company faces regulatory scrutiny",
+            action="DOWNGRADE",
+            headline_count=3,
+            top_negative_headline="SEBI probe announced",
+            model_used="vader",
+        )
+        assert result.score == -0.45
+        assert result.label == "MILD_NEGATIVE"
+        assert result.headline == "Company faces regulatory scrutiny"
+        assert result.action == "DOWNGRADE"
+        assert result.headline_count == 3
+        assert result.top_negative_headline == "SEBI probe announced"
+        assert result.model_used == "vader"
+
+    def test_none_headlines(self):
+        result = SentimentResult(
+            score=0.0,
+            label="NO_NEWS",
+            headline=None,
+            action="PASS",
+            headline_count=0,
+            top_negative_headline=None,
+            model_used="vader",
+        )
+        assert result.headline is None
+        assert result.top_negative_headline is None
+        assert result.headline_count == 0
+
+
+class TestSuppressedSignal:
+    def test_instantiation(self):
+        suppressed = SuppressedSignal(
+            symbol="SBIN",
+            strategy="gap_and_go",
+            original_stars=4,
+            sentiment_score=-0.75,
+            sentiment_label="STRONG_NEGATIVE",
+            top_headline="Fraud allegations surface",
+            reason="STRONG_NEGATIVE",
+            entry_price=770.0,
+            stop_loss=745.0,
+            target_1=808.5,
+        )
+        assert suppressed.symbol == "SBIN"
+        assert suppressed.strategy == "gap_and_go"
+        assert suppressed.original_stars == 4
+        assert suppressed.sentiment_score == -0.75
+        assert suppressed.sentiment_label == "STRONG_NEGATIVE"
+        assert suppressed.top_headline == "Fraud allegations surface"
+        assert suppressed.reason == "STRONG_NEGATIVE"
+        assert suppressed.entry_price == 770.0
+        assert suppressed.stop_loss == 745.0
+        assert suppressed.target_1 == 808.5
+
+    def test_none_headline(self):
+        suppressed = SuppressedSignal(
+            symbol="INFY",
+            strategy="orb",
+            original_stars=3,
+            sentiment_score=0.0,
+            sentiment_label="EARNINGS_BLACKOUT",
+            top_headline=None,
+            reason="EARNINGS_BLACKOUT",
+            entry_price=1500.0,
+            stop_loss=1470.0,
+            target_1=1545.0,
+        )
+        assert suppressed.top_headline is None
+        assert suppressed.reason == "EARNINGS_BLACKOUT"
+
+
+class TestNewsSentimentRecord:
+    def test_defaults(self):
+        rec = NewsSentimentRecord()
+        assert rec.id is None
+        assert rec.stock_code == ""
+        assert rec.headline == ""
+        assert rec.source == ""
+        assert rec.published_at is None
+        assert rec.positive_score == 0.0
+        assert rec.negative_score == 0.0
+        assert rec.neutral_score == 0.0
+        assert rec.composite_score == 0.0
+        assert rec.sentiment_label == ""
+        assert rec.fetched_at is None
+        assert rec.model_used == ""
+
+    def test_custom_values(self):
+        now = datetime(2026, 2, 28, 10, 0, tzinfo=IST)
+        rec = NewsSentimentRecord(
+            id=1,
+            stock_code="SBIN",
+            headline="SBI reports record quarterly profit",
+            source="MoneyControl",
+            published_at=now,
+            positive_score=0.8,
+            negative_score=0.05,
+            neutral_score=0.15,
+            composite_score=0.75,
+            sentiment_label="POSITIVE",
+            fetched_at=now,
+            model_used="vader",
+        )
+        assert rec.id == 1
+        assert rec.stock_code == "SBIN"
+        assert rec.headline == "SBI reports record quarterly profit"
+        assert rec.source == "MoneyControl"
+        assert rec.positive_score == 0.8
+        assert rec.composite_score == 0.75
+        assert rec.sentiment_label == "POSITIVE"
+        assert rec.model_used == "vader"
+
+
+class TestEarningsCalendarRecord:
+    def test_defaults(self):
+        rec = EarningsCalendarRecord()
+        assert rec.id is None
+        assert rec.stock_code == ""
+        assert rec.earnings_date is None
+        assert rec.quarter == ""
+        assert rec.source == ""
+        assert rec.is_confirmed is False
+        assert rec.updated_at is None
+
+    def test_custom_values(self):
+        now = datetime(2026, 2, 28, 10, 0, tzinfo=IST)
+        rec = EarningsCalendarRecord(
+            id=1,
+            stock_code="INFY",
+            earnings_date=date(2026, 4, 15),
+            quarter="Q4FY26",
+            source="Screener.in",
+            is_confirmed=True,
+            updated_at=now,
+        )
+        assert rec.id == 1
+        assert rec.stock_code == "INFY"
+        assert rec.earnings_date == date(2026, 4, 15)
+        assert rec.quarter == "Q4FY26"
+        assert rec.source == "Screener.in"
+        assert rec.is_confirmed is True
+        assert rec.updated_at == now
+
+
+class TestSignalRecordNewsSentiment:
+    def test_backward_compatible(self):
+        """Phase 1-3 construction still works with news sentiment defaults."""
+        rec = SignalRecord(
+            id=1, symbol="SBIN", strategy="gap_go",
+            entry_price=500.0, stop_loss=485.0,
+        )
+        assert rec.news_sentiment_score is None
+        assert rec.news_sentiment_label is None
+        assert rec.news_top_headline is None
+        assert rec.news_action is None
+        assert rec.original_star_rating is None
+
+    def test_news_sentiment_fields(self):
+        rec = SignalRecord(
+            news_sentiment_score=-0.45,
+            news_sentiment_label="MILD_NEGATIVE",
+            news_top_headline="Regulatory concerns raised",
+            news_action="DOWNGRADED",
+            original_star_rating=4,
+        )
+        assert rec.news_sentiment_score == -0.45
+        assert rec.news_sentiment_label == "MILD_NEGATIVE"
+        assert rec.news_top_headline == "Regulatory concerns raised"
+        assert rec.news_action == "DOWNGRADED"
+        assert rec.original_star_rating == 4

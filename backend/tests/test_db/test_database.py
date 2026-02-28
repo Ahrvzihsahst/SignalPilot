@@ -39,6 +39,9 @@ class TestDatabaseManager:
                 # Phase 3
                 "composite_score", "confirmation_level", "confirmed_by",
                 "position_size_multiplier", "adaptation_status",
+                # News Sentiment Filter
+                "news_sentiment_score", "news_sentiment_label",
+                "news_top_headline", "news_action", "original_star_rating",
             }
             assert columns == expected
         finally:
@@ -153,6 +156,11 @@ class TestDatabaseManager:
                 "idx_circuit_breaker_date",
                 "idx_adaptation_log_date",
                 "idx_adaptation_log_strategy",
+                # News Sentiment Filter
+                "idx_news_stock_date",
+                "idx_news_fetched_at",
+                "idx_earnings_date",
+                "idx_earnings_stock_date",
             }
             assert expected_indexes.issubset(indexes)
         finally:
