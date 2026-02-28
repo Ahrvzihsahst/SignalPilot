@@ -59,21 +59,49 @@ cd backend && python -m signalpilot.main
 
 ## Architecture
 
-### Data Flow (Pipeline)
+### Data Flow (Composable Pipeline — 11 signal stages + 1 always stage)
+
+The scan loop delegates all work to a `ScanPipeline` (`backend/signalpilot/pipeline/`). Each stage implements the `PipelineStage` protocol and transforms a shared `ScanContext`.
+
+**Signal stages** (run when `accepting_signals=True` and phase in OPENING/ENTRY_WINDOW/CONTINUOUS):
 
 ```
-Data Engine (Angel One WebSocket + yfinance fallback)
-    → Strategy Engine (Gap & Go + ORB + VWAP Reversal, per-phase activation)
-    → Duplicate Checker (cross-strategy same-day dedup)
-    → Signal Ranker (multi-factor scoring, top-5 selection, 1-5 stars)
-    → Risk Manager (position sizing, max 8 positions, capital allocation, price cap)
-    → Telegram Bot (signal delivery, user commands, paper/live mode)
-    → Exit Monitor (SL/target/trailing-SL/time-based exits, persists closures via trade_repo)
+ 1. CircuitBreakerGateStage  — halt if SL limit exceeded
+ 2. StrategyEvalStage        — run Gap & Go / ORB / VWAP Reversal (phase-gated)
+ 3. GapStockMarkingStage     — exclude gap stocks from ORB/VWAP
+ 4. DeduplicationStage       — cross-strategy same-day dedup
+ 5. ConfidenceStage          — multi-strategy confirmation (Phase 3)
+ 6. CompositeScoringStage    — 4-factor hybrid scoring (Phase 3)
+ 7. AdaptiveFilterStage      — block paused strategies (Phase 3)
+ 8. RankingStage             — top-N selection, 1-5 stars
+ 9. RiskSizingStage          — position sizing, capital allocation
+10. PersistAndDeliverStage   — DB insert + Telegram with inline buttons (Phase 4)
+11. DiagnosticStage          — heartbeat logging
 ```
+
+**Always stage** (runs every cycle): `ExitMonitoringStage` — SL/target/trailing-SL/time exits
 
 ### Orchestration
 
-`SignalPilotApp` (`backend/signalpilot/scheduler/lifecycle.py`) is the central orchestrator. All 16 components are **dependency-injected** as keyword-only constructor parameters. This enables duck-typing and easy mocking in tests. The exit monitor receives active trades explicitly via `TradeRepository.get_active_trades()` rather than maintaining internal state. On exit events (SL/T2/time), the exit monitor persists trade closures to the DB via a `close_trade` callback wired to `TradeRepository.close_trade()`.
+`SignalPilotApp` (`backend/signalpilot/scheduler/lifecycle.py`) is the central orchestrator. All 35+ components are **dependency-injected** via `create_app()` in `main.py` (22-stage wiring order). The scan loop runs `ScanPipeline.run(ctx)` every second. The exit monitor receives active trades explicitly via `TradeRepository.get_active_trades()` rather than maintaining internal state.
+
+### Event Bus
+
+`EventBus` (`backend/signalpilot/events.py`) provides decoupled cross-component communication. Components emit typed events; subscribers handle them without direct references. Four event types:
+- `ExitAlertEvent` → `bot.send_exit_alert()` (exit monitor → Telegram)
+- `StopLossHitEvent` → `circuit_breaker.on_sl_hit()` (exit monitor → circuit breaker)
+- `TradeExitedEvent` → `adaptive_manager.on_trade_exit()` (exit monitor → adaptive manager)
+- `AlertMessageEvent` → `bot.send_alert()` (circuit breaker/adaptive → Telegram)
+
+### Phase 4: Quick Actions
+
+Inline Telegram keyboards (`backend/signalpilot/telegram/keyboards.py`) replace text-based TAKEN flow:
+- **Signal buttons**: `[ TAKEN ] [ SKIP ] [ WATCH ]` on every delivered signal
+- **Skip reasons**: `[ No Capital ] [ Low Confidence ] [ Sector ] [ Other ]`
+- **Exit buttons**: `[ Book 50% at T1 ]`, `[ Exit at T2 ]`, `[ Exit Now ] [ Hold ]`, `[ Take Profit ] [ Let Run ]`
+- **9 callback handlers** in `telegram/handlers.py`: `handle_taken_callback`, `handle_skip_callback`, `handle_skip_reason_callback`, `handle_watch_callback`, `handle_partial_exit_callback`, `handle_exit_now_callback`, `handle_take_profit_callback`, `handle_hold_callback`, `handle_let_run_callback`
+- **Analytics**: `SignalActionRepository` tracks action type, skip reason, response_time_ms per signal
+- **Watchlist**: `WatchlistRepository` manages 5-day expiry watchlist entries added via WATCH button
 
 `MarketScheduler` (`backend/signalpilot/scheduler/scheduler.py`) wraps APScheduler 3.x with 9 IST cron jobs: pre-market alert (9:00), start scanning (9:15), lock opening ranges (9:45), stop signals (14:30), exit reminder (15:00), mandatory exit (15:15), daily summary (15:30), shutdown (15:35), and weekly rebalance (Sundays 18:00). All weekday jobs use `day_of_week='mon-fri'` and a `_trading_day_guard` decorator that skips execution on NSE holidays.
 
@@ -93,13 +121,17 @@ Key time constants in `backend/signalpilot/utils/constants.py`:
 
 ### Database Layer
 
-SQLite via `aiosqlite` with WAL mode. Three tables: `signals`, `trades`, `user_config`. Repository pattern: `SignalRepository`, `TradeRepository`, `ConfigRepository`, `MetricsCalculator` — all accept an `aiosqlite.Connection`.
+SQLite via `aiosqlite` with WAL mode. **10 tables**: `signals`, `trades`, `user_config`, `strategy_performance`, `vwap_cooldown` (Phase 2), `hybrid_scores`, `circuit_breaker_log`, `adaptation_log` (Phase 3), `signal_actions`, `watchlist` (Phase 4). Repository pattern — all accept an `aiosqlite.Connection`:
+- Core: `SignalRepository`, `TradeRepository`, `ConfigRepository`, `MetricsCalculator`
+- Phase 2: `StrategyPerformanceRepository`
+- Phase 3: `HybridScoreRepository`, `CircuitBreakerRepository`, `AdaptationLogRepository`
+- Phase 4: `SignalActionRepository`, `WatchlistRepository`
 
-Signal status lifecycle: `"sent"` or `"paper"` → `"taken"` (via TAKEN command) or `"expired"` (after 30 min). Phase 2 strategies (ORB, VWAP Reversal) default to paper mode controlled by `orb_paper_mode` / `vwap_paper_mode` flags in user config.
+Signal status lifecycle: `"sent"` or `"paper"` → `"taken"` (via TAKEN button/command) or `"expired"` (after 30 min). Phase 2 strategies (ORB, VWAP Reversal) default to paper mode controlled by `orb_paper_mode` / `vwap_paper_mode` flags in user config.
 
 ### Data Models
 
-All inter-component contracts are Python `dataclasses` in `backend/signalpilot/db/models.py`. Key chain: `CandidateSignal` → `RankedSignal` → `FinalSignal` → `SignalRecord` (persisted).
+All inter-component contracts are Python `dataclasses` in `backend/signalpilot/db/models.py`. Key chain: `CandidateSignal` → `RankedSignal` → `FinalSignal` → `SignalRecord` (persisted) → `TradeRecord` (via TAKEN). Pipeline state bag: `ScanContext` (`backend/signalpilot/pipeline/context.py`). Phase 4 adds: `SignalActionRecord`, `WatchlistRecord`, `CallbackResult`.
 
 ### Logging
 
@@ -128,7 +160,7 @@ Structured logging with async context injection via `contextvars`. `SignalPilotF
 - **Rate limiting**: Use `TokenBucketRateLimiter` from `signalpilot/utils/rate_limiter.py` for external API throttling
 - **Structured logging**: Use `set_context()`/`reset_context()` from `signalpilot/utils/log_context.py` to annotate log records with async-safe context
 - **IST constant**: `IST = ZoneInfo("Asia/Kolkata")` in `signalpilot/utils/constants.py`
-- **ExitMonitor wiring**: `ExitMonitor` receives a `close_trade` callback and per-strategy `trailing_configs` dict built from `AppConfig` ORB/VWAP trailing params (see `main.py:create_app`)
+- **ExitMonitor wiring**: `ExitMonitor` receives `close_trade` callback, per-strategy `trailing_configs` dict, and `EventBus` for emitting `ExitAlertEvent`/`StopLossHitEvent`/`TradeExitedEvent` (see `main.py:create_app`)
 - **WebSocket reconnection**: Uses a `_reconnecting` guard flag to prevent `_on_error` and `_on_close` from both triggering reconnection for the same disconnect event
 - **Crash recovery**: `recover()` keeps `_accepting_signals=True` during OPENING, ENTRY_WINDOW, and CONTINUOUS phases; only disables during WIND_DOWN/POST_MARKET
 
@@ -146,8 +178,11 @@ Specs are organized by phase under `.kiro/specs/signalpilot/`:
   - `tasks.md` — Phase 1 implementation tasks summary
   - `tasks/0001-*` through `tasks/0012-*` — individual task specs with checkboxes and requirement coverage
 
-- **Phase 2 (ORB + VWAP Reversal — in development):** `.kiro/specs/signalpilot/phase2/`
-  - `requirements.md` — Phase 2 requirements (42 requirements, REQ-P2-001 through REQ-P2-042)
+- **Phase 2 (ORB + VWAP Reversal — complete):** `.kiro/specs/signalpilot/phase2/`
+  - `requirements.md`, `design.md`, `tasks.md`, `tasks/0001-*` through `tasks/0016-*`
+
+- **Phase 4 (Quick Action Buttons — complete):** `.kiro/specs/signalpilot/phase4/quick-action-buttons/`
+  - `requirements.md`, `design.md`, `tasks.md`, `tasks/0001-*` through `tasks/0042-*`
 
 ## Resolved Bug Fixes (Feb 2026)
 
