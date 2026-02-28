@@ -121,8 +121,7 @@ export interface EquityCurvePoint {
 }
 
 export interface EquityCurveResponse {
-  period: string;
-  data_points: EquityCurvePoint[];
+  data: EquityCurvePoint[];
 }
 
 export interface DailyPnlPoint {
@@ -146,20 +145,18 @@ export interface MonthlySummary {
 export interface StrategyMetrics {
   strategy: string;
   win_rate: number;
+  total_signals: number;
   total_trades: number;
-  net_pnl: number;
+  wins: number;
+  losses: number;
+  total_pnl: number;
   avg_win: number;
   avg_loss: number;
   expectancy: number;
-  profit_factor: number;
-  max_consecutive_losses: number;
-  capital_weight: number;
-  status: string;
-  is_best: boolean;
+  capital_weight_pct: number;
 }
 
 export interface StrategyComparisonData {
-  period: string;
   strategies: StrategyMetrics[];
 }
 

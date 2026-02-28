@@ -30,13 +30,9 @@ export function ComparisonTable({ strategies }: ComparisonTableProps) {
               {strategies.map((s) => (
                 <th
                   key={s.strategy}
-                  className={cn(
-                    'pb-2 text-right text-xs font-semibold uppercase tracking-wide',
-                    s.is_best ? 'text-blue-600' : 'text-gray-500'
-                  )}
+                  className="pb-2 text-right text-xs font-semibold uppercase tracking-wide text-gray-500"
                 >
                   {s.strategy}
-                  {s.is_best && <span className="ml-1 text-xs normal-case">(Best)</span>}
                 </th>
               ))}
             </tr>
@@ -44,14 +40,11 @@ export function ComparisonTable({ strategies }: ComparisonTableProps) {
           <tbody className="divide-y divide-gray-100">
             <MetricRow label="Win Rate" strategies={strategies} getValue={(s) => `${s.win_rate.toFixed(1)}%`} highlight="max" getNum={(s) => s.win_rate} />
             <MetricRow label="Total Trades" strategies={strategies} getValue={(s) => `${s.total_trades}`} getNum={(s) => s.total_trades} />
-            <MetricRow label="Net P&L" strategies={strategies} getValue={(s) => null} pnlGetter={(s) => s.net_pnl} getNum={(s) => s.net_pnl} highlight="max" />
+            <MetricRow label="Net P&L" strategies={strategies} getValue={(s) => null} pnlGetter={(s) => s.total_pnl} getNum={(s) => s.total_pnl} highlight="max" />
             <MetricRow label="Avg Win" strategies={strategies} getValue={(s) => `₹${s.avg_win.toLocaleString('en-IN', { maximumFractionDigits: 0 })}`} getNum={(s) => s.avg_win} highlight="max" />
             <MetricRow label="Avg Loss" strategies={strategies} getValue={(s) => `₹${Math.abs(s.avg_loss).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`} getNum={(s) => s.avg_loss} highlight="min" />
             <MetricRow label="Expectancy" strategies={strategies} getValue={(s) => `₹${s.expectancy.toFixed(0)}`} getNum={(s) => s.expectancy} highlight="max" />
-            <MetricRow label="Profit Factor" strategies={strategies} getValue={(s) => s.profit_factor.toFixed(2)} getNum={(s) => s.profit_factor} highlight="max" />
-            <MetricRow label="Max Consec. Losses" strategies={strategies} getValue={(s) => `${s.max_consecutive_losses}`} getNum={(s) => s.max_consecutive_losses} highlight="min" />
-            <MetricRow label="Capital Weight" strategies={strategies} getValue={(s) => `${(s.capital_weight * 100).toFixed(0)}%`} getNum={(s) => s.capital_weight} />
-            <MetricRow label="Status" strategies={strategies} getValue={(s) => s.status} getNum={() => 0} />
+            <MetricRow label="Capital Weight" strategies={strategies} getValue={(s) => `${s.capital_weight_pct.toFixed(0)}%`} getNum={(s) => s.capital_weight_pct} />
           </tbody>
         </table>
       </div>

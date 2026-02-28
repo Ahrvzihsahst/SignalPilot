@@ -29,7 +29,7 @@ export default function PerformanceCharts() {
         <LoadingSpinner message="Loading charts..." />
       ) : (
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-          <EquityCurve data={equity.data?.data_points ?? []} />
+          <EquityCurve data={equity.data ?? []} />
           <DailyPnlChart data={daily.data ?? []} />
           <WinRateTrend data={winRate.data ?? []} />
           <MonthlySummaryTable data={monthly.data ?? []} />
