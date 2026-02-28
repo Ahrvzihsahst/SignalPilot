@@ -105,6 +105,8 @@ class TradeSummarySchema(BaseModel):
     wins: int = 0
     losses: int = 0
     win_rate: float = 0.0
+    best_trade_pnl: float = 0.0
+    worst_trade_pnl: float = 0.0
 
 
 class TradesResponse(BaseModel):

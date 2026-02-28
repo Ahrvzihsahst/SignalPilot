@@ -128,7 +128,7 @@ class AppConfig(BaseSettings):
 
     # Phase 3: Dashboard
     dashboard_enabled: bool = Field(default=True, description="Enable FastAPI dashboard")
-    dashboard_port: int = Field(default=8000, description="Dashboard port")
+    dashboard_port: int = Field(default=9000, description="Dashboard port")
     dashboard_host: str = Field(default="127.0.0.1", description="Dashboard host")
 
     model_config = {

@@ -31,9 +31,9 @@ export function TradeSummary({ summary }: TradeSummaryProps) {
       <div className="text-center">
         <p className="text-xs text-gray-500">Best / Worst</p>
         <div className="flex justify-center gap-1 text-sm">
-          <span className="text-green-600">+₹{summary.best_trade_pnl.toLocaleString('en-IN')}</span>
+          <span className="text-green-600">+₹{(summary.best_trade_pnl ?? 0).toLocaleString('en-IN')}</span>
           <span className="text-gray-400">/</span>
-          <span className="text-red-600">-₹{Math.abs(summary.worst_trade_pnl).toLocaleString('en-IN')}</span>
+          <span className="text-red-600">-₹{Math.abs(summary.worst_trade_pnl ?? 0).toLocaleString('en-IN')}</span>
         </div>
       </div>
     </div>

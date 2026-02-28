@@ -326,12 +326,15 @@ async def main() -> None:
 
     loop = asyncio.get_running_loop()
     shutting_down = False
+    dashboard_server = None
 
     def _handle_signal() -> None:
         nonlocal shutting_down
         if not shutting_down:
             shutting_down = True
             asyncio.create_task(app.shutdown())
+            if dashboard_server is not None:
+                dashboard_server.should_exit = True
 
     for sig in (signal_module.SIGINT, signal_module.SIGTERM):
         loop.add_signal_handler(sig, _handle_signal)
@@ -343,6 +346,23 @@ async def main() -> None:
     else:
         logger.info("Normal startup sequence")
         await app.startup()
+
+    if config.dashboard_enabled and app._dashboard_app is not None:
+        import uvicorn
+
+        dashboard_config = uvicorn.Config(
+            app._dashboard_app,
+            host=config.dashboard_host,
+            port=config.dashboard_port,
+            log_level="warning",
+        )
+        dashboard_server = uvicorn.Server(dashboard_config)
+        asyncio.create_task(dashboard_server.serve())
+        logger.info(
+            "Dashboard serving on http://%s:%d",
+            config.dashboard_host,
+            config.dashboard_port,
+        )
 
     try:
         while True:

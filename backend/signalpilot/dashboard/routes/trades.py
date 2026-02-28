@@ -97,7 +97,9 @@ async def get_trades(
                 SUM(CASE WHEN exited_at IS NOT NULL THEN 1 ELSE 0 END) as closed_count,
                 COALESCE(SUM(CASE WHEN exited_at IS NOT NULL THEN pnl_amount ELSE 0 END), 0) as total_pnl,
                 SUM(CASE WHEN exited_at IS NOT NULL AND pnl_amount > 0 THEN 1 ELSE 0 END) as wins,
-                SUM(CASE WHEN exited_at IS NOT NULL AND pnl_amount <= 0 THEN 1 ELSE 0 END) as losses
+                SUM(CASE WHEN exited_at IS NOT NULL AND pnl_amount <= 0 THEN 1 ELSE 0 END) as losses,
+                COALESCE(MAX(CASE WHEN exited_at IS NOT NULL THEN pnl_amount END), 0) as best_pnl,
+                COALESCE(MIN(CASE WHEN exited_at IS NOT NULL THEN pnl_amount END), 0) as worst_pnl
             FROM trades WHERE {where}""",
         params,
     )
@@ -116,6 +118,8 @@ async def get_trades(
         wins=wins,
         losses=losses,
         win_rate=round(win_rate, 2),
+        best_trade_pnl=srow["best_pnl"] or 0.0,
+        worst_trade_pnl=srow["worst_pnl"] or 0.0,
     )
 
     return TradesResponse(
