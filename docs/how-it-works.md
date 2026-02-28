@@ -27,20 +27,21 @@
 13. [Step 10 — Risk Management & Position Sizing](#13-step-10--risk-management--position-sizing)
 14. [Step 10.5 — Circuit Breaker Gate (Phase 3)](#14-step-105--circuit-breaker-gate-phase-3)
 15. [Step 10.6 — Adaptive Strategy Management (Phase 3)](#15-step-106--adaptive-strategy-management-phase-3)
-16. [Step 11 — Capital Allocation](#16-step-11--capital-allocation)
-17. [Step 12 — Database Persistence](#17-step-12--database-persistence)
-18. [Step 13 — Telegram Delivery](#18-step-13--telegram-delivery)
-19. [Step 14 — Exit Monitoring](#19-step-14--exit-monitoring)
-20. [Step 15 — Telegram Commands (User Interaction)](#20-step-15--telegram-commands-user-interaction)
-21. [Step 15.5 — Inline Button Callbacks & Quick Actions (Phase 4)](#205-step-155--inline-button-callbacks--quick-actions-phase-4)
-22. [Step 16 — Daily Wind-Down & Summary](#21-step-16--daily-wind-down--summary)
-23. [Step 17 — Shutdown & Crash Recovery](#22-step-17--shutdown--crash-recovery)
-24. [Step 18 — Dashboard (Phase 3)](#23-step-18--dashboard-phase-3)
-25. [Data Model Chain](#24-data-model-chain)
-26. [Logging & Observability](#25-logging--observability)
-27. [Rate Limiting & Retry](#26-rate-limiting--retry)
-28. [Complete Scan Loop Iteration](#27-complete-scan-loop-iteration)
-29. [Summary: A Complete Trading Day](#28-summary-a-complete-trading-day)
+16. [Step 10.7 — News Sentiment Filter (Phase 4 NSF)](#16-step-107--news-sentiment-filter-phase-4-nsf)
+17. [Step 11 — Capital Allocation](#17-step-11--capital-allocation)
+18. [Step 12 — Database Persistence](#18-step-12--database-persistence)
+19. [Step 13 — Telegram Delivery](#19-step-13--telegram-delivery)
+20. [Step 14 — Exit Monitoring](#20-step-14--exit-monitoring)
+21. [Step 15 — Telegram Commands (User Interaction)](#21-step-15--telegram-commands-user-interaction)
+22. [Step 15.5 — Inline Button Callbacks & Quick Actions (Phase 4)](#22-step-155--inline-button-callbacks--quick-actions-phase-4)
+23. [Step 16 — Daily Wind-Down & Summary](#23-step-16--daily-wind-down--summary)
+24. [Step 17 — Shutdown & Crash Recovery](#24-step-17--shutdown--crash-recovery)
+25. [Step 18 — Dashboard (Phase 3)](#25-step-18--dashboard-phase-3)
+26. [Data Model Chain](#26-data-model-chain)
+27. [Logging & Observability](#27-logging--observability)
+28. [Rate Limiting & Retry](#28-rate-limiting--retry)
+29. [Complete Scan Loop Iteration](#29-complete-scan-loop-iteration)
+30. [Summary: A Complete Trading Day](#30-summary-a-complete-trading-day)
 
 ---
 
@@ -67,6 +68,8 @@ its dependencies via constructor parameters.
         |                   --> StrategyPerformanceRepository
         |                   --> SignalActionRepository       (Phase 4)
         |                   --> WatchlistRepository          (Phase 4)
+        |                   --> NewsSentimentRepository      (Phase 4 NSF)
+        |                   --> EarningsCalendarRepository   (Phase 4 NSF)
         |                   --> HybridScoreRepository       (Phase 3)
         |                   --> CircuitBreakerRepository     (Phase 3)
         |                   --> AdaptationLogRepository      (Phase 3)
@@ -100,14 +103,14 @@ its dependencies via constructor parameters.
         |-- VWAPReversalStrategy |
         |       |-- VWAPCooldownTracker (max 2/stock/day, 60-min cooldown)
         |
-        |-- ScanPipeline (composable 11-stage signal pipeline + 1 always stage)
+        |-- ScanPipeline (composable 12-stage signal pipeline + 1 always stage)
         |       |-- Signal stages (run when accepting_signals=True):
         |       |     CircuitBreakerGateStage --> StrategyEvalStage -->
         |       |     GapStockMarkingStage --> DeduplicationStage -->
         |       |     ConfidenceStage --> CompositeScoringStage -->
         |       |     AdaptiveFilterStage --> RankingStage -->
-        |       |     RiskSizingStage --> PersistAndDeliverStage -->
-        |       |     DiagnosticStage
+        |       |     NewsSentimentStage --> RiskSizingStage -->
+        |       |     PersistAndDeliverStage --> DiagnosticStage
         |       |-- Always stages (run every cycle):
         |       |     ExitMonitoringStage
         |       +-- ScanContext (mutable state bag passed through all stages)
@@ -129,15 +132,24 @@ its dependencies via constructor parameters.
         |       |-- AdaptiveManager          — throttle/pause underperforming strategies
         |       |-- ConfidenceDetector       — cross-strategy confirmation (single/double/triple)
         |
+        |-- Intelligence Module (Phase 4 NSF) — signalpilot/intelligence/
+        |       |-- VADERSentimentAnalyzer   — VADER + financial lexicon overlay
+        |       |   +-- Optional FinBERTSentimentEngine (transformer-based)
+        |       |-- RSSNewsFetcher           — Google News RSS + MoneyControl RSS
+        |       |   +-- Recency weighting: weight = exp(-lambda * age_hours)
+        |       |-- NewsSentimentService     — orchestrates fetcher + engine, batch processing
+        |       |   +-- Labels: STRONG_NEGATIVE / MILD_NEGATIVE / NEUTRAL / POSITIVE / NO_NEWS
+        |       |-- EarningsCalendar         — CSV + optional screener API ingest
+        |
         |-- ExitMonitor --> reads MarketDataStore, emits events via EventBus
         |       |-- Per-strategy TrailingStopConfig
         |       |-- close_trade callback --> TradeRepository
         |       |-- emits ExitAlertEvent, StopLossHitEvent, TradeExitedEvent
         |
         |-- SignalPilotBot (Telegram, python-telegram-bot)
-        |       |-- 13 text commands: TAKEN, STATUS, JOURNAL, CAPITAL, PAUSE,
+        |       |-- 16 text commands: TAKEN, STATUS, JOURNAL, CAPITAL, PAUSE,
         |       |   RESUME, ALLOCATE, STRATEGY, OVERRIDE, SCORE, ADAPT,
-        |       |   REBALANCE, HELP
+        |       |   REBALANCE, NEWS, EARNINGS, UNSUPPRESS, HELP
         |       |-- 7 inline keyboards (Phase 4): signal actions, skip reasons,
         |       |   T1/T2 targets, SL approaching, near-T2
         |       |-- 9 callback handlers (Phase 4): taken, skip, skip_reason,
@@ -147,7 +159,7 @@ its dependencies via constructor parameters.
         |       |-- FastAPI backend          — 8 route modules (/api/signals, /trades, etc.)
         |       |-- React frontend/          — Vite + TypeScript + Tailwind + React Query
         |
-        +-- MarketScheduler (APScheduler 3.x, 9 IST cron jobs)
+        +-- MarketScheduler (APScheduler 3.x, 12 IST cron jobs)
                 |
                 +-- SignalPilotApp._scan_loop()  <-- runs every 1 second
                         via ScanPipeline.run(ctx)
@@ -325,6 +337,19 @@ using **pydantic-settings**. There is no hardcoded configuration.
 | `dashboard_port` | `8000` | Dashboard server port |
 | `dashboard_host` | `"127.0.0.1"` | Dashboard bind address |
 
+**Phase 4 — News Sentiment Filter:**
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `news_enabled` | `False` | Enable news sentiment filtering |
+| `earnings_blackout_enabled` | `False` | Enable earnings blackout suppression |
+| `strong_negative_threshold` | `-0.5` | Score below this triggers signal suppression |
+| `mild_negative_threshold` | `-0.2` | Score below this triggers star rating downgrade |
+| `positive_threshold` | `0.3` | Score above this adds positive badge |
+| `news_lookback_hours` | `24` | Hours of news history to consider |
+| `news_rss_feeds` | `""` | Comma-separated RSS feed URLs (Google News, MoneyControl) |
+| `news_sentiment_model` | `"vader"` | Sentiment model: `"vader"` or `"finbert"` |
+
 **Retry & Resilience:**
 
 | Field | Default | Description |
@@ -349,7 +374,7 @@ A `@model_validator` enforces that each of the three scoring weight groups
 async def main() -> None:
     config = AppConfig()                     # load .env
     configure_logging(level=config.log_level, log_file=config.log_file)
-    app = await create_app(config)           # wire 30+ components
+    app = await create_app(config)           # wire 35+ components
 
     # Setup SIGINT/SIGTERM handlers (once via shutting_down flag)
     now = datetime.now(IST)
@@ -362,10 +387,10 @@ async def main() -> None:
         await asyncio.sleep(1)               # keep event loop alive
 ```
 
-#### `create_app()` Wiring Order (22 stages)
+#### `create_app()` Wiring Order (26 stages)
 
-1. **Database** — `DatabaseManager(db_path)` + `initialize()` (WAL mode, foreign keys, phase 2 migration, phase 3 migration)
-2. **Repositories** — `SignalRepository`, `TradeRepository`, `ConfigRepository`, `MetricsCalculator`, `StrategyPerformanceRepository`, `SignalActionRepository`, `WatchlistRepository`, `HybridScoreRepository`, `CircuitBreakerRepository`, `AdaptationLogRepository` (all sharing the same `aiosqlite.Connection`)
+1. **Database** — `DatabaseManager(db_path)` + `initialize()` (WAL mode, foreign keys, phase 2 migration, phase 3 migration, phase 4 NSF migration)
+2. **Repositories** — `SignalRepository`, `TradeRepository`, `ConfigRepository`, `MetricsCalculator`, `StrategyPerformanceRepository`, `SignalActionRepository`, `WatchlistRepository`, `NewsSentimentRepository`, `EarningsCalendarRepository`, `HybridScoreRepository`, `CircuitBreakerRepository`, `AdaptationLogRepository` (all sharing the same `aiosqlite.Connection`)
 3. **Event Bus** — `EventBus()` (in-process async event dispatch for decoupled cross-component communication)
 4. **Auth** — `SmartAPIAuthenticator(config)`
 5. **Data** — `InstrumentManager(csv_path)`, `MarketDataStore()`, `HistoricalDataFetcher(authenticator, instruments, rate_limit)`
@@ -375,21 +400,25 @@ async def main() -> None:
 9. **Capital Allocation** — `CapitalAllocator(strategy_performance_repo, config_repo)`
 10. **Risk** — `PositionSizer()` + `RiskManager(position_sizer)`
 11. **Exit Monitor** — `ExitMonitor(get_tick, event_bus, trailing_configs, close_trade=trade_repo.close_trade)` with per-strategy `TrailingStopConfig` dict (6 entries for Gap & Go, ORB, VWAP setups)
-12. **Telegram Bot** — `SignalPilotBot(...)` with `_get_current_prices` wrapper (converts `list[str]` to `dict[str, float]` via `market_data.get_tick()`)
-13. **WebSocket** — `WebSocketClient(authenticator, instruments, market_data_store, on_disconnect_alert, max_reconnect_attempts)`
-14. **Scheduler** — `MarketScheduler()`
-15. **Confidence Detector** (Phase 3) — `ConfidenceDetector(signal_repo, confirmation_window_minutes=15)`
-16. **Composite Scorer** (Phase 3) — `CompositeScorer(strategy_performance_repo, config)` with 4 weighted factors
-17. **Circuit Breaker** (Phase 3) — `CircuitBreaker(circuit_breaker_repo, config_repo, event_bus, sl_limit=3)`
-18. **Adaptive Manager** (Phase 3) — `AdaptiveManager(adaptation_log_repo, config_repo, strategy_performance_repo, event_bus)`
-19. **Event Bus Subscriptions** — wires all cross-component events:
+12. **Sentiment Engine** (Phase 4 NSF) — `VADERSentimentAnalyzer(financial_lexicon_path)` or `FinBERTSentimentEngine()` based on `config.news_sentiment_model`
+13. **News Fetcher** (Phase 4 NSF) — `RSSNewsFetcher(config.news_rss_feeds)` — Google News + MoneyControl RSS feeds
+14. **News Sentiment Service** (Phase 4 NSF) — `NewsSentimentService(fetcher, engine, news_sentiment_repo, config)` — orchestrates batch processing, labeling, caching
+15. **Earnings Calendar** (Phase 4 NSF) — `EarningsCalendar(earnings_repo, csv_path="data/earnings_calendar.csv")` — optional screener API ingest
+16. **Telegram Bot** — `SignalPilotBot(...)` with `_get_current_prices` wrapper, `news_sentiment_service`, and `earnings_repo` injected for NEWS/EARNINGS/UNSUPPRESS commands
+17. **WebSocket** — `WebSocketClient(authenticator, instruments, market_data_store, on_disconnect_alert, max_reconnect_attempts)`
+18. **Scheduler** — `MarketScheduler()`
+19. **Confidence Detector** (Phase 3) — `ConfidenceDetector(signal_repo, confirmation_window_minutes=15)`
+20. **Composite Scorer** (Phase 3) — `CompositeScorer(strategy_performance_repo, config)` with 4 weighted factors
+21. **Circuit Breaker** (Phase 3) — `CircuitBreaker(circuit_breaker_repo, config_repo, event_bus, sl_limit=3)`
+22. **Adaptive Manager** (Phase 3) — `AdaptiveManager(adaptation_log_repo, config_repo, strategy_performance_repo, event_bus)`
+23. **Event Bus Subscriptions** — wires all cross-component events:
     - `ExitAlertEvent` → `bot.send_exit_alert()`
     - `StopLossHitEvent` → `circuit_breaker.on_sl_hit()`
     - `TradeExitedEvent` → `adaptive_manager.on_trade_exit()`
     - `AlertMessageEvent` → `bot.send_alert()`
-20. **Pipeline** — `ScanPipeline(signal_stages=[11 stages], always_stages=[ExitMonitoringStage])`
-21. **Dashboard** (Phase 3) — `create_dashboard_app(db_path, write_connection)` (if `dashboard_enabled`)
-22. **SignalPilotApp** — orchestrator wired with all components + pipeline
+24. **Pipeline** — `ScanPipeline(signal_stages=[12 stages], always_stages=[ExitMonitoringStage])`
+25. **Dashboard** (Phase 3) — `create_dashboard_app(db_path, write_connection)` (if `dashboard_enabled`)
+26. **SignalPilotApp** — orchestrator wired with all components + pipeline (includes `news_sentiment_service` and `earnings_calendar` for scheduled jobs)
 
 The bot and exit monitor have a circular dependency (exit alerts are sent via
 the bot). The `EventBus` eliminates this: the exit monitor emits
@@ -554,20 +583,23 @@ missing either prev-day or ADV data are excluded with a logged warning.
 
 ### File: `signalpilot/scheduler/scheduler.py`
 
-`MarketScheduler` wraps **APScheduler 3.x** with **9 IST cron jobs** registered
+`MarketScheduler` wraps **APScheduler 3.x** with **12 IST cron jobs** registered
 against `SignalPilotApp` methods:
 
 | Time (IST) | Job ID | Action |
 |-----------|--------|--------|
+| 08:30 Mon-Fri | `pre_market_news` | Batch-fetch news sentiment for watchlist + Nifty 500 (Phase 4 NSF) |
 | 09:00 Mon-Fri | `pre_market_alert` | Send "Signals coming at 9:15" Telegram alert |
 | 09:15 Mon-Fri | `start_scanning` | Open WebSocket, reset session, begin 1-second scan loop |
 | 09:45 Mon-Fri | `lock_opening_ranges` | Finalize 30-min opening range for ORB detection |
+| 11:15 Mon-Fri | `news_cache_refresh_1` | Refresh stale news sentiment cache entries (Phase 4 NSF) |
+| 13:15 Mon-Fri | `news_cache_refresh_2` | Refresh stale news sentiment cache entries (Phase 4 NSF) |
 | 14:30 Mon-Fri | `stop_new_signals` | Set `_accepting_signals = False` |
 | 15:00 Mon-Fri | `exit_reminder` | Advisory exit alerts for open positions |
 | 15:15 Mon-Fri | `mandatory_exit` | Forced exit for all remaining open trades |
-| 15:30 Mon-Fri | `daily_summary` | Calculate metrics and send end-of-day report |
+| 15:30 Mon-Fri | `daily_summary` | Calculate metrics, send end-of-day report; purge old sentiment cache, clear unsuppress overrides |
 | 15:35 Mon-Fri | `shutdown` | Graceful shutdown |
-| Sunday 18:00 | `weekly_rebalance` | Capital rebalancing across strategies |
+| Sunday 18:00 | `weekly_rebalance` | Capital rebalancing across strategies; refresh earnings calendar |
 
 All weekday jobs use `day_of_week='mon-fri'` and a `_trading_day_guard`
 decorator.
@@ -815,6 +847,10 @@ class ScanContext:
     # Set by RankingStage
     ranked_signals: list[RankedSignal] = field(default_factory=list)
 
+    # Set by NewsSentimentStage (Phase 4 NSF)
+    sentiment_results: dict[str, SentimentResult] = field(default_factory=dict)
+    suppressed_signals: list[SuppressedSignal] = field(default_factory=list)
+
     # Set by RiskSizingStage
     final_signals: list[FinalSignal] = field(default_factory=list)
     active_trade_count: int = 0
@@ -836,7 +872,7 @@ class ScanPipeline:
         return ctx
 ```
 
-#### 11 Signal Stages (in order)
+#### 12 Signal Stages (in order)
 
 | # | Stage | File | Purpose |
 |---|-------|------|---------|
@@ -848,9 +884,10 @@ class ScanPipeline:
 | 6 | `CompositeScoringStage` | `composite_scoring.py` | 4-factor hybrid scoring (Phase 3) |
 | 7 | `AdaptiveFilterStage` | `adaptive_filter.py` | Removes signals from paused/throttled strategies (Phase 3) |
 | 8 | `RankingStage` | `ranking.py` | Top-K selection by composite score, assigns 1-5 stars |
-| 9 | `RiskSizingStage` | `risk_sizing.py` | Position sizing, capital allocation, position slot availability |
-| 10 | `PersistAndDeliverStage` | `persist_and_deliver.py` | Save signals to DB, deliver via Telegram with inline keyboards |
-| 11 | `DiagnosticStage` | `diagnostic.py` | Heartbeat logging, WebSocket health checks |
+| 9 | `NewsSentimentStage` | `news_sentiment.py` | News sentiment filter: suppress, downgrade, or badge signals (Phase 4 NSF) |
+| 10 | `RiskSizingStage` | `risk_sizing.py` | Position sizing, capital allocation, position slot availability |
+| 11 | `PersistAndDeliverStage` | `persist_and_deliver.py` | Save signals to DB, deliver via Telegram with inline keyboards; send suppression notifications |
+| 12 | `DiagnosticStage` | `diagnostic.py` | Heartbeat logging, WebSocket health checks |
 
 #### 1 Always Stage (runs every cycle, regardless of signal acceptance)
 
@@ -1488,7 +1525,229 @@ old weight, new weight, and details.
 
 ---
 
-## 16. Step 11 — Capital Allocation
+## 16. Step 10.7 — News Sentiment Filter (Phase 4 NSF)
+
+### Files: `signalpilot/intelligence/sentiment_engine.py`, `news_fetcher.py`, `news_sentiment.py`, `earnings.py`
+### Pipeline Stage: `signalpilot/pipeline/stages/news_sentiment.py`
+
+The News Sentiment Filter (NSF) is an intelligence module that evaluates news
+headlines for each ranked signal and takes action based on the sentiment score.
+It runs as **pipeline stage 9**, after `RankingStage` and before `RiskSizingStage`,
+operating on the `ctx.ranked_signals` list produced by ranking.
+
+### Intelligence Module Architecture
+
+The `signalpilot/intelligence/` package contains four components that work
+together:
+
+#### 1. Sentiment Engine (`sentiment_engine.py`)
+
+`VADERSentimentAnalyzer` uses the VADER sentiment analysis library augmented
+with a **financial lexicon overlay** loaded from `data/financial_lexicon.json`.
+The financial lexicon adds domain-specific terms and adjusts scores for words
+that carry different sentiment in financial contexts (e.g., "downgrade",
+"upgrade", "miss", "beat").
+
+```python
+class VADERSentimentAnalyzer:
+    def analyze(self, text: str) -> float:
+        """Score text from -1.0 (most negative) to +1.0 (most positive)."""
+        ...
+```
+
+An optional `FinBERTSentimentEngine` is available for transformer-based
+sentiment analysis. The engine to use is selected via the
+`news_sentiment_model` config field (`"vader"` or `"finbert"`).
+
+#### 2. News Fetcher (`news_fetcher.py`)
+
+`RSSNewsFetcher` pulls headlines from configurable RSS feeds (default: Google
+News RSS, MoneyControl RSS). Each headline is assigned a **recency weight**
+using exponential decay:
+
+```
+weight = exp(-lambda * age_hours)
+lambda = ln(2) / 6
+```
+
+This means a headline loses half its weight every 6 hours. A 24-hour-old
+headline carries approximately 6.25% of the weight of a fresh headline. The
+lookback window is controlled by `news_lookback_hours` (default: 24).
+
+#### 3. News Sentiment Service (`news_sentiment.py`)
+
+`NewsSentimentService` orchestrates the fetcher and engine to produce a
+composite sentiment result per stock:
+
+```python
+class NewsSentimentService:
+    async def get_sentiment(self, stock_code: str) -> SentimentResult: ...
+    async def batch_get_sentiment(self, stock_codes: list[str]) -> dict[str, SentimentResult]: ...
+```
+
+**Labeling thresholds** (configurable via AppConfig):
+
+| Label | Score Range | Default Thresholds |
+|-------|------------|-------------------|
+| `STRONG_NEGATIVE` | score < -0.5 | `strong_negative_threshold = -0.5` |
+| `MILD_NEGATIVE` | -0.5 <= score < -0.2 | `mild_negative_threshold = -0.2` |
+| `NEUTRAL` | -0.2 <= score <= 0.3 | Between mild_negative and positive thresholds |
+| `POSITIVE` | score > 0.3 | `positive_threshold = 0.3` |
+| `NO_NEWS` | No headlines found | N/A |
+
+Results are cached in the `news_sentiment_cache` database table with a
+configurable TTL. The service supports **session-scoped unsuppress overrides**
+that allow a user to force a stock through the filter for the remainder of
+the trading session via the `UNSUPPRESS` Telegram command.
+
+#### 4. Earnings Calendar (`earnings.py`)
+
+`EarningsCalendar` loads upcoming earnings dates from a CSV file
+(`data/earnings_calendar.csv`) and optionally ingests data from a screener API.
+
+```python
+class EarningsCalendar:
+    async def has_earnings_today(self, stock_code: str) -> bool: ...
+    async def get_upcoming_earnings(self, days_ahead: int = 7) -> list[EarningsRecord]: ...
+```
+
+Earnings dates are stored in the `earnings_calendar` database table. The
+calendar is refreshed during the weekly rebalance job (Sunday 18:00).
+
+### NewsSentimentStage — Pipeline Stage 9
+
+**File:** `signalpilot/pipeline/stages/news_sentiment.py`
+
+The `NewsSentimentStage` processes each ranked signal through the sentiment
+filter and applies one of several actions based on the result.
+
+#### Action Matrix
+
+| Condition | Action | Effect on Signal |
+|-----------|--------|-----------------|
+| Earnings blackout (`has_earnings_today`) | **Suppress** | Signal removed from `ctx.ranked_signals`, added to `ctx.suppressed_signals`, suppression notification sent |
+| `STRONG_NEGATIVE` (score < -0.5) | **Suppress** | Signal removed, added to suppressed list, notification sent |
+| `MILD_NEGATIVE` (-0.5 to -0.2) | **Downgrade** | Star rating reduced by 1 (minimum 1); original rating preserved in `original_star_rating` |
+| `NEUTRAL` (-0.2 to 0.3) | **Pass through** | Signal unchanged |
+| `POSITIVE` (score > 0.3) | **Badge** | Signal passed through with positive sentiment badge in Telegram message |
+| `NO_NEWS` (no headlines found) | **Pass through** | Signal passed through with "no recent news" note |
+| Unsuppress override active | **Pass through** | Signal passed through with `UNSUPPRESSED` action, regardless of sentiment score |
+
+**Priority:** Earnings blackout takes the highest priority and suppresses
+regardless of the sentiment score. Unsuppress overrides take the next highest
+priority, allowing a stock through even with negative sentiment.
+
+#### Stage Processing Flow
+
+```python
+async def process(self, ctx: ScanContext) -> ScanContext:
+    if not self._config.news_enabled:
+        return ctx    # feature gate: skip if disabled
+
+    # 1. Batch-fetch sentiment for all ranked signal symbols
+    symbols = [rs.candidate.symbol for rs in ctx.ranked_signals]
+    ctx.sentiment_results = await self._service.batch_get_sentiment(symbols)
+
+    # 2. Apply action matrix to each ranked signal
+    surviving_signals = []
+    for ranked_signal in ctx.ranked_signals:
+        symbol = ranked_signal.candidate.symbol
+        result = ctx.sentiment_results.get(symbol)
+
+        # Earnings blackout check (highest priority)
+        if self._config.earnings_blackout_enabled:
+            if await self._earnings.has_earnings_today(symbol):
+                ctx.suppressed_signals.append(SuppressedSignal(..., reason="earnings_blackout"))
+                continue
+
+        # Unsuppress override check
+        if self._service.is_unsuppressed(symbol):
+            result.action = "UNSUPPRESSED"
+            surviving_signals.append(ranked_signal)
+            continue
+
+        # Sentiment-based action
+        if result.label == "STRONG_NEGATIVE":
+            ctx.suppressed_signals.append(SuppressedSignal(...))
+            continue
+        elif result.label == "MILD_NEGATIVE":
+            ranked_signal.original_star_rating = ranked_signal.signal_strength
+            ranked_signal.signal_strength = max(1, ranked_signal.signal_strength - 1)
+
+        surviving_signals.append(ranked_signal)
+
+    ctx.ranked_signals = surviving_signals
+    return ctx
+```
+
+#### Impact on Downstream Stages
+
+- **RiskSizingStage (stage 10):** Receives only signals that survived
+  sentiment filtering. Suppressed signals never reach position sizing.
+- **PersistAndDeliverStage (stage 11):** Persists sentiment metadata
+  (`news_sentiment_score`, `news_sentiment_label`, `news_top_headline`,
+  `news_action`, `original_star_rating`) on the `SignalRecord` before DB
+  insert. Sends suppression notifications via `bot.send_alert()` for each
+  entry in `ctx.suppressed_signals`. Passes news kwargs to
+  `bot.send_signal()` for enriched message formatting.
+- **Telegram message formatting:** `format_signal_message()` is extended
+  with `news_sentiment_label`, `news_sentiment_score`, `news_top_headline`,
+  and `original_star_rating` parameters. Shows a warning block for
+  `MILD_NEGATIVE`, a positive badge for `POSITIVE`, and a "no recent news"
+  note for `NO_NEWS`.
+
+#### Suppression Notifications
+
+When a signal is suppressed (either by negative sentiment or earnings
+blackout), the `PersistAndDeliverStage` sends a suppression notification to
+Telegram via a dedicated `format_suppression_notification()` function:
+
+```
+SIGNAL SUPPRESSED -- RELIANCE
+
+Strategy: Gap & Go
+Original Rating: ****- (Strong)
+Entry Price: 2,850.00
+
+Reason: Strong negative news sentiment
+Score: -0.72
+Headline: "RELIANCE reports Q3 miss, guidance cut"
+
+This signal was automatically suppressed by the
+News Sentiment Filter. Use UNSUPPRESS RELIANCE
+to override for today's session.
+```
+
+### Scheduled Jobs
+
+Three new cron jobs support the NSF:
+
+| Time | Job | Method | Purpose |
+|------|-----|--------|---------|
+| 08:30 Mon-Fri | `pre_market_news` | `app.fetch_pre_market_news()` | Batch-fetch sentiment for watchlist + Nifty 500 stocks before market open |
+| 11:15 Mon-Fri | `news_cache_refresh_1` | `app.refresh_news_cache()` | Refresh stale cache entries (re-fetch headlines for stocks with expired TTL) |
+| 13:15 Mon-Fri | `news_cache_refresh_2` | `app.refresh_news_cache()` | Second mid-day cache refresh |
+
+Additionally, two existing jobs are enhanced:
+
+- **`send_daily_summary()` (15:30):** Now also purges old sentiment cache
+  entries and clears all session-scoped unsuppress overrides.
+- **`run_weekly_rebalance()` (Sunday 18:00):** Now also refreshes the
+  earnings calendar data.
+
+### Dashboard API Routes (Phase 4 NSF)
+
+**File:** `signalpilot/dashboard/routes/news.py`
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/v1/news/{stock_code}` | Sentiment result for a single stock (score, label, headlines) |
+| `GET` | `/api/v1/news/suppressed/list` | Recently suppressed signals with reasons and sentiment details |
+| `GET` | `/api/v1/earnings/upcoming` | Upcoming earnings dates for Nifty 500 stocks |
+
+---
+
+## 17. Step 11 — Capital Allocation
 
 ### File: `signalpilot/risk/capital_allocator.py`
 
@@ -1538,14 +1797,14 @@ recommendations to Telegram.
 
 ---
 
-## 17. Step 12 — Database Persistence
+## 18. Step 12 — Database Persistence
 
 ### File: `signalpilot/db/database.py`
 
 SQLite with **WAL mode** and **foreign keys** enabled via pragma. Uses
 `aiosqlite` with `Row` factory for named column access.
 
-### Ten Tables (5 core + 3 Phase 3 + 2 Phase 4)
+### Twelve Tables (5 core + 3 Phase 3 + 2 Phase 4 + 2 Phase 4 NSF)
 
 #### `signals` table
 
@@ -1569,7 +1828,12 @@ CREATE TABLE signals (
     expires_at              TEXT    NOT NULL,
     status                  TEXT    NOT NULL DEFAULT 'sent',
     setup_type              TEXT,              -- Phase 2: "uptrend_pullback" / "vwap_reclaim"
-    strategy_specific_score REAL               -- Phase 2: composite score
+    strategy_specific_score REAL,              -- Phase 2: composite score
+    news_sentiment_score    REAL,              -- Phase 4 NSF: composite sentiment score
+    news_sentiment_label    TEXT,              -- Phase 4 NSF: STRONG_NEGATIVE / MILD_NEGATIVE / NEUTRAL / POSITIVE / NO_NEWS
+    news_top_headline       TEXT,              -- Phase 4 NSF: most relevant headline
+    news_action             TEXT,              -- Phase 4 NSF: suppress / downgrade / pass / badge / unsuppressed
+    original_star_rating    INTEGER            -- Phase 4 NSF: star rating before downgrade (NULL if not downgraded)
 );
 -- Indexes: idx_signals_date, idx_signals_status, idx_signals_date_status
 ```
@@ -1750,6 +2014,49 @@ CREATE TABLE watchlist (
 -- Index: idx_watchlist_symbol
 ```
 
+#### `news_sentiment_cache` table (Phase 4 NSF)
+
+```sql
+CREATE TABLE news_sentiment_cache (
+    id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+    stock_code              TEXT    NOT NULL,
+    composite_score         REAL    NOT NULL,
+    label                   TEXT    NOT NULL,    -- "STRONG_NEGATIVE", "MILD_NEGATIVE", "NEUTRAL", "POSITIVE", "NO_NEWS"
+    headline_count          INTEGER NOT NULL DEFAULT 0,
+    top_headline            TEXT,
+    top_negative_headline   TEXT,
+    model_used              TEXT    NOT NULL DEFAULT 'vader',
+    fetched_at              TEXT    NOT NULL,
+    expires_at              TEXT    NOT NULL
+);
+-- Indexes: idx_news_sentiment_stock_code, idx_news_sentiment_expires
+```
+
+#### `earnings_calendar` table (Phase 4 NSF)
+
+```sql
+CREATE TABLE earnings_calendar (
+    id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+    stock_code              TEXT    NOT NULL,
+    earnings_date           TEXT    NOT NULL,
+    quarter                 TEXT,              -- e.g., "Q3FY26"
+    is_confirmed            INTEGER NOT NULL DEFAULT 0,
+    source                  TEXT,              -- "csv", "screener_api"
+    updated_at              TEXT    NOT NULL,
+    UNIQUE(stock_code, earnings_date)
+);
+-- Index: idx_earnings_stock_date
+```
+
+#### Phase 4 NSF Migration
+
+`DatabaseManager._run_phase4_nsf_migration()` is idempotent, following the
+same pattern as the Phase 2 and Phase 3 migrations. It uses
+`PRAGMA table_info()` to check column existence before adding new columns
+to the `signals` table (`news_sentiment_score`, `news_sentiment_label`,
+`news_top_headline`, `news_action`, `original_star_rating`) and creates
+the `news_sentiment_cache` and `earnings_calendar` tables.
+
 ### Signal Status Lifecycle
 
 Valid statuses: `frozenset({"sent", "taken", "expired", "paper", "position_full"})`
@@ -1772,7 +2079,7 @@ Valid statuses: `frozenset({"sent", "taken", "expired", "paper", "position_full"
 
 | Method | Description |
 |--------|-------------|
-| `insert_signal(record)` | Insert signal (18 fields), returns row ID |
+| `insert_signal(record)` | Insert signal (23 fields incl. NSF metadata), returns row ID |
 | `has_signal_for_stock_today(symbol, date)` | Check if any signal exists for stock today |
 | `update_status(signal_id, status)` | Update status (validates against valid set) |
 | `get_active_signals(date, now)` | Non-expired signals: status IN (sent, paper) AND expires_at > now |
@@ -1833,9 +2140,28 @@ Valid statuses: `frozenset({"sent", "taken", "expired", "paper", "position_full"
 | `increment_trigger(symbol, now)` | Bump triggered_count when stock re-signals |
 | `cleanup_expired(now)` | Remove expired entries |
 
+**NewsSentimentRepository** (`news_sentiment_repo.py`) — Phase 4 NSF:
+
+| Method | Description |
+|--------|-------------|
+| `upsert(stock_code, result)` | Insert or update cached sentiment result with TTL |
+| `get(stock_code)` | Retrieve cached sentiment (returns `None` if expired) |
+| `get_batch(stock_codes)` | Retrieve cached sentiments for multiple stocks |
+| `purge_expired(now)` | Remove all entries with `expires_at < now` |
+| `purge_all()` | Clear entire cache (used during daily summary cleanup) |
+
+**EarningsCalendarRepository** (`earnings_repo.py`) — Phase 4 NSF:
+
+| Method | Description |
+|--------|-------------|
+| `upsert(record)` | Insert or update an earnings date entry |
+| `has_earnings_today(stock_code, date)` | Check if stock has earnings on the given date |
+| `get_upcoming(days_ahead)` | All earnings within N days from today |
+| `bulk_upsert(records)` | Batch insert/update earnings records (CSV import or API ingest) |
+
 ---
 
-## 18. Step 13 — Telegram Delivery
+## 19. Step 13 — Telegram Delivery
 
 ### Files: `signalpilot/telegram/bot.py`, `formatters.py`, `keyboards.py`
 
@@ -1864,6 +2190,16 @@ Valid Until: 10:05 AM (auto-expires)
 ==============================
 [ TAKEN ]  [ SKIP ]  [ WATCH ]       <-- Phase 4 inline buttons
 ```
+
+**News sentiment annotations** (Phase 4 NSF): When `news_enabled` is active,
+the signal message includes sentiment information:
+- **MILD_NEGATIVE:** A warning block is appended:
+  `"News Warning: Mild negative sentiment (-0.35) -- headline text"`
+  The star rating is shown as downgraded (e.g., "***-- (Moderate, downgraded from Strong)").
+- **POSITIVE:** A positive badge is appended:
+  `"News: Positive sentiment (+0.52) -- headline text"`
+- **NO_NEWS:** A note is appended: `"Note: No recent news found for this stock."`
+- **NEUTRAL:** No additional annotation.
 
 **Paper mode:** Adds `PAPER TRADE` prefix so the user knows it is a simulation.
 
@@ -1901,7 +2237,7 @@ from signal generation time.
 
 ---
 
-## 19. Step 14 — Exit Monitoring
+## 20. Step 14 — Exit Monitoring
 
 ### File: `signalpilot/monitor/exit_monitor.py`
 
@@ -2043,7 +2379,7 @@ if move_pct >= trail_trigger_pct:
 
 ---
 
-## 20. Step 15 — Telegram Commands (User Interaction)
+## 21. Step 15 — Telegram Commands (User Interaction)
 
 ### File: `signalpilot/telegram/handlers.py`
 
@@ -2064,6 +2400,9 @@ handler functions. All commands are case-insensitive.
 | `SCORE <sym>` | `(?i)^score\s+\w+$` | Show composite score breakdown for a symbol's latest signal |
 | `ADAPT` | `(?i)^adapt$` | Show per-strategy adaptation status (normal/throttled/paused) |
 | `REBALANCE` | `(?i)^rebalance$` | Trigger immediate capital rebalance across strategies |
+| `NEWS [STOCK\|ALL]` | `(?i)^news(?:\s+\w+)?$` | Show news sentiment for a specific stock or all cached results (Phase 4 NSF) |
+| `EARNINGS` | `(?i)^earnings$` | Show upcoming earnings dates for Nifty 500 stocks (Phase 4 NSF) |
+| `UNSUPPRESS <STOCK>` | `(?i)^unsuppress\s+\w+$` | Override news sentiment suppression for a stock for the current session (Phase 4 NSF) |
 | `HELP` | `(?i)^help$` | List all commands |
 
 #### TAKEN Flow
@@ -2173,9 +2512,35 @@ Triggers an immediate capital rebalance across strategies (the same logic
 that runs weekly on Sundays at 18:00). Recalculates expectancy-weighted
 allocations and sends the updated allocation summary.
 
+#### Phase 4 NSF Commands
+
+**NEWS [STOCK|ALL]** — News Sentiment Lookup
+
+Shows the current news sentiment for a specific stock or all cached results.
+When called with a stock code (e.g., `NEWS RELIANCE`), displays the composite
+score, label, headline count, top headline, and top negative headline. When
+called with `NEWS ALL`, shows a summary of all stocks with cached sentiment
+results. When called without arguments, shows sentiment for stocks in the
+current watchlist and active signals.
+
+**EARNINGS** — Upcoming Earnings Calendar
+
+Displays upcoming earnings dates for Nifty 500 stocks within the next 7 days.
+Shows stock code, earnings date, quarter, and confirmation status. Helps the
+user anticipate which stocks may be subject to earnings blackout suppression.
+
+**UNSUPPRESS \<STOCK\>** — Override Sentiment Suppression
+
+Creates a session-scoped override that allows a specific stock to pass
+through the news sentiment filter regardless of its sentiment score for the
+remainder of the current trading session. The override is cleared automatically
+during the daily summary job at 15:30. Example: `UNSUPPRESS RELIANCE` allows
+RELIANCE signals through even with strong negative sentiment. The signal
+will be tagged with the `UNSUPPRESSED` action in the database.
+
 ---
 
-## 20.5. Step 15.5 — Inline Button Callbacks & Quick Actions (Phase 4)
+## 22. Step 15.5 — Inline Button Callbacks & Quick Actions (Phase 4)
 
 ### Files: `signalpilot/telegram/keyboards.py`, `handlers.py`, `db/signal_action_repo.py`, `db/watchlist_repo.py`
 
@@ -2314,7 +2679,7 @@ removes a stock.
 
 ---
 
-## 21. Step 16 — Daily Wind-Down & Summary
+## 23. Step 16 — Daily Wind-Down & Summary
 
 ### Wind-Down Phase (14:30-15:35)
 
@@ -2355,7 +2720,7 @@ Cumulative P&L is calculated as:
 
 ---
 
-## 22. Step 17 — Shutdown & Crash Recovery
+## 24. Step 17 — Shutdown & Crash Recovery
 
 ### Graceful Shutdown
 
@@ -2412,7 +2777,7 @@ signal generation after a mid-day crash.
 
 ---
 
-## 23. Step 18 — Dashboard (Phase 3)
+## 25. Step 18 — Dashboard (Phase 3)
 
 ### Files: `signalpilot/dashboard/` (backend), `frontend/` (React app)
 
@@ -2440,6 +2805,8 @@ is `True` in configuration.
 | `/api/settings` | `settings.py` | GET /, PUT /, PUT /strategies |
 | `/api/circuit-breaker` | `circuit_breaker.py` | GET /, POST /override, GET /history |
 | `/api/adaptation` | `adaptation.py` | GET /status, GET /log |
+| `/api/v1/news` | `news.py` | GET /{stock_code}, GET /suppressed/list (Phase 4 NSF) |
+| `/api/v1/earnings` | `news.py` | GET /upcoming (Phase 4 NSF) |
 
 ### Frontend — React + TypeScript
 
@@ -2461,7 +2828,7 @@ is `True` in configuration.
 
 ---
 
-## 24. Data Model Chain
+## 26. Data Model Chain
 
 The journey of a signal from detection to database:
 
@@ -2486,6 +2853,13 @@ RankedSignal             <-- produced by SignalRanker
     v
   [AdaptiveManager]      <-- (Phase 3) filter: blocks signals from paused strategies
     v
+  [NewsSentimentStage]   <-- (Phase 4 NSF) filter/modify: suppress, downgrade, or badge
+    | SentimentResult per symbol (score, label, headline, action)
+    | STRONG_NEGATIVE --> suppress (remove signal, add to suppressed_signals)
+    | MILD_NEGATIVE   --> downgrade (reduce stars by 1, preserve original_star_rating)
+    | POSITIVE        --> badge (pass through with positive note)
+    | Earnings blackout --> suppress (highest priority)
+    v
 FinalSignal              <-- produced by RiskManager
     | ranked_signal, quantity, capital_required, expires_at
     v
@@ -2495,6 +2869,8 @@ SignalRecord             <-- persisted to `signals` table
     | reason, created_at, expires_at, status, setup_type, strategy_specific_score
     | + Phase 3: composite_score, confirmation_level, confirmed_by,
     |   position_size_multiplier, adaptation_status
+    | + Phase 4 NSF: news_sentiment_score, news_sentiment_label,
+    |   news_top_headline, news_action, original_star_rating
     v
 HybridScoreRecord        <-- (Phase 3) persisted to `hybrid_scores` table
     | signal_id, composite_score, strategy_strength_score, win_rate_score,
@@ -2520,6 +2896,17 @@ WatchlistRecord          <-- (Phase 4) persisted to `watchlist` table
 
 CallbackResult           <-- (Phase 4) return type for inline button callbacks
     | answer_text, success, status_line, new_keyboard
+
+SentimentResult          <-- (Phase 4 NSF) produced by NewsSentimentService
+    | score, label, headline, action, headline_count,
+    | top_negative_headline, model_used
+
+SuppressedSignal         <-- (Phase 4 NSF) produced by NewsSentimentStage
+    | symbol, strategy, original_stars, sentiment_score, sentiment_label,
+    | top_headline, reason, entry_price, stop_loss, target_1
+
+EarningsRecord           <-- (Phase 4 NSF) stored in earnings_calendar table
+    | stock_code, earnings_date, quarter, is_confirmed, source, updated_at
 ```
 
 ### All Dataclasses
@@ -2535,7 +2922,7 @@ CallbackResult           <-- (Phase 4) return type for inline button callbacks
 | `RankedSignal` | `db/models.py` | candidate, composite_score, rank, signal_strength |
 | `PositionSize` | `db/models.py` | quantity, capital_required, per_trade_capital |
 | `FinalSignal` | `db/models.py` | ranked_signal, quantity, capital_required, expires_at |
-| `SignalRecord` | `db/models.py` | 18 fields matching signals table |
+| `SignalRecord` | `db/models.py` | 23 fields matching signals table (incl. 5 NSF fields) |
 | `TradeRecord` | `db/models.py` | 15 fields matching trades table |
 | `UserConfig` | `db/models.py` | total_capital, max_positions, strategy enable flags |
 | `ExitAlert` | `db/models.py` | trade, exit_type, current_price, pnl_pct, is_alert_only, trailing_sl_update |
@@ -2556,7 +2943,10 @@ CallbackResult           <-- (Phase 4) return type for inline button callbacks
 | `SignalActionRecord` | `db/models.py` | signal_id, action, reason, response_time_ms, acted_at, message_id |
 | `WatchlistRecord` | `db/models.py` | symbol, signal_id, strategy, entry_price, added_at, expires_at, triggered_count |
 | `CallbackResult` | `db/models.py` | answer_text, success, status_line, new_keyboard |
-| `ScanContext` | `pipeline/context.py` | cycle_id, now, phase, accepting_signals, all_candidates, ranked_signals, final_signals |
+| `SentimentResult` | `db/models.py` | score, label, headline, action, headline_count, top_negative_headline, model_used |
+| `SuppressedSignal` | `db/models.py` | symbol, strategy, original_stars, sentiment_score, sentiment_label, top_headline, reason, entry_price, stop_loss, target_1 |
+| `EarningsRecord` | `db/models.py` | stock_code, earnings_date, quarter, is_confirmed, source, updated_at |
+| `ScanContext` | `pipeline/context.py` | cycle_id, now, phase, accepting_signals, all_candidates, ranked_signals, final_signals, sentiment_results, suppressed_signals |
 
 ### Enums
 
@@ -2567,10 +2957,12 @@ CallbackResult           <-- (Phase 4) return type for inline button callbacks
 | `StrategyPhase` | `PRE_MARKET`, `OPENING`, `ENTRY_WINDOW`, `CONTINUOUS`, `WIND_DOWN`, `POST_MARKET` |
 | `ConfirmationLevel` | `SINGLE`, `DOUBLE`, `TRIPLE` |
 | `AdaptationLevel` | `NORMAL`, `REDUCED`, `PAUSED` |
+| `SentimentLabel` | `STRONG_NEGATIVE`, `MILD_NEGATIVE`, `NEUTRAL`, `POSITIVE`, `NO_NEWS` |
+| `SentimentAction` | `SUPPRESS`, `DOWNGRADE`, `PASS`, `BADGE`, `UNSUPPRESSED` |
 
 ---
 
-## 25. Logging & Observability
+## 27. Logging & Observability
 
 ### Files: `signalpilot/utils/logger.py`, `log_context.py`
 
@@ -2636,7 +3028,7 @@ enabled strategy count, WebSocket connection status, and candidate count.
 
 ---
 
-## 26. Rate Limiting & Retry
+## 28. Rate Limiting & Retry
 
 ### Token Bucket Rate Limiter
 
@@ -2690,7 +3082,7 @@ async def some_api_call():
 
 ---
 
-## 27. Complete Scan Loop Iteration
+## 29. Complete Scan Loop Iteration
 
 ### File: `signalpilot/scheduler/lifecycle.py` — `_scan_loop()`
 
@@ -2725,11 +3117,18 @@ WHILE scanning == True:
   |   |       Remove signals from paused strategies
   |   |   8. RankingStage
   |   |       Score + rank --> ctx.ranked_signals (1-5 stars)
-  |   |   9. RiskSizingStage
+  |   |   9. NewsSentimentStage (Phase 4 NSF)
+  |   |       Fetch/cache sentiment per symbol, apply action matrix:
+  |   |       STRONG_NEGATIVE/earnings --> suppress --> ctx.suppressed_signals
+  |   |       MILD_NEGATIVE --> downgrade star rating by 1
+  |   |       POSITIVE --> badge, NEUTRAL/NO_NEWS --> pass through
+  |   |   10. RiskSizingStage
   |   |       Position sizing + capital checks --> ctx.final_signals
-  |   |   10. PersistAndDeliverStage
-  |   |       INSERT signals + hybrid_scores, send via Telegram with keyboards
-  |   |   11. DiagnosticStage
+  |   |   11. PersistAndDeliverStage
+  |   |       INSERT signals + hybrid_scores + sentiment metadata,
+  |   |       send via Telegram with keyboards,
+  |   |       send suppression notifications for ctx.suppressed_signals
+  |   |   12. DiagnosticStage
   |   |       Heartbeat every 60 cycles (~1 min)
   |   |
   |   +-- ALWAYS STAGES (run every cycle):
@@ -2755,24 +3154,30 @@ WHILE scanning == True:
 
 ---
 
-## 29. Summary: A Complete Trading Day
+## 30. Summary: A Complete Trading Day
 
 ```
 08:00  App boots --> AppConfig loaded, logging configured
-08:00  create_app() wires 30+ components:
+08:00  create_app() wires 35+ components:
          |-- EventBus + subscriptions (ExitAlert, StopLossHit, TradeExited, AlertMessage)
-         |-- ScanPipeline (11 signal stages + 1 always stage)
+         |-- ScanPipeline (12 signal stages + 1 always stage)
          |-- Phase 3 intelligence layer (CircuitBreaker, AdaptiveManager, CompositeScorer)
-         +-- Phase 4 quick actions (SignalActionRepo, WatchlistRepo, inline keyboards)
+         |-- Phase 4 quick actions (SignalActionRepo, WatchlistRepo, inline keyboards)
+         +-- Phase 4 NSF intelligence module (SentimentEngine, NewsFetcher,
+             NewsSentimentService, EarningsCalendar, NewsSentimentRepo, EarningsRepo)
 08:00  SmartAPIAuthenticator.authenticate() (TOTP-based 2FA)
 08:01  InstrumentManager.load() (Nifty 500 from CSV)
 08:01  historical.fetch_previous_day_data()    <-- 499 stocks, batches of 3
 08:10  (5s cooldown between API passes)
 08:10  historical.fetch_average_daily_volume() <-- 20-day ADV
 08:20  ConfigRepository.initialize_default()
-08:20  bot.start() --> Telegram polling begins
-08:20  MarketScheduler.start() --> 9 cron jobs registered
+08:20  bot.start() --> Telegram polling begins (16 commands + 9 callback handlers)
+08:20  MarketScheduler.start() --> 12 cron jobs registered
 08:20  (Phase 3) Dashboard starts on configured port if dashboard_enabled
+
+08:30  [CRON] fetch_pre_market_news() (Phase 4 NSF)
+         --> Batch-fetch news sentiment for watchlist + Nifty 500 stocks
+         --> Cache results in news_sentiment_cache table with TTL
 
 09:00  [CRON] send_pre_market_alert()
          --> "Signals coming shortly after 9:15 AM"
@@ -2815,11 +3220,16 @@ WHILE scanning == True:
                |    6.  CompositeScoringStage (Phase 3): 4-factor hybrid scoring
                |    7.  AdaptiveFilterStage (Phase 3): block paused strategies
                |    8.  RankingStage: score + rank --> RankedSignal (1-5 stars)
-               |    9.  RiskSizingStage: position limits + sizing --> FinalSignal
-               |    10. PersistAndDeliverStage: INSERT signals + hybrid_scores,
-               |        send via Telegram with inline keyboards (Phase 4)
+               |    9.  NewsSentimentStage (Phase 4 NSF): sentiment filter
+               |        STRONG_NEGATIVE/earnings --> suppress signal
+               |        MILD_NEGATIVE --> downgrade star rating by 1
+               |        POSITIVE --> badge, NEUTRAL/NO_NEWS --> pass through
+               |    10. RiskSizingStage: position limits + sizing --> FinalSignal
+               |    11. PersistAndDeliverStage: INSERT signals + hybrid_scores
+               |        + sentiment metadata, send via Telegram with keyboards
                |        [ TAKEN ]  [ SKIP ]  [ WATCH ]
-               |    11. DiagnosticStage: heartbeat every 60 cycles
+               |        + send suppression notifications for suppressed signals
+               |    12. DiagnosticStage: heartbeat every 60 cycles
                |
                +-- ALWAYS STAGE (every tick, all phases 9:15-15:15):
                     ExitMonitoringStage:
@@ -2841,6 +3251,12 @@ WHILE scanning == True:
                |-- WATCH --> handle_watch_callback() --> add to watchlist (5-day expiry)
                +-- Exit buttons (Book T1 / Exit Now / Hold / Let Run) --> manage trade
 
+11:15  [CRON] refresh_news_cache() (Phase 4 NSF)
+         --> Refresh stale sentiment cache entries (re-fetch headlines)
+
+13:15  [CRON] refresh_news_cache() (Phase 4 NSF)
+         --> Second mid-day sentiment cache refresh
+
 14:30  [CRON] stop_new_signals()
          --> _accepting_signals = False (scan loop continues for exits)
 
@@ -2855,6 +3271,8 @@ WHILE scanning == True:
          --> MetricsCalculator.calculate_daily_summary(today)
          --> Per-strategy breakdown (closed trades only)
          --> Cumulative P&L
+         --> (Phase 4 NSF) Purge old sentiment cache entries
+         --> (Phase 4 NSF) Clear session-scoped unsuppress overrides
 
 15:35  [CRON] shutdown()
          --> WebSocket disconnect, bot stop, DB close, scheduler shutdown
@@ -2865,5 +3283,6 @@ Sunday 18:00  [CRON] weekly_rebalance()
          --> (Phase 3) AdaptiveManager.check_trailing_performance()
          |     +-- 5-day win rate < 35%: warning alert
          |     +-- 10-day win rate < 30%: auto-pause recommendation
+         --> (Phase 4 NSF) Refresh earnings calendar data
          --> Send allocation summary to Telegram
 ```

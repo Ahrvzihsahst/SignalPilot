@@ -1,7 +1,7 @@
 # SignalPilot System Flow
 
 Complete architecture and data flow for the SignalPilot intraday signal generation system.
-All 35+ components across Phase 1, 2, 3, and 4 are represented in a single integrated view.
+All 40+ components across Phase 1, 2, 3, and 4 (including News Sentiment Filter) are represented in a single integrated view.
 
 ---
 
@@ -16,12 +16,13 @@ All 35+ components across Phase 1, 2, 3, and 4 are represented in a single integ
  ┌─────────────┐    ┌────────────────────────────────────────────────────────────┐
  │  AppConfig   │───▶│                    create_app()                           │
  │ (pydantic-   │    │                                                            │
- │  settings)   │    │  Wiring order (22 stages):                                │
+ │  settings)   │    │  Wiring order (23 stages):                                │
  └─────────────┘    │                                                            │
-                     │  1. DatabaseManager (SQLite WAL, 10 tables)               │
+                     │  1. DatabaseManager (SQLite WAL, 12 tables)               │
                      │  2. Repositories (signal, trade, config, metrics,          │
                      │     strategy_performance, signal_action, watchlist,        │
-                     │     hybrid_score, circuit_breaker, adaptation_log)         │
+                     │     hybrid_score, circuit_breaker, adaptation_log,        │
+                     │     news_sentiment, earnings_calendar)                    │
                      │  3. EventBus (in-process async event dispatch)             │
                      │  4. SmartAPIAuthenticator (Angel One TOTP 2FA)             │
                      │  5. InstrumentManager (Nifty 500 CSV)                     │
@@ -35,13 +36,15 @@ All 35+ components across Phase 1, 2, 3, and 4 are represented in a single integ
                      │ 13. CapitalAllocator + PositionSizer + RiskManager        │
                      │ 14. ExitMonitor (trailing configs + EventBus)              │
                      │ 15. CircuitBreaker + AdaptiveManager                      │
-                     │ 16. SignalPilotBot (Telegram, 13 commands + 9 callbacks)  │
-                     │ 17. WebSocketClient (Angel One feed)                      │
-                     │ 18. MarketScheduler (APScheduler, 9 cron jobs)            │
-                     │ 19. EventBus subscriptions (4 event→handler bindings)     │
-                     │ 20. ScanPipeline (11 signal stages + 1 always stage)      │
-                     │ 21. FastAPI Dashboard (optional, 8 route modules)         │
-                     │ 22. SignalPilotApp (orchestrator)                          │
+                     │ 16. Intelligence (VADERSentimentEngine, NewsFetcher,      │
+                     │     NewsSentimentService, EarningsCalendar)               │
+                     │ 17. SignalPilotBot (Telegram, 16 commands + 9 callbacks)  │
+                     │ 18. WebSocketClient (Angel One feed)                      │
+                     │ 19. MarketScheduler (APScheduler, 12 cron jobs)           │
+                     │ 20. EventBus subscriptions (4 event→handler bindings)     │
+                     │ 21. ScanPipeline (12 signal stages + 1 always stage)      │
+                     │ 22. FastAPI Dashboard (optional, 10 route modules)        │
+                     │ 23. SignalPilotApp (orchestrator)                          │
                      └───────────────────────┬────────────────────────────────────┘
                                              │
                                              ▼
@@ -84,36 +87,50 @@ All 35+ components across Phase 1, 2, 3, and 4 are represented in a single integ
  MARKET SCHEDULE TIMELINE (IST, Mon-Fri, skip NSE holidays)
  ═════════════════════════════════════════════════════════════════════════════════════
 
-  9:00     9:15        9:30         9:45        10:00       11:00
-    │        │           │            │            │           │
-    ▼        ▼           ▼            ▼            ▼           ▼
- ┌──────┐┌───────┐┌──────────┐┌───────────┐┌──────────┐┌──────────┐
- │PRE-  ││START  ││          ││LOCK       ││          ││          │
- │MARKET││SCAN   ││ Gap&Go   ││OPENING    ││VWAP      ││ORB       │
- │ALERT ││       ││ entry    ││RANGES     ││SCAN      ││WINDOW    │
- │      ││WS conn││ valid.   ││           ││START     ││END       │
- │      ││CB/AM  ││          ││ORB begins ││          ││          │
- │      ││reset  ││          ││           ││          ││          │
- └──────┘└───────┘└──────────┘└───────────┘└──────────┘└──────────┘
+  8:30     9:00     9:15        9:30         9:45        10:00       11:00
+    │        │        │           │            │            │           │
+    ▼        ▼        ▼           ▼            ▼            ▼           ▼
+ ┌──────┐┌──────┐┌───────┐┌──────────┐┌───────────┐┌──────────┐┌──────────┐
+ │PRE-  ││PRE-  ││START  ││          ││LOCK       ││          ││          │
+ │MARKET││MARKET││SCAN   ││ Gap&Go   ││OPENING    ││VWAP      ││ORB       │
+ │NEWS  ││ALERT ││       ││ entry    ││RANGES     ││SCAN      ││WINDOW    │
+ │      ││      ││WS conn││ valid.   ││           ││START     ││END       │
+ │fetch ││      ││CB/AM  ││          ││ORB begins ││          ││          │
+ │RSS + ││      ││reset  ││          ││           ││          ││          │
+ │VADER ││      ││       ││          ││           ││          ││          │
+ └──────┘└──────┘└───────┘└──────────┘└───────────┘└──────────┘└──────────┘
 
     │◄──OPENING──▶│◄ENTRY_WINDOW▶│◄────────── CONTINUOUS ──────────────────────▶│
                                                                                  │
- 14:30       15:00       15:15        15:30       15:35        Sun 18:00
-    │           │           │            │           │              │
-    ▼           ▼           ▼            ▼           ▼              ▼
- ┌──────────┐┌──────────┐┌──────────┐┌──────────┐┌──────────┐┌──────────┐
- │STOP NEW  ││EXIT      ││MANDATORY ││DAILY     ││SHUTDOWN  ││WEEKLY    │
- │SIGNALS   ││REMINDER  ││EXIT      ││SUMMARY   ││          ││REBALANCE │
- │          ││          ││          ││          ││          ││          │
- │_accepting││advisory  ││force     ││metrics + ││WS disc.  ││capital   │
- │=False    ││alerts    ││all close ││strategy  ││bot stop  ││allocator │
- │          ││+ buttons ││& persist ││breakdown ││DB close  ││recalc    │
- └──────────┘└──────────┘└──────────┘└──────────┘└──────────┘└──────────┘
+ 11:15       13:15       14:30       15:00       15:15        15:30       15:35
+    │           │           │           │           │            │           │
+    ▼           ▼           ▼           ▼           ▼            ▼           ▼
+ ┌──────────┐┌──────────┐┌──────────┐┌──────────┐┌──────────┐┌──────────┐┌──────────┐
+ │NEWS      ││NEWS      ││STOP NEW  ││EXIT      ││MANDATORY ││DAILY     ││SHUTDOWN  │
+ │CACHE     ││CACHE     ││SIGNALS   ││REMINDER  ││EXIT      ││SUMMARY   ││          │
+ │REFRESH 1 ││REFRESH 2 ││          ││          ││          ││          ││          │
+ │          ││          ││_accepting││advisory  ││force     ││metrics + ││WS disc.  │
+ │mid-morn  ││mid-aftn  ││=False    ││alerts    ││all close ││strategy  ││bot stop  │
+ │sentiment ││sentiment ││          ││+ buttons ││& persist ││breakdown ││DB close  │
+ │re-fetch  ││re-fetch  ││          ││          ││          ││          ││          │
+ └──────────┘└──────────┘└──────────┘└──────────┘└──────────┘└──────────┘└──────────┘
 
     │◄──────────────── WIND_DOWN ──────────────────▶│
 
+                                                                Sun 18:00
+                                                                    │
+                                                                    ▼
+                                                               ┌──────────┐
+                                                               │WEEKLY    │
+                                                               │REBALANCE │
+                                                               │          │
+                                                               │capital   │
+                                                               │allocator │
+                                                               │recalc    │
+                                                               └──────────┘
 
- COMPOSABLE PIPELINE (11 signal stages + 1 always stage, runs every ~1s)
+
+ COMPOSABLE PIPELINE (12 signal stages + 1 always stage, runs every ~1s)
  ═════════════════════════════════════════════════════════════════════════════════════
 
  The scan loop delegates ALL work to a ScanPipeline. Each stage implements the
@@ -125,7 +142,8 @@ All 35+ components across Phase 1, 2, 3, and 4 are represented in a single integ
  │  cycle_id, now, phase, accepting_signals                                       │
  │  user_config, enabled_strategies, all_candidates                               │
  │  confirmation_map, composite_scores                                            │
- │  ranked_signals, final_signals, active_trade_count                             │
+ │  ranked_signals, sentiment_results, suppressed_signals                         │
+ │  final_signals, active_trade_count                                             │
  └──────────────────────────────────────────────────────────────────────────────────┘
 
  SIGNAL STAGES (run only when accepting_signals=True AND phase in
@@ -219,7 +237,40 @@ All 35+ components across Phase 1, 2, 3, and 4 are represented in a single integ
                                     │ ctx.ranked_signals = list[RankedSignal]
                                     ▼
  ┌──────────────────────────────────────────────────────────────────────────────────┐
- │  Stage 9: RiskSizingStage                                                       │
+ │  Stage 9: NewsSentimentStage (Phase 4 — News Sentiment Filter)                  │
+ │                                                                                 │
+ │  For each ranked signal, fetch sentiment from NewsSentimentService cache:      │
+ │                                                                                 │
+ │  ┌──────────────────────────────────────────────────────────────────────────┐   │
+ │  │  Action Matrix:                                                         │   │
+ │  │                                                                          │   │
+ │  │  1. Earnings blackout (highest priority):                               │   │
+ │  │     - has_earnings_today(symbol) → suppress, unless unsuppress override │   │
+ │  │                                                                          │   │
+ │  │  2. STRONG_NEGATIVE (composite < strong_negative_threshold):            │   │
+ │  │     → suppress signal, add to ctx.suppressed_signals,                   │   │
+ │  │       send suppression notification via Telegram                        │   │
+ │  │                                                                          │   │
+ │  │  3. MILD_NEGATIVE (composite < mild_negative_threshold):                │   │
+ │  │     → downgrade star rating by 1 (minimum 1 star)                       │   │
+ │  │                                                                          │   │
+ │  │  4. NEUTRAL / POSITIVE / NO_NEWS:                                       │   │
+ │  │     → pass through unchanged                                            │   │
+ │  │                                                                          │   │
+ │  │  5. Unsuppress override (via UNSUPPRESS <STOCK> command):               │   │
+ │  │     → pass through with UNSUPPRESSED action, bypass any suppression     │   │
+ │  └──────────────────────────────────────────────────────────────────────────┘   │
+ │                                                                                 │
+ │  Composite score uses recency-weighted decay: w = exp(-lambda * age_hours)     │
+ │  Half-life = 6 hours (recent headlines weigh more)                             │
+ │                                                                                 │
+ │  ctx.sentiment_results = dict[str, SentimentResult]                            │
+ │  ctx.suppressed_signals = list[SuppressedSignal]                               │
+ └──────────────────────────────────┬───────────────────────────────────────────────┘
+                                    │ filtered ctx.ranked_signals (suppressed removed)
+                                    ▼
+ ┌──────────────────────────────────────────────────────────────────────────────────┐
+ │  Stage 10: RiskSizingStage                                                      │
  │                                                                                 │
  │  RiskManager.filter_and_size():                                                │
  │  - Check available position slots (max 8 - active trades)                      │
@@ -237,7 +288,7 @@ All 35+ components across Phase 1, 2, 3, and 4 are represented in a single integ
                                     │ ctx.final_signals = list[FinalSignal]
                                     ▼
  ┌──────────────────────────────────────────────────────────────────────────────────┐
- │  Stage 10: PersistAndDeliverStage                                               │
+ │  Stage 11: PersistAndDeliverStage                                               │
  │                                                                                 │
  │  For each FinalSignal:                                                         │
  │  ┌──────────────────────────────────────────────────────────────────────────┐   │
@@ -250,6 +301,7 @@ All 35+ components across Phase 1, 2, 3, and 4 are represented in a single integ
  │  │     ┌─────────────────────────────────────────┐                          │   │
  │  │     │  BUY SIGNAL -- RELIANCE  ****- (Strong) │                          │   │
  │  │     │  Entry: 2,850  SL: 2,764  T1: 2,992    │                          │   │
+ │  │     │  NEWS WARNING (if MILD_NEGATIVE)        │  ◀── sentiment badge    │   │
  │  │     │  ...                                    │                          │   │
  │  │     │  [ TAKEN ]   [ SKIP ]   [ WATCH ]       │  ◀── Phase 4 buttons    │   │
  │  │     └─────────────────────────────────────────┘                          │   │
@@ -258,7 +310,7 @@ All 35+ components across Phase 1, 2, 3, and 4 are represented in a single integ
                                     │
                                     ▼
  ┌──────────────────────────────────────────────────────────────────────────────────┐
- │  Stage 11: DiagnosticStage                                                      │
+ │  Stage 12: DiagnosticStage                                                      │
  │                                                                                 │
  │  Heartbeat every 60 cycles (~1 min): phase, strategy count, WS status          │
  └──────────────────────────────────────────────────────────────────────────────────┘
@@ -420,7 +472,78 @@ All 35+ components across Phase 1, 2, 3, and 4 are represented in a single integ
  └──────────────────────────┘    └──────────────────────────────────┘
 
 
- USER INTERACTION (Telegram Bot: 13 text commands + 9 callback handlers)
+ INTELLIGENCE MODULE (Phase 4 — News Sentiment Filter)
+ ═════════════════════════════════════════════════════════════════════════════════════
+
+ Pre-market and intraday news sentiment analysis pipeline. RSS headlines are
+ fetched, scored by VADER (or FinBERT), cached in SQLite, and consumed by the
+ NewsSentimentStage in the scan pipeline.
+
+ ┌─────────────────────────────────────────────────────────────────────────────────┐
+ │ Data Flow: RSS Feeds → Sentiment Engine → Cache → Pipeline Stage              │
+ └─────────────────────────────────────────────────────────────────────────────────┘
+
+  8:30 IST (pre_market_news job)          11:15 / 13:15 IST (news_cache_refresh)
+        │                                        │
+        ▼                                        ▼
+ ┌──────────────┐                         ┌──────────────┐
+ │ NewsFetcher   │                         │ NewsFetcher   │
+ │ (RSS feeds)  │                         │ (RSS feeds)  │
+ │              │                         │              │
+ │ aiohttp +    │                         │ incremental  │
+ │ feedparser   │                         │ refresh      │
+ └──────┬───────┘                         └──────┬───────┘
+        │ list[RawHeadline]                      │
+        ▼                                        ▼
+ ┌──────────────────┐                     ┌──────────────────┐
+ │ SentimentEngine   │                     │ SentimentEngine   │
+ │                   │                     │                   │
+ │ VADERSentiment    │                     │ VADER (default)   │
+ │  Engine (default) │                     │ or FinBERT        │
+ │ or FinBERT        │                     │                   │
+ │                   │                     │ compound_score,   │
+ │ compound_score,   │                     │ pos/neg/neu       │
+ │ pos/neg/neu       │                     │                   │
+ └──────┬────────────┘                     └──────┬────────────┘
+        │ list[NewsSentimentRecord]               │
+        ▼                                        ▼
+ ┌───────────────────────────────────────────────────────────────┐
+ │                  NewsSentimentService                         │
+ │                                                               │
+ │  Orchestrates fetch → analyze → cache                        │
+ │                                                               │
+ │  Recency-weighted composite: w = exp(-ln(2)/6h * age_hours)  │
+ │  Classification thresholds (configurable):                    │
+ │    STRONG_NEGATIVE < -0.5                                     │
+ │    MILD_NEGATIVE   < -0.15                                    │
+ │    NEUTRAL         <= +0.15                                   │
+ │    POSITIVE        > +0.15                                    │
+ │                                                               │
+ │  Session-scoped unsuppress overrides (via UNSUPPRESS cmd)    │
+ └──────────────────────────┬────────────────────────────────────┘
+                            │ upsert to cache
+                            ▼
+ ┌───────────────────────────────────────────────────────────────┐
+ │  news_sentiment_cache (SQLite)        earnings_calendar      │
+ │                                                               │
+ │  Read by NewsSentimentStage           Read by NewsSentiment  │
+ │  (pipeline stage 9) during            Stage to check         │
+ │  each scan cycle                      earnings blackout      │
+ └───────────────────────────────────────────────────────────────┘
+
+ ┌──────────────────────────────────────────────────────────────────────────────────┐
+ │  EarningsCalendar                                                               │
+ │                                                                                 │
+ │  Ingestion sources:                                                            │
+ │  - CSV file (data/earnings.csv): manual upload of known earnings dates         │
+ │  - Screener.in API: automated scraping of upcoming earnings                    │
+ │                                                                                 │
+ │  earnings_repo.has_earnings_today(symbol) → boolean blackout check             │
+ │  earnings_repo.get_upcoming_earnings(days) → list for EARNINGS command         │
+ └──────────────────────────────────────────────────────────────────────────────────┘
+
+
+ USER INTERACTION (Telegram Bot: 16 text commands + 9 callback handlers)
  ═════════════════════════════════════════════════════════════════════════════════════
 
                     ┌─────────────────────────────────────────────────┐
@@ -442,6 +565,15 @@ All 35+ components across Phase 1, 2, 3, and 4 are represented in a single integ
  │  │                      │  │ STRATEGY           │  │                        │  │
  │  │                      │  │ HELP               │  │                        │  │
  │  └──────────────────────┘  └────────────────────┘  └────────────────────────┘  │
+ │                                                                                 │
+ │  ┌──────────────────────────────────────────────────────────────────────────┐   │
+ │  │ Phase 4: News Sentiment Commands                                        │   │
+ │  │                                                                          │   │
+ │  │ NEWS [<STOCK>|ALL]    — show sentiment for a stock or all cached stocks │   │
+ │  │ EARNINGS              — show upcoming earnings calendar                 │   │
+ │  │ UNSUPPRESS <STOCK>    — override sentiment suppression for a stock      │   │
+ │  │                         (session-scoped, cleared at end of day)          │   │
+ │  └──────────────────────────────────────────────────────────────────────────┘   │
  │                                                                                 │
  │  Inline Button Callbacks (Phase 4):                                            │
  │  ┌──────────────────────┐  ┌────────────────────┐  ┌────────────────────────┐  │
@@ -469,7 +601,7 @@ All 35+ components across Phase 1, 2, 3, and 4 are represented in a single integ
 
  ┌──────────────────────┐          ┌──────────────────────────────────────────────┐
  │   React Frontend     │   HTTP   │           FastAPI Backend                    │
- │   frontend/          │◀────────▶│           8 route modules:                   │
+ │   frontend/          │◀────────▶│           10 route modules:                  │
  │   (Vite+TS+Tailwind) │          │                                              │
  │                      │          │  /api/signals         (list, filter)         │
  │   - Live Signals     │          │  /api/trades          (list, P&L)            │
@@ -478,7 +610,9 @@ All 35+ components across Phase 1, 2, 3, and 4 are represented in a single integ
  │   - Strategies       │          │  /api/allocation      (capital weights)      │
  │   - Allocation       │          │  /api/settings        (user config CRUD)     │
  │   - Settings         │          │  /api/circuit-breaker  (status, log)         │
- │                      │          │  /api/adaptation       (log, states)         │
+ │   - News Sentiment   │          │  /api/adaptation       (log, states)         │
+ │   - Earnings         │          │  /api/news            (sentiment, suppressed)│
+ │                      │          │  /api/earnings        (upcoming calendar)    │
  └──────────────────────┘          └────────────────┬─────────────────────────────┘
                                                     │
                                           ┌─────────┴─────────┐
@@ -492,7 +626,7 @@ All 35+ components across Phase 1, 2, 3, and 4 are represented in a single integ
                                    └────────────┘     └────────────┘
 
 
- DATABASE SCHEMA (10 tables, SQLite WAL mode)
+ DATABASE SCHEMA (12 tables, SQLite WAL mode)
  ═════════════════════════════════════════════════════════════════════════════════════
 
  Core Tables:
@@ -520,7 +654,7 @@ All 35+ components across Phase 1, 2, 3, and 4 are represented in a single integ
  │ confirmation  │  │ events        │  │ events        │  │                        │
  └───────────────┘  └───────────────┘  └───────────────┘  └────────────────────────┘
 
- Phase 4 Tables:
+ Phase 4 Tables (Quick Actions):
  ┌────────────────────────┐  ┌────────────────────────────────────────────────────┐
  │   signal_actions       │  │   watchlist                                        │
  │                        │  │                                                    │
@@ -530,6 +664,25 @@ All 35+ components across Phase 1, 2, 3, and 4 are represented in a single integ
  │   watch), reason,      │  │ expires_at (5 days), triggered_count              │
  │ response_time_ms       │  │ last_triggered_at                                 │
  └────────────────────────┘  └────────────────────────────────────────────────────┘
+
+ Phase 4 Tables (News Sentiment Filter):
+ ┌────────────────────────────────────────┐  ┌───────────────────────────────────┐
+ │   news_sentiment_cache                │  │   earnings_calendar               │
+ │                                        │  │                                   │
+ │ Phase 4 — NSF                          │  │ Phase 4 — NSF                     │
+ │                                        │  │                                   │
+ │ stock_code, composite_score,          │  │ stock_code, earnings_date,        │
+ │ label (STRONG_NEGATIVE/MILD_NEGATIVE/ │  │ quarter, is_confirmed,            │
+ │   NEUTRAL/POSITIVE/NO_NEWS),          │  │ source (csv/screener.in),         │
+ │ headline_count, top_headline,         │  │ updated_at                        │
+ │ top_negative_headline,                │  │                                   │
+ │ model_used (vader/finbert),           │  │ Queries: has_earnings_today,      │
+ │ fetched_at, expires_at                │  │ get_upcoming_earnings(days)       │
+ │                                        │  │                                   │
+ │ Queries: get_stock_sentiment,         │  │                                   │
+ │ get_top_negative_headline,            │  │                                   │
+ │ upsert_headlines, purge_old_entries   │  │                                   │
+ └────────────────────────────────────────┘  └───────────────────────────────────┘
 ```
 
 ---
@@ -583,17 +736,50 @@ chain below shows how raw market data becomes a persisted trade record.
                    └────────┬───────────┘
                             │
                             ▼
-                   ┌──────────────┐     ┌─────────────┐     ┌──────────────┐
-                   │ RankedSignal │────▶│ FinalSignal  │────▶│ SignalRecord  │
-                   │              │     │              │     │              │
-                   │ candidate    │     │ ranked_signal│     │ Persisted in │
-                   │ composite_   │     │ quantity     │     │ signals table│
-                   │  score       │     │ capital_     │     │              │
-                   │ rank         │     │  required    │     │ +composite_  │
-                   │ signal_      │     │ expires_at   │     │  score       │
-                   │  strength    │     │              │     │ +confirmation│
-                   │  (1-5 stars) │     └──────────────┘     │  _level      │
-                   └──────────────┘                          └──────┬───────┘
+                   ┌──────────────┐
+                   │ RankedSignal │
+                   │              │
+                   │ candidate    │
+                   │ composite_   │
+                   │  score       │
+                   │ rank         │
+                   │ signal_      │
+                   │  strength    │
+                   │  (1-5 stars) │
+                   └──────┬───────┘
+                          │
+                          ▼
+          ┌────────────────────────────────────────────────┐
+          │        NewsSentimentStage Filter               │
+          │                                                │
+          │  ┌──────────────┐        ┌──────────────────┐  │
+          │  │SentimentResult│       │SuppressedSignal   │  │
+          │  │              │        │                   │  │
+          │  │ score        │        │ symbol, strategy  │  │
+          │  │ label        │        │ original_stars    │  │
+          │  │ headline     │        │ sentiment_score   │  │
+          │  │ action       │        │ sentiment_label   │  │
+          │  │ headline_    │        │ top_headline      │  │
+          │  │  count       │        │ reason            │  │
+          │  │ top_negative │        │ entry/sl/t1       │  │
+          │  │  _headline   │        │                   │  │
+          │  │ model_used   │        │ (logged,          │  │
+          │  └──────────────┘        │  notified via TG) │  │
+          │                          └──────────────────┘  │
+          └───────────────────────┬────────────────────────┘
+                                  │ passed signals
+                                  ▼
+                   ┌─────────────┐     ┌──────────────┐
+                   │ FinalSignal  │────▶│ SignalRecord  │
+                   │              │     │              │
+                   │ ranked_signal│     │ Persisted in │
+                   │ quantity     │     │ signals table│
+                   │ capital_     │     │              │
+                   │  required    │     │ +composite_  │
+                   │ expires_at   │     │  score       │
+                   │              │     │ +confirmation│
+                   └──────────────┘     │  _level      │
+                                        └──────┬───────┘
                                                                     │
                                                      ┌──────────────┤
                                                      │              │
@@ -616,9 +802,11 @@ Summary of the full chain:
 
 ```
  TickData --> CandidateSignal --> ConfirmationResult --> CompositeScoreResult
-          --> RankedSignal --> FinalSignal --> SignalRecord
-                                                ├──▶ SignalActionRecord (Phase 4)
-                                                └──▶ TradeRecord (via TAKEN)
+          --> RankedSignal --> [NewsSentimentStage: SentimentResult filter]
+              ├── suppressed --> SuppressedSignal (notified, not delivered)
+              └── passed --> FinalSignal --> SignalRecord
+                                              ├──▶ SignalActionRecord (Phase 4)
+                                              └──▶ TradeRecord (via TAKEN)
 ```
 
 ---
@@ -637,6 +825,7 @@ Each phase activates a specific set of strategies and system behaviors.
 | ORB                | Inactive (opening range still building)                   |
 | VWAP Reversal      | Inactive (VWAP scan starts at 10:00)                     |
 | ExitMonitor        | Monitoring any trades from crash recovery                 |
+| NewsSentimentStage | **Active** -- using pre-market cache (fetched at 8:30)   |
 | CircuitBreaker     | Reset at 9:15, monitoring SL events via EventBus         |
 | AdaptiveManager    | Reset at 9:15, all strategies at NORMAL                  |
 
@@ -647,7 +836,7 @@ Each phase activates a specific set of strategies and system behaviors.
 | Gap & Go           | **Active** -- entry validation, signal generation         |
 | ORB                | Inactive (opening range still building)                   |
 | VWAP Reversal      | Inactive                                                 |
-| Pipeline Stages    | Full 11-stage pipeline running                           |
+| Pipeline Stages    | Full 12-stage pipeline running                           |
 | PersistAndDeliver  | Signals delivered with [ TAKEN ] [ SKIP ] [ WATCH ]      |
 
 ### CONTINUOUS Phase (9:45 - 14:30)
@@ -660,6 +849,7 @@ Each phase activates a specific set of strategies and system behaviors.
 | Opening Ranges     | Locked at 9:45 (30-min range finalized)                  |
 | ConfidenceStage    | Cross-strategy confirmation (ORB + VWAP overlap)         |
 | CompositeScoring   | Full 4-factor scoring with live win rates                |
+| NewsSentimentStage | Filters/downgrades signals based on cached sentiment     |
 | CircuitBreaker     | May activate if SL limit reached (Stage 1 gate)          |
 | AdaptiveManager    | May throttle/pause losing strategies (Stage 7 filter)    |
 | ExitMonitor        | Full monitoring: SL, T1, T2, trailing SL, breakeven     |
@@ -675,6 +865,13 @@ Each phase activates a specific set of strategies and system behaviors.
 | Mandatory Exit     | 15:15 -- force-close all open trades                     |
 | Daily Summary      | 15:30 -- performance metrics + strategy breakdown        |
 | Shutdown           | 15:35 -- WebSocket disconnect, bot stop, DB close        |
+
+### Pre-Market (8:30 - 9:15)
+
+| Component          | Activity                                                 |
+|--------------------|----------------------------------------------------------|
+| Pre-Market News    | 8:30 -- RSS fetch + VADER analysis, cache in SQLite      |
+| Pre-Market Alert   | 9:00 -- advisory Telegram message                        |
 
 ### Off-Hours
 

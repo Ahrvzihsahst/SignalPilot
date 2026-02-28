@@ -150,6 +150,19 @@ between them (to avoid over-trading one stock).
 
 Let's walk through an entire trading day, hour by hour.
 
+### 8:30 AM — The News Desk
+
+Before the market even opens, SignalPilot's intelligence layer gets to work. It
+fetches the latest financial news headlines from RSS feeds for all 500 stocks and
+runs them through VADER sentiment analysis — a natural language processing engine
+tuned with a financial lexicon. Each headline gets a sentiment score, and the
+results are cached so the pipeline can use them instantly when signals are
+generated later.
+
+It also checks the earnings calendar. Any stock reporting earnings today gets
+flagged for automatic blackout — no signals will be generated for that stock,
+no matter how good the setup looks. Earnings days are simply too unpredictable.
+
 ### 8:50 AM — The Alarm Clock
 
 SignalPilot wakes up. It loads all its settings from a configuration file (API keys,
@@ -199,8 +212,20 @@ at the same time.
 ### 10:00 AM - 2:30 PM — The Core Trading Session
 
 This is where the magic happens. Every single second, SignalPilot runs a complete
-**11-stage pipeline** (more on this in Chapter 4). It's like an assembly line in a
+**12-stage pipeline** (more on this in Chapter 4). It's like an assembly line in a
 factory — each station does one specific job.
+
+### 11:15 AM — Mid-Day News Refresh
+
+The news sentiment cache gets a refresh. New headlines published since the pre-market
+fetch are pulled in, analyzed, and scored. This ensures that breaking news during
+the trading session is not missed — if a stock suddenly makes negative headlines,
+SignalPilot will know about it before delivering any further signals.
+
+### 1:15 PM — Afternoon News Refresh
+
+One more cache refresh in the afternoon, catching any late-breaking stories. By
+this point the day is winding down, but signals can still be generated until 2:30.
 
 ### 2:30 PM — No More New Signals
 
@@ -241,9 +266,9 @@ Telegram bot. Good night.
 
 ---
 
-## Chapter 4: The 11-Stage Pipeline (The Assembly Line)
+## Chapter 4: The 12-Stage Pipeline (The Assembly Line)
 
-Every second, each signal candidate passes through an assembly line of 11 stages.
+Every second, each signal candidate passes through an assembly line of 12 stages.
 Think of it like a car factory — the car (signal) moves from one station to the next,
 and each station adds something or rejects defective ones.
 
@@ -371,7 +396,60 @@ Star Rating Scale:
   1 star:  Weak        (score < 35)
 ```
 
-### Stage 9: Risk Sizing (The Accountant)
+### Stage 9: News Sentiment Filter (The Intelligence Analyst)
+
+*"What is the news saying about this stock right now?"*
+
+Before sizing the position, SignalPilot checks the latest news sentiment for each
+surviving signal. It uses a pre-built cache of headlines (fetched at 8:30 AM and
+refreshed at 11:15 AM and 1:15 PM) so this check is nearly instant — no waiting
+for web requests in the middle of a scan cycle.
+
+Each stock gets a sentiment score (from -1.0 to +1.0) computed as a
+recency-weighted average of all recent headlines. Recent news counts more than
+older news (6-hour half-life decay). The score maps to a label, and the label
+determines what happens:
+
+```
+Reliance ORB Signal — News Sentiment Check:
+
+  Headlines in cache: 4 (within last 24 hours)
+  Recency-weighted score: +0.12
+  Label: NEUTRAL
+  Action: PASS
+
+  --> Signal passes through unchanged
+```
+
+Here is the full action matrix:
+
+```
+STRONG_NEGATIVE (score < -0.5):
+  --> SUPPRESSED. Signal is removed entirely.
+  --> You get a notification: "SIGNAL SUPPRESSED: RELIANCE (ORB) — Strong negative sentiment"
+
+MILD_NEGATIVE (score between -0.5 and -0.2):
+  --> DOWNGRADED. Star rating reduced by 1 (minimum 1 star).
+  --> Signal shows warning: "NEWS WARNING: -0.35 (MILD_NEGATIVE) — Downgraded from 4/5 to 3/5"
+
+NEUTRAL (score between -0.2 and +0.3):
+  --> PASS. Signal goes through unchanged.
+
+POSITIVE (score > +0.3):
+  --> PASS with badge: "Positive sentiment"
+
+NO_NEWS (no headlines found):
+  --> PASS with note: "No recent news"
+
+EARNINGS BLACKOUT:
+  --> SUPPRESSED regardless of sentiment score.
+  --> "SIGNAL SUPPRESSED: SBIN (Gap & Go) — Earnings day blackout"
+```
+
+If you disagree with a suppression, you can override it with the `UNSUPPRESS RELIANCE`
+command, and the stock will be allowed through for the rest of the day.
+
+### Stage 10: Risk Sizing (The Accountant)
 
 *"How many shares can you afford, and how much to risk?"*
 
@@ -387,7 +465,7 @@ Quantity:              2 shares (floor of 6,250 / 2,862)
 Actual capital used:   Rs 5,724
 ```
 
-### Stage 10: Persist & Deliver (The Messenger)
+### Stage 11: Persist & Deliver (The Messenger)
 
 *"Save the record and tell the user!"*
 
@@ -408,7 +486,7 @@ The signal is saved to the database and delivered to your Telegram:
 
 Those three buttons are your response options (more on this in Chapter 6).
 
-### Stage 11: Diagnostic (The Health Check)
+### Stage 12: Diagnostic (The Health Check)
 
 Every 60 cycles (~1 minute), a heartbeat log confirms everything is healthy:
 
@@ -531,13 +609,17 @@ You can also type commands:
 | `RESUME ORB` | Re-enable ORB signals |
 | `SCORE RELIANCE` | Show the composite score breakdown for a stock |
 | `WATCHLIST` | View your current watchlist |
+| `NEWS RELIANCE` | View the current sentiment score and label for Reliance |
+| `NEWS ALL` | Summary of sentiment scores for all stocks in the cache |
+| `EARNINGS` | Show upcoming earnings calendar (next 7 days) |
+| `UNSUPPRESS SBIN` | Manually override a news suppression for SBIN (lasts until end of day) |
 | `HELP` | List all available commands |
 
 ---
 
 ## Chapter 7: The Safety Systems
 
-SignalPilot has three layers of protection to prevent catastrophic losses.
+SignalPilot has four layers of protection to prevent catastrophic losses.
 
 ### Layer 1: Circuit Breaker (The Fire Alarm)
 
@@ -601,6 +683,36 @@ Weekly Rebalance:
 **20% Reserve:** SignalPilot always keeps 20% of capital in reserve for
 exceptional (double/triple confirmed) signals.
 
+### Layer 4: News Sentiment Filter (The Intelligence Analyst)
+
+The newest safety layer looks beyond price and volume — it reads the news. Before
+any signal reaches your phone, SignalPilot checks whether the stock is in the
+headlines for the wrong reasons.
+
+```
+Scenario: ORB detects a beautiful breakout in SBIN at 10:15 AM.
+
+But at 8:30 AM, headlines came in:
+  "RBI imposes penalty on SBI for compliance failures"
+  "SBI faces regulatory scrutiny over loan disbursement"
+
+  Recency-weighted sentiment score: -0.62  (STRONG_NEGATIVE)
+
+  --> Signal SUPPRESSED. You never see it.
+  --> Instead you get: "SIGNAL SUPPRESSED: SBIN (ORB) — Strong negative sentiment"
+```
+
+Even if the chart looks perfect, trading against negative news flow is risky.
+This layer catches that risk before you are exposed to it.
+
+For stocks reporting earnings today, signals are automatically suppressed
+regardless of sentiment — earnings announcements can cause wild, unpredictable
+swings in either direction.
+
+If you review the news and disagree with the suppression (maybe the headline
+is about a different entity or old news), you can type `UNSUPPRESS SBIN` to
+override it for the rest of the day.
+
 ---
 
 ## Chapter 8: Multi-Strategy Confirmation (The Second Opinion)
@@ -645,6 +757,8 @@ tracked:
 | `hybrid_scores` | Composite score breakdowns | Reliance: 64.3 (40+19.5+16+0) |
 | `circuit_breaker_log` | When circuit breaker fired | Feb 27, activated at 11:30 |
 | `adaptation_log` | Strategy status changes | ORB: NORMAL -> REDUCED, Feb 25 |
+| `news_sentiment` | Cached headlines with sentiment scores | SBIN: -0.62, STRONG_NEGATIVE, 4 headlines |
+| `earnings_calendar` | Upcoming earnings dates per stock | RELIANCE: earnings on Mar 5 |
 
 ---
 
@@ -688,9 +802,10 @@ on a normal trading day:
   [Stage 6]  Composite Score: 64.3/100 ................................... scored
   [Stage 7]  Adaptive Filter: ORB is NORMAL .............................. PASS
   [Stage 8]  Ranking: rank #1 of 1, 3 stars .............................. ranked
-  [Stage 9]  Risk Sizing: 2 shares, Rs 5,724 capital .................... sized
-  [Stage 10] Persist & Deliver: saved to DB, sent to Telegram ........... DELIVERED
-  [Stage 11] Diagnostic: healthy .......................................... logged
+  [Stage 9]  News Sentiment: NEUTRAL (+0.12), no earnings ............... PASS
+  [Stage 10] Risk Sizing: 2 shares, Rs 5,724 capital .................... sized
+  [Stage 11] Persist & Deliver: saved to DB, sent to Telegram ........... DELIVERED
+  [Stage 12] Diagnostic: healthy .......................................... logged
 
   [Always]   Exit Monitor: checking 1 active trade (HDFC Bank) .......... no exits
 
@@ -723,6 +838,12 @@ on a normal trading day:
 | **Composite Score** | A 0-100 score combining strategy strength, win rate, risk-reward, and confirmation |
 | **Circuit Breaker** | An automatic safety system that stops trading after too many losses in one day |
 | **Confirmation** | When multiple strategies independently agree on the same stock — a stronger signal |
+| **VADER** | Valence Aware Dictionary and sEntiment Reasoner — a rule-based sentiment analysis tool, enhanced here with a financial lexicon for stock market terminology |
+| **Sentiment Score** | A number from -1.0 (extremely negative) to +1.0 (extremely positive) representing the overall news tone for a stock, computed as a recency-weighted average of headline scores |
+| **Earnings Blackout** | Automatic suppression of signals for any stock reporting earnings on the current day — earnings announcements cause unpredictable price swings |
+| **Suppression** | When the News Sentiment Filter blocks a signal from being delivered due to strong negative news or an earnings blackout |
+| **Unsuppress** | A manual override command that lets you bypass a news suppression for a specific stock for the rest of the trading day |
+| **RSS** | Really Simple Syndication — a standard format for publishing news feeds that SignalPilot reads to gather financial headlines |
 
 ---
 
@@ -732,7 +853,8 @@ on a normal trading day:
 |--------------|-----|
 | Three different strategies | Different market conditions favor different setups. Diversification of approaches. |
 | Strict time windows | Each strategy has a proven optimal window. Running them outside that window adds noise, not signal. |
-| 11-stage pipeline | Each stage does one thing well. Easy to test, easy to modify, easy to understand. |
+| 12-stage pipeline | Each stage does one thing well. Easy to test, easy to modify, easy to understand. |
+| News sentiment filter | Price and volume alone do not tell the full story. Checking news before delivery avoids trading into known bad situations. |
 | Circuit breaker + adaptive filter | Bad days and bad streaks happen. Automatic protection prevents emotional revenge trading. |
 | Multi-strategy confirmation | When independent methods agree, probability of success increases significantly. |
 | Trailing stops | Lets winners run while mechanically locking in profits. Removes the hardest decision in trading. |
