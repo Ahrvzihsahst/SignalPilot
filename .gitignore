@@ -218,6 +218,3 @@ backend/logs/
 # Frontend-specific
 frontend/node_modules/
 frontend/dist/
-
-# Claude
-*.kiro/
